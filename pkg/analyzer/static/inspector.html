@@ -1,0 +1,3313 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PacketYeeter Inspector</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    
+    :root {
+      --primary: #6366f1;
+      --primary-dark: #4f46e5;
+      --primary-light: #818cf8;
+      --success: #10b981;
+      --success-dark: #059669;
+      --danger: #ef4444;
+      --danger-dark: #dc2626;
+      --warning: #f59e0b;
+      --info: #3b82f6;
+      --bg: #0f172a;
+      --bg-secondary: #1e293b;
+      --card-bg: rgba(30, 41, 59, 0.8);
+      --card-hover: rgba(51, 65, 85, 0.9);
+      --border: rgba(148, 163, 184, 0.1);
+      --text: #f1f5f9;
+      --text-muted: #94a3b8;
+      --shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.3), 0 10px 10px -5px rgba(0, 0, 0, 0.2);
+      --shadow-lg: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+      --glow: 0 0 20px rgba(99, 102, 241, 0.3);
+    }
+    
+    body { 
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      margin: 0; 
+      padding: 0; 
+      background: linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #0f172a 100%);
+      background-attachment: fixed;
+      color: var(--text);
+      min-height: 100vh;
+    }
+    
+    /* Animated background */
+    body::before {
+      content: '';
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: 
+        radial-gradient(circle at 20% 50%, rgba(99, 102, 241, 0.1) 0%, transparent 50%),
+        radial-gradient(circle at 80% 80%, rgba(16, 185, 129, 0.1) 0%, transparent 50%),
+        radial-gradient(circle at 40% 20%, rgba(239, 68, 68, 0.1) 0%, transparent 50%);
+      pointer-events: none;
+      z-index: -1;
+    }
+    
+    /* Header with glassmorphism */
+    .top-header {
+      background: rgba(30, 41, 59, 0.8);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border-bottom: 1px solid var(--border);
+      padding: 1.25rem 2rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      box-shadow: var(--shadow);
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+    
+    .logo {
+      font-size: 1.375rem;
+      font-weight: 800;
+      background: linear-gradient(135deg, var(--primary) 0%, var(--primary-light) 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      letter-spacing: -0.025em;
+    }
+    
+    .logo::before {
+      content: "🛡️";
+      font-size: 1.5rem;
+      filter: drop-shadow(0 0 10px rgba(99, 102, 241, 0.5));
+    }
+    
+    .nav-tabs {
+      display: flex;
+      gap: 0.5rem;
+      background: rgba(15, 23, 42, 0.5);
+      padding: 0.375rem;
+      border-radius: 0.75rem;
+      border: 1px solid var(--border);
+    }
+    
+    .tab-btn {
+      padding: 0.625rem 1.25rem;
+      border: none;
+      background: transparent;
+      color: var(--text-muted);
+      cursor: pointer;
+      border-radius: 0.5rem;
+      font-weight: 600;
+      font-size: 0.875rem;
+      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+      position: relative;
+    }
+    
+    .tab-btn:hover {
+      background: rgba(99, 102, 241, 0.1);
+      color: var(--text);
+      transform: translateY(-1px);
+    }
+    
+    .tab-btn.active {
+      background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
+      color: white;
+      box-shadow: 0 4px 12px rgba(99, 102, 241, 0.4);
+    }
+    
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.5rem 1rem;
+      border-radius: 9999px;
+      font-size: 0.875rem;
+      font-weight: 600;
+      background: rgba(16, 185, 129, 0.1);
+      border: 1px solid rgba(16, 185, 129, 0.3);
+      color: var(--success);
+    }
+    
+    .status-badge.live::before {
+      content: "●";
+      animation: pulse 2s infinite;
+      font-size: 1.25rem;
+    }
+    
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.6; transform: scale(1.1); }
+    }
+    
+    /* Layout */
+    .container {
+      display: none;
+      padding: 2rem;
+      max-width: 1800px;
+      margin: 0 auto;
+      animation: fadeIn 0.4s ease;
+    }
+    
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    
+    .container.active {
+      display: block;
+    }
+    
+    .split-view {
+      display: grid;
+      grid-template-columns: 1.5fr 1fr;
+      gap: 1.5rem;
+      height: calc(100vh - 140px);
+    }
+    
+    /* Modern glassmorphic panels */
+    .panel {
+      background: var(--card-bg);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border-radius: 1rem;
+      border: 1px solid var(--border);
+      box-shadow: var(--shadow);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+    
+    .panel:hover {
+      border-color: rgba(99, 102, 241, 0.3);
+      box-shadow: var(--shadow-lg);
+    }
+    
+    .panel-header {
+      padding: 1.25rem 1.5rem;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: rgba(15, 23, 42, 0.5);
+    }
+    
+    .panel-title {
+      font-weight: 700;
+      font-size: 1.25rem;
+      background: linear-gradient(135deg, var(--text) 0%, var(--text-muted) 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    
+    .panel-body {
+      flex: 1;
+      overflow: auto;
+      padding: 1.25rem;
+    }
+    
+    /* Custom scrollbar */
+    .panel-body::-webkit-scrollbar {
+      width: 8px;
+    }
+    
+    .panel-body::-webkit-scrollbar-track {
+      background: rgba(15, 23, 42, 0.3);
+      border-radius: 4px;
+    }
+    
+    .panel-body::-webkit-scrollbar-thumb {
+      background: rgba(99, 102, 241, 0.5);
+      border-radius: 4px;
+    }
+    
+    .panel-body::-webkit-scrollbar-thumb:hover {
+      background: rgba(99, 102, 241, 0.7);
+    }
+    
+    /* Modern buttons with gradients */
+    .btn {
+      padding: 0.625rem 1.25rem;
+      border-radius: 0.5rem;
+      border: none;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      position: relative;
+      overflow: hidden;
+    }
+    
+    .btn::before {
+      content: '';
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      width: 0;
+      height: 0;
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.2);
+      transform: translate(-50%, -50%);
+      transition: width 0.6s, height 0.6s;
+    }
+    
+    .btn:hover::before {
+      width: 300px;
+      height: 300px;
+    }
+    
+    .btn-primary {
+      background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
+      color: white;
+      box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3);
+    }
+    
+    .btn-primary:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 8px 20px rgba(99, 102, 241, 0.4);
+    }
+    
+    .btn-success {
+      background: linear-gradient(135deg, var(--success) 0%, var(--success-dark) 100%);
+      color: white;
+      box-shadow: 0 4px 12px rgba(16, 185, 129, 0.3);
+    }
+    
+    .btn-success:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 8px 20px rgba(16, 185, 129, 0.4);
+    }
+    
+    .btn-danger {
+      background: linear-gradient(135deg, var(--danger) 0%, var(--danger-dark) 100%);
+      color: white;
+      box-shadow: 0 4px 12px rgba(239, 68, 68, 0.3);
+    }
+    
+    .btn-danger:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 8px 20px rgba(239, 68, 68, 0.4);
+    }
+    
+    .btn-sm {
+      padding: 0.5rem 1rem;
+      font-size: 0.875rem;
+    }
+    
+    .btn:active {
+      transform: translateY(0);
+    }
+    
+    /* Modern table */
+    table {
+      width: 100%;
+      border-collapse: separate;
+      border-spacing: 0;
+    }
+    
+    thead {
+      background: rgba(15, 23, 42, 0.5);
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
+    
+    th {
+      padding: 1rem;
+      text-align: left;
+      font-weight: 700;
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      border-bottom: 2px solid var(--border);
+    }
+    
+    td {
+      padding: 1rem;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.875rem;
+    }
+    
+    tbody tr {
+      cursor: pointer;
+      transition: all 0.2s ease;
+      background: transparent;
+    }
+    
+    tbody tr:hover {
+      background: var(--card-hover);
+      transform: scale(1.01);
+    }
+    
+    tbody tr.selected {
+      background: rgba(99, 102, 241, 0.2);
+      border-left: 3px solid var(--primary);
+    }
+    
+    /* Modern badges with glow */
+    .badge {
+      display: inline-block;
+      padding: 0.375rem 0.75rem;
+      border-radius: 0.375rem;
+      font-size: 0.75rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.025em;
+      border: 1px solid;
+      transition: all 0.2s;
+    }
+    
+    .badge:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+    }
+    
+    .badge-scraper { background: rgba(245, 158, 11, 0.1); color: #fbbf24; border-color: rgba(245, 158, 11, 0.3); }
+    .badge-ddos { background: rgba(239, 68, 68, 0.1); color: #f87171; border-color: rgba(239, 68, 68, 0.3); }
+    .badge-crawler { background: rgba(168, 85, 247, 0.1); color: #c084fc; border-color: rgba(168, 85, 247, 0.3); }
+    .badge-unknown { background: rgba(148, 163, 184, 0.1); color: #cbd5e1; border-color: rgba(148, 163, 184, 0.3); }
+    .badge-legitimate { background: rgba(16, 185, 129, 0.1); color: #34d399; border-color: rgba(16, 185, 129, 0.3); }
+    .badge-malicious { background: rgba(239, 68, 68, 0.1); color: #f87171; border-color: rgba(239, 68, 68, 0.3); }
+    .badge-ai_crawler_verified { background: rgba(59, 130, 246, 0.1); color: #60a5fa; border-color: rgba(59, 130, 246, 0.3); }
+    .badge-ai_crawler_unknown { background: rgba(99, 102, 241, 0.1); color: #a5b4fc; border-color: rgba(99, 102, 241, 0.3); }
+    .badge-search_engine { background: rgba(16, 185, 129, 0.1); color: #34d399; border-color: rgba(16, 185, 129, 0.3); }
+    .badge-search_unknown { background: rgba(251, 191, 36, 0.1); color: #fbbf24; border-color: rgba(251, 191, 36, 0.3); }
+    .badge-monitoring { background: rgba(6, 182, 212, 0.1); color: #22d3ee; border-color: rgba(6, 182, 212, 0.3); }
+    .badge-scanner { background: rgba(245, 158, 11, 0.1); color: #fbbf24; border-color: rgba(245, 158, 11, 0.3); }
+    .badge-script { background: rgba(217, 70, 239, 0.1); color: #e879f9; border-color: rgba(217, 70, 239, 0.3); }
+    .badge-browser { background: rgba(59, 130, 246, 0.1); color: #60a5fa; border-color: rgba(59, 130, 246, 0.3); }
+    
+    /* Details section with modern cards */
+    .detail-section {
+      margin-bottom: 2rem;
+      padding: 1.5rem;
+      background: rgba(15, 23, 42, 0.3);
+      border-radius: 0.75rem;
+      border: 1px solid var(--border);
+      transition: all 0.3s;
+    }
+    
+    .detail-section:hover {
+      border-color: rgba(99, 102, 241, 0.3);
+      background: rgba(15, 23, 42, 0.5);
+    }
+    
+    .detail-title {
+      font-weight: 700;
+      margin-bottom: 0.75rem;
+      color: var(--text-muted);
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+    }
+    
+    .detail-value {
+      font-size: 1.875rem;
+      font-weight: 800;
+      margin-bottom: 0.5rem;
+      background: linear-gradient(135deg, var(--text) 0%, var(--primary-light) 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    
+    /* Metric cards with hover effects */
+    .metric-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 1rem;
+      margin-bottom: 1.5rem;
+    }
+    
+    .metric-card {
+      padding: 1.25rem;
+      background: rgba(15, 23, 42, 0.3);
+      border-radius: 0.75rem;
+      border: 1px solid var(--border);
+      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+      position: relative;
+      overflow: hidden;
+    }
+    
+    .metric-card::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 2px;
+      background: linear-gradient(90deg, var(--primary) 0%, var(--primary-light) 100%);
+      transform: scaleX(0);
+      transition: transform 0.3s;
+    }
+    
+    .metric-card:hover::before {
+      transform: scaleX(1);
+    }
+    
+    .metric-card:hover {
+      transform: translateY(-4px);
+      border-color: rgba(99, 102, 241, 0.3);
+      box-shadow: 0 8px 16px rgba(0, 0, 0, 0.3);
+    }
+    
+    .metric-label {
+      font-size: 0.875rem;
+      color: var(--text-muted);
+      margin-bottom: 0.5rem;
+      font-weight: 600;
+    }
+    
+    .metric-value {
+      font-size: 1.75rem;
+      font-weight: 800;
+      background: linear-gradient(135deg, var(--text) 0%, var(--primary-light) 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    
+    /* Signal items with modern design */
+    .signal-item {
+      padding: 1rem;
+      background: rgba(15, 23, 42, 0.3);
+      border-radius: 0.75rem;
+      border: 1px solid var(--border);
+      margin-bottom: 0.75rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      cursor: pointer;
+      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+    
+    .signal-item:hover {
+      background: rgba(99, 102, 241, 0.1);
+      border-color: rgba(99, 102, 241, 0.3);
+      transform: translateX(4px);
+    }
+    
+    .signal-item.expanded {
+      flex-direction: column;
+      align-items: flex-start;
+      background: rgba(99, 102, 241, 0.15);
+      border-color: rgba(99, 102, 241, 0.4);
+    }
+    
+    .signal-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      width: 100%;
+    }
+    
+    .signal-metadata {
+      margin-top: 1rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.875rem;
+      width: 100%;
+    }
+    
+    .metadata-row {
+      display: grid;
+      grid-template-columns: 150px 1fr;
+      gap: 0.75rem;
+      margin-bottom: 0.75rem;
+    }
+    
+    .metadata-label {
+      font-weight: 700;
+      color: var(--text-muted);
+    }
+    
+    .metadata-value {
+      font-family: 'JetBrains Mono', monospace;
+      word-break: break-all;
+      color: var(--primary-light);
+    }
+    
+    .signal-type {
+      font-weight: 600;
+      font-size: 0.875rem;
+    }
+    
+    .signal-count {
+      font-weight: 800;
+      color: var(--primary-light);
+      font-size: 1.125rem;
+    }
+    
+    /* Action bar */
+    .action-bar {
+      display: flex;
+      gap: 0.75rem;
+      padding: 1.25rem;
+      background: rgba(15, 23, 42, 0.5);
+      border-top: 1px solid var(--border);
+      backdrop-filter: blur(10px);
+    }
+    
+    /* Stats grid with modern cards */
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 1.5rem;
+      margin-bottom: 2rem;
+    }
+    
+    .stat-card {
+      background: var(--card-bg);
+      backdrop-filter: blur(20px);
+      padding: 2rem;
+      border-radius: 1rem;
+      border: 1px solid var(--border);
+      box-shadow: var(--shadow);
+      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+      position: relative;
+      overflow: hidden;
+    }
+    
+    .stat-card::before {
+      content: '';
+      position: absolute;
+      top: -50%;
+      right: -50%;
+      width: 100%;
+      height: 100%;
+      background: radial-gradient(circle, rgba(99, 102, 241, 0.1) 0%, transparent 70%);
+      transition: transform 0.6s;
+    }
+    
+    .stat-card:hover::before {
+      transform: translate(20%, 20%);
+    }
+    
+    .stat-card:hover {
+      transform: translateY(-8px);
+      border-color: rgba(99, 102, 241, 0.4);
+      box-shadow: var(--shadow-lg), var(--glow);
+    }
+    
+    .stat-label {
+      font-size: 0.875rem;
+      color: var(--text-muted);
+      margin-bottom: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    
+    .stat-value {
+      font-size: 2.5rem;
+      font-weight: 900;
+      background: linear-gradient(135deg, var(--text) 0%, var(--primary-light) 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      line-height: 1;
+    }
+    
+    .stat-subtext {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      margin-top: 0.5rem;
+    }
+    
+    /* Allowlist items */
+    .allowlist-item {
+      padding: 1.25rem;
+      background: rgba(15, 23, 42, 0.3);
+      border-radius: 0.75rem;
+      border: 1px solid var(--border);
+      margin-bottom: 0.75rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      transition: all 0.3s;
+    }
+    
+    .allowlist-item:hover {
+      background: rgba(15, 23, 42, 0.5);
+      border-color: rgba(99, 102, 241, 0.3);
+      transform: translateX(4px);
+    }
+    
+    .expires-in {
+      font-size: 0.875rem;
+      color: var(--text-muted);
+      font-weight: 600;
+    }
+    
+    /* Modern modal */
+    .modal {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0, 0, 0, 0.75);
+      backdrop-filter: blur(8px);
+      z-index: 1000;
+      align-items: center;
+      justify-content: center;
+      animation: fadeIn 0.2s ease;
+    }
+    
+    .modal.active {
+      display: flex;
+    }
+    
+    .modal-content {
+      background: var(--card-bg);
+      backdrop-filter: blur(20px);
+      border-radius: 1rem;
+      padding: 2.5rem;
+      max-width: 500px;
+      width: 90%;
+      box-shadow: var(--shadow-lg);
+      border: 1px solid var(--border);
+      animation: slideUp 0.3s ease;
+    }
+    
+    @keyframes slideUp {
+      from { transform: translateY(20px); opacity: 0; }
+      to { transform: translateY(0); opacity: 1; }
+    }
+    
+    .modal-title {
+      font-size: 1.75rem;
+      font-weight: 800;
+      margin-bottom: 1.5rem;
+      background: linear-gradient(135deg, var(--text) 0%, var(--primary-light) 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    
+    .form-group {
+      margin-bottom: 1.5rem;
+    }
+    
+    .form-label {
+      display: block;
+      font-weight: 600;
+      margin-bottom: 0.5rem;
+      color: var(--text-muted);
+      font-size: 0.875rem;
+    }
+    
+    .form-input, .form-select {
+      width: 100%;
+      padding: 0.75rem;
+      border: 1px solid var(--border);
+      border-radius: 0.5rem;
+      font-size: 1rem;
+      background: rgba(15, 23, 42, 0.5);
+      color: var(--text);
+      transition: all 0.3s;
+    }
+    
+    .form-input:focus, .form-select:focus {
+      outline: none;
+      border-color: var(--primary);
+      box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
+    }
+    
+    .form-actions {
+      display: flex;
+      gap: 0.75rem;
+      justify-content: flex-end;
+      margin-top: 2rem;
+    }
+    
+    .empty-state {
+      text-align: center;
+      padding: 4rem 2rem;
+      color: var(--text-muted);
+    }
+    
+    .empty-state-icon {
+      font-size: 4rem;
+      margin-bottom: 1rem;
+      opacity: 0.5;
+    }
+
+    .blocking-detection {
+      background: rgba(239, 68, 68, 0.1);
+      border-left: 3px solid var(--danger);
+    }
+
+    .blocking-detection:hover {
+      background: rgba(239, 68, 68, 0.2);
+    }
+
+    /* Compact filter bar */
+    .filter-bar {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.375rem 0.5rem;
+      background: rgba(15, 23, 42, 0.3);
+      border-radius: 0.375rem;
+      border: 1px solid var(--border);
+      margin: 0;
+      min-height: 38px;
+    }
+
+    .filter-select {
+      padding: 0.375rem 0.625rem;
+      border: 1px solid var(--border);
+      border-radius: 0.25rem;
+      background: rgba(15, 23, 42, 0.5);
+      color: var(--text);
+      font-size: 0.8125rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s;
+      min-width: 120px;
+    }
+
+    .filter-select:hover {
+      border-color: var(--primary);
+      background: rgba(15, 23, 42, 0.7);
+    }
+
+    .filter-select:focus {
+      outline: none;
+      border-color: var(--primary);
+      box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.1);
+    }
+
+    .filter-confidence {
+      display: flex;
+      align-items: center;
+      gap: 0.375rem;
+      flex: 1;
+      max-width: 160px;
+    }
+
+    .filter-confidence label {
+      font-size: 0.8125rem;
+      font-weight: 600;
+      white-space: nowrap;
+      color: var(--text);
+    }
+
+    .filter-confidence input[type="range"] {
+      flex: 1;
+      height: 4px;
+      border-radius: 2px;
+      background: rgba(99, 102, 241, 0.2);
+      outline: none;
+      -webkit-appearance: none;
+    }
+
+    .filter-confidence input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: var(--primary);
+      cursor: pointer;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+    }
+
+    .filter-confidence input[type="range"]::-moz-range-thumb {
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: var(--primary);
+      cursor: pointer;
+      border: none;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+    }
+
+    /* Light theme */
+    body.light-theme {
+      --primary: #4f46e5;
+      --primary-dark: #4338ca;
+      --primary-light: #6366f1;
+      --success: #059669;
+      --success-dark: #047857;
+      --danger: #dc2626;
+      --danger-dark: #b91c1c;
+      --warning: #d97706;
+      --info: #2563eb;
+      --bg: #f1f5f9;
+      --bg-secondary: #e2e8f0;
+      --card-bg: rgba(255, 255, 255, 0.95);
+      --card-hover: rgba(248, 250, 252, 0.95);
+      --border: rgba(100, 116, 139, 0.2);
+      --text: #0f172a;
+      --text-muted: #475569;
+      --shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+      --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+    }
+
+    body.light-theme {
+      background: linear-gradient(135deg, #f1f5f9 0%, #e2e8f0 50%, #f1f5f9 100%);
+    }
+
+    body.light-theme::before {
+      background: 
+        radial-gradient(circle at 20% 50%, rgba(99, 102, 241, 0.03) 0%, transparent 50%),
+        radial-gradient(circle at 80% 80%, rgba(16, 185, 129, 0.03) 0%, transparent 50%),
+        radial-gradient(circle at 40% 20%, rgba(239, 68, 68, 0.03) 0%, transparent 50%);
+    }
+
+    body.light-theme .top-header {
+      background: rgba(255, 255, 255, 0.95);
+      border-bottom: 1px solid rgba(100, 116, 139, 0.2);
+    }
+
+    body.light-theme .nav-tabs {
+      background: rgba(241, 245, 249, 0.9);
+      border: 1px solid rgba(100, 116, 139, 0.15);
+    }
+
+    body.light-theme .tab-btn {
+      color: #475569;
+    }
+
+    body.light-theme .tab-btn:hover {
+      background: rgba(99, 102, 241, 0.05);
+      color: #1e293b;
+    }
+
+    body.light-theme .tab-btn.active {
+      background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
+      color: white;
+    }
+
+    body.light-theme .panel {
+      background: rgba(255, 255, 255, 0.95);
+      border: 1px solid rgba(100, 116, 139, 0.2);
+    }
+
+    body.light-theme .panel-header {
+      background: rgba(248, 250, 252, 0.9);
+      border-bottom: 1px solid rgba(100, 116, 139, 0.15);
+    }
+
+    body.light-theme .panel-title {
+      color: #0f172a;
+      background: none;
+      -webkit-text-fill-color: unset;
+    }
+
+    body.light-theme .detail-section,
+    body.light-theme .metric-card,
+    body.light-theme .signal-item,
+    body.light-theme .allowlist-item {
+      background: rgba(248, 250, 252, 0.8);
+      border: 1px solid rgba(100, 116, 139, 0.15);
+    }
+
+    body.light-theme .filter-bar {
+      background: rgba(248, 250, 252, 0.9);
+      border: 1px solid rgba(100, 116, 139, 0.2);
+    }
+
+    body.light-theme .form-input,
+    body.light-theme .form-select,
+    body.light-theme .filter-select {
+      background: rgba(255, 255, 255, 0.9);
+      border: 1px solid rgba(100, 116, 139, 0.25);
+      color: #0f172a;
+    }
+
+    body.light-theme .filter-select:hover {
+      background: rgba(248, 250, 252, 0.9);
+      border-color: var(--primary);
+    }
+
+    body.light-theme .signal-item:hover {
+      background: rgba(224, 231, 255, 0.4);
+      border-color: rgba(99, 102, 241, 0.3);
+    }
+
+    body.light-theme tbody tr:hover {
+      background: rgba(248, 250, 252, 0.95);
+    }
+
+    body.light-theme tbody tr.selected {
+      background: rgba(224, 231, 255, 0.4);
+      border-left: 3px solid var(--primary);
+    }
+
+    body.light-theme thead {
+      background: rgba(241, 245, 249, 0.9);
+    }
+
+    body.light-theme th {
+      color: #475569;
+    }
+
+    body.light-theme .stat-card {
+      background: rgba(255, 255, 255, 0.95);
+      border: 1px solid rgba(100, 116, 139, 0.2);
+    }
+
+    body.light-theme .detail-value,
+    body.light-theme .metric-value,
+    body.light-theme .stat-value {
+      color: #0f172a;
+      background: none;
+      -webkit-text-fill-color: unset;
+    }
+
+    body.light-theme .modal {
+      background: rgba(15, 23, 42, 0.4);
+    }
+
+    body.light-theme .modal-content {
+      background: rgba(255, 255, 255, 0.98);
+      border: 1px solid rgba(100, 116, 139, 0.2);
+    }
+
+    .suspicious-detection {
+      background-color: rgba(245, 158, 11, 0.03);
+      border-left: 3px solid #f59e0b;
+    }
+
+    .suspicious-detection:hover {
+      background-color: rgba(245, 158, 11, 0.08);
+    }
+  </style>
+</head>
+<body>
+  <!-- Header -->
+  <div class="top-header">
+    <div class="logo">🛡️ PacketYeeter Inspector</div>
+    <div class="nav-tabs">
+      <button class="tab-btn active" onclick="switchTab('detections')">Detections</button>
+      <button class="tab-btn" onclick="switchTab('verified')">Verified Bots</button>
+      <button class="tab-btn" onclick="switchTab('analytics')">Analytics</button>
+      <button class="tab-btn" onclick="switchTab('history')">History</button>
+      <button class="tab-btn" onclick="switchTab('feedback')">Feedback Loop</button>
+      <button class="tab-btn" onclick="switchTab('labeling')">Labeling</button>
+      <button class="tab-btn" onclick="switchTab('statistics')">Statistics</button>
+    </div>
+    <div style="display: flex; align-items: center; gap: 1rem;">
+      <button class="btn btn-sm" onclick="toggleTheme()" id="themeToggle" style="padding: 0.5rem; width: 2.5rem; height: 2.5rem; border-radius: 50%;">🌙</button>
+      <span class="status-badge live" id="statusBadge">Live</span>
+      <span style="margin-left: 0.5rem; font-size: 0.875rem; color: var(--text-muted);" id="lastUpdate"></span>
+    </div>
+  </div>
+
+  <!-- Detections Tab -->
+  <div class="container active" id="detectionsTab">
+    <div class="split-view">
+      <div class="panel">
+        <div class="panel-header">
+          <div class="panel-title">Recent Detections</div>
+          <button class="btn btn-primary btn-sm" onclick="fetchDetections()">🔄 Refresh</button>
+        </div>
+        <div class="panel-body" style="padding: 0;">
+          <div class="filter-bar">
+            <select id="categoryFilter" onchange="applyFilters()" class="filter-select">
+              <option value="">🎯 All Categories</option>
+              <option value="legitimate">✅ Legitimate</option>
+              <option value="malicious">🔴 Malicious</option>
+              <option value="scraper">🕷️ Scraper</option>
+              <option value="scanner">🔍 Scanner</option>
+              <option value="crawler">🦖 Crawler</option>
+              <option value="ddos">💥 DDoS</option>
+              <option value="search_engine">🔎 Search</option>
+            </select>
+            <select id="statusFilter" onchange="applyFilters()" class="filter-select">
+              <option value="">📡 All Status</option>
+              <option value="blocked">🚫 Blocked</option>
+              <option value="allowed">✅ Allowed</option>
+            </select>
+            <div class="filter-confidence">
+              <label for="confidenceFilter">🎯 <span id="confidenceLabel">0%</span></label>
+              <input type="range" id="confidenceFilter" min="0" max="100" value="0" oninput="updateConfidenceLabel(); applyFilters();">
+            </div>
+            <button class="btn btn-sm" onclick="clearFilters()" style="margin-left: auto;">✖️ Clear</button>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th><input type="checkbox" id="selectAll" onchange="toggleSelectAll(this)"></th>
+                <th>IP</th>
+                <th>ASN</th>
+                <th>Organization</th>
+                <th>Category</th>
+                <th>Confidence</th>
+                <th>Signals</th>
+                <th>Time</th>
+              </tr>
+            </thead>
+            <tbody id="detectionsTable"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header">
+          <div class="panel-title">Detection Details</div>
+        </div>
+        <div class="panel-body" id="detailsPanel">
+          <div class="empty-state">
+            <div class="empty-state-icon">👈</div>
+            <div>Select a detection to view details</div>
+          </div>
+        </div>
+        <div class="action-bar" id="actionBar" style="display: none;">
+          <div id="singleActions" style="display: none;">
+            <button class="btn btn-success btn-sm" onclick="reportTruePositive()">✓ True Positive</button>
+            <button class="btn btn-danger btn-sm" onclick="reportFalsePositive()">✗ False Positive</button>
+            <button class="btn btn-primary btn-sm" onclick="openLabelModal()">🏷️ Label for Training</button>
+          </div>
+          <div id="multiActions" style="display: none;">
+            <span id="selectedCount" style="margin-right: 1rem;"></span>
+            <button class="btn btn-success btn-sm" onclick="batchReportTruePositive()">✓ Batch True Positive</button>
+            <button class="btn btn-danger btn-sm" onclick="batchReportFalsePositive()">✗ Batch False Positive</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Verified Bots Tab -->
+  <div class="container" id="verifiedTab">
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">Verified Legitimate Bots</div>
+        <div>
+          <button class="btn btn-success btn-sm" onclick="recordAllVerifiedBots()" style="margin-right: 0.5rem;">📹 Record All</button>
+          <button class="btn btn-primary btn-sm" onclick="fetchVerifiedBots()">🔄 Refresh</button>
+        </div>
+      </div>
+      <div class="panel-body" style="padding: 0;">
+        <table>
+          <thead>
+            <tr>
+              <th>IP</th>
+              <th>Bot Type</th>
+              <th>ASN</th>
+              <th>Organization</th>
+              <th>User Agent</th>
+              <th>Last Seen</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="verifiedBotsTable"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Analytics Tab -->
+  <div class="container" id="analyticsTab">
+    <div class="stats-grid" style="grid-template-columns: repeat(5, 1fr);">
+      <div class="stat-card">
+        <div class="stat-label">Total Requests</div>
+        <div class="stat-value" id="totalRequests">-</div>
+        <div class="stat-subtext">In detection history</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Unique Hostnames</div>
+        <div class="stat-value" id="uniqueHostnames">-</div>
+        <div class="stat-subtext">Domains accessed</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Unique Paths</div>
+        <div class="stat-value" id="uniquePaths">-</div>
+        <div class="stat-subtext">Endpoints hit</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">User Agents</div>
+        <div class="stat-value" id="uniqueUAs">-</div>
+        <div class="stat-subtext">Different clients</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Unique ASNs</div>
+        <div class="stat-value" id="uniqueASNs">-</div>
+        <div class="stat-subtext">Network sources</div>
+      </div>
+    </div>
+
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; margin-bottom: 1.5rem;">
+      <div class="panel">
+        <div class="panel-header">
+          <div class="panel-title">Top Hostnames</div>
+          <button class="btn btn-primary btn-sm" onclick="fetchAnalytics()">🔄 Refresh</button>
+        </div>
+        <div class="panel-body" id="topHostnames" style="padding: 0;">
+          <div class="empty-state">
+            <div class="empty-state-icon">🌐</div>
+            <div>Loading analytics...</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header">
+          <div class="panel-title">Top Paths</div>
+        </div>
+        <div class="panel-body" id="topPaths" style="padding: 0;">
+          <div class="empty-state">
+            <div class="empty-state-icon">📁</div>
+            <div>Loading analytics...</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1.5rem;">
+      <div class="panel">
+        <div class="panel-header">
+          <div class="panel-title">HTTP Methods</div>
+        </div>
+        <div class="panel-body" id="topMethods" style="padding: 0;">
+          <div class="empty-state">
+            <div class="empty-state-icon">📊</div>
+            <div>Loading analytics...</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header">
+          <div class="panel-title">Top User Agents</div>
+        </div>
+        <div class="panel-body" id="topUserAgents" style="padding: 0;">
+          <div class="empty-state">
+            <div class="empty-state-icon">🤖</div>
+            <div>Loading analytics...</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header">
+          <div class="panel-title">Top ASNs</div>
+        </div>
+        <div class="panel-body" id="topASNs" style="padding: 0;">
+          <div class="empty-state">
+            <div class="empty-state-icon">🌐</div>
+            <div>Loading analytics...</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- History Tab -->
+  <div class="container" id="historyTab">
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">Detection History (Last 6 Hours)</div>
+        <button class="btn btn-primary btn-sm" onclick="fetchHistory()">🔄 Refresh</button>
+      </div>
+      <div class="panel-body" style="padding: 0;">
+        <table>
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>IP</th>
+              <th>ASN</th>
+              <th>Organization</th>
+              <th>Category</th>
+              <th>Confidence</th>
+              <th>Signals</th>
+            </tr>
+          </thead>
+          <tbody id="historyTable"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Feedback Tab -->
+  <div class="container" id="feedbackTab">
+    <h2 style="margin-bottom: 1rem;">Feedback Loop Statistics</h2>
+    <div class="stats-grid" id="feedbackStats"></div>
+    
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">False Positive Allowlist</div>
+        <div>
+          <button class="btn btn-warning btn-sm" onclick="deleteSelectedAllowlist()" id="deleteAllowlistBtn" style="display:none;">☒ Delete Selected</button>
+          <button class="btn btn-danger btn-sm" onclick="clearAllowlist()">🗑️ Clear All</button>
+          <button class="btn btn-primary btn-sm" onclick="fetchAllowlist()">🔄 Refresh</button>
+        </div>
+      </div>
+      <div class="panel-body" id="allowlistPanel"></div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">Learned Traffic Patterns</div>
+        <button class="btn btn-primary btn-sm" onclick="fetchPatterns()">🔄 Refresh</button>
+      </div>
+      <div class="panel-body" id="patternsPanel"></div>
+    </div>
+  </div>
+
+  <!-- Labeling Tab -->
+  <div class="container" id="labelingTab">
+    <h2 style="margin-bottom: 1rem;">Labeled Detections for ML Training</h2>
+    
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">Labeled Dataset</div>
+        <div>
+          <button class="btn btn-success btn-sm" onclick="recordAllLabeledIPs()">🔴 Record All</button>
+          <button class="btn btn-primary btn-sm" onclick="fetchLabels()">🔄 Refresh</button>
+          <button class="btn btn-primary btn-sm" onclick="exportLabels()">💾 Export JSON</button>
+          <button class="btn btn-primary btn-sm" onclick="downloadLabelsCSV()">📊 Export CSV</button>
+        </div>
+      </div>
+      <div class="panel-body" style="padding: 0;">
+        <div id="labelsPanel"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Statistics Tab -->
+  <div class="container" id="statisticsTab">
+    <h2 style="margin-bottom: 1rem;">ML Training & Detection Statistics</h2>
+    
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">ML Tier Distribution</div>
+        <button class="btn btn-primary btn-sm" onclick="fetchStatistics()">🔄 Refresh</button>
+      </div>
+      <div class="panel-body">
+        <div class="stats-grid" id="mlTierStats"></div>
+      </div>
+    </div>
+    
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">Session Recordings (ML Training Data)</div>
+        <div>
+          <button class="btn btn-success btn-sm" onclick="exportSessionRecordings()">📥 Export Sessions</button>
+          <button class="btn btn-primary btn-sm" onclick="refreshSessionsList()">🔄 Refresh</button>
+          <span id="sessionCount" style="margin-left: 0.5rem; color: #6b7280; font-size: 0.875rem;"></span>
+        </div>
+      </div>
+      <div class="panel-body">
+        <p style="color: #6b7280; margin-bottom: 1rem;">
+          System records complete event sequences (5min) after detections for ML training.
+          Saved to <code>/var/cache/packetyeeter/sessions/recording-{ip}-{timestamp}.jsonl</code>
+        </p>
+        
+        <!-- Active Recordings Section -->
+        <div id="activeRecordingsSection" style="margin-bottom: 1.5rem;">
+          <h3 style="font-size: 1rem; font-weight: 600; margin-bottom: 0.75rem;">🔴 Active Recordings</h3>
+          <div id="activeRecordingsContainer"></div>
+        </div>
+        
+        <!-- Completed Recordings Section -->
+        <h3 style="font-size: 1rem; font-weight: 600; margin-bottom: 0.75rem;">✅ Completed Recordings</h3>
+        <div id="sessionsListContainer"></div>
+      </div>
+    </div>
+    
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">Learning Window (Auto-Training)</div>
+        <div>
+          <button class="btn btn-success btn-sm" onclick="recordAllLearningIPs()">🔴 Record All</button>
+          <button class="btn btn-danger btn-sm" onclick="clearLearningWindow()">🗑️ Clear All</button>
+        </div>
+      </div>
+      <div class="panel-body">
+        <div class="stats-grid" id="learningStats"></div>
+      </div>
+    </div>
+    
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">📹 Manual Recording</div>
+      </div>
+      <div class="panel-body">
+        <p style="color: #6b7280; margin-bottom: 1rem;">Start recording traffic for a specific IP address (5 minutes)</p>
+        <div style="display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
+          <input type="text" id="manualRecordIP" placeholder="Enter IP address" style="flex: 1; min-width: 200px; padding: 0.5rem; border: 1px solid #d1d5db; border-radius: 4px;" />
+          <select id="manualRecordLabel" style="padding: 0.5rem; border: 1px solid #d1d5db; border-radius: 4px;">
+            <option value="tp">TP (True Positive - Malicious)</option>
+            <option value="fp">FP (False Positive - Legitimate)</option>
+            <option value="tn">TN (True Negative - Legitimate)</option>
+            <option value="fn">FN (False Negative - Malicious)</option>
+            <option value="bot">Bot (Generic)</option>
+            <option value="human">Human</option>
+            <option value="manual" selected>Manual (Unlabeled)</option>
+          </select>
+          <button class="btn btn-success" onclick="startManualRecording()">🔴 Start Recording</button>
+        </div>
+      </div>
+    </div>
+    
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">Detection Outcomes</div>
+      </div>
+      <div class="panel-body">
+        <div class="stats-grid" id="detectionStats"></div>
+      </div>
+    </div>
+    
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">Adaptive Threshold</div>
+      </div>
+      <div class="panel-body">
+        <div class="stats-grid" id="thresholdStats"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Label Modal -->
+  <div class="modal" id="labelModal">
+    <div class="modal-content">
+      <h2 class="modal-title">Label Detection</h2>
+      <div id="labelModalContent"></div>
+      <div class="form-group">
+        <label class="form-label">Label</label>
+        <select class="form-select" id="labelSelect">
+          <option value="bot">Bot (Malicious)</option>
+          <option value="bot_legitimate">Bot (Legitimate)</option>
+          <option value="human">Human (Legitimate)</option>
+          <option value="unknown">Unknown</option>
+        </select>
+      </div>
+      <div class="form-group" id="botTypeGroup">
+        <label class="form-label">Bot Type</label>
+        <select class="form-select" id="botTypeSelect">
+          <option value="scraper">Scraper</option>
+          <option value="ddos">DDoS</option>
+          <option value="crawler">Crawler</option>
+          <option value="ai_crawler">AI Crawler (Unverified/Malicious)</option>
+          <option value="spam">Spam/Brute Force</option>
+          <option value="scanner">Vulnerability Scanner</option>
+          <option value="other">Other</option>
+        </select>
+      </div>
+      <div class="form-group" id="legitBotTypeGroup" style="display: none;">
+        <label class="form-label">Legitimate Bot Type</label>
+        <select class="form-select" id="legitBotTypeSelect">
+          <option value="search_crawler">Search Engine Crawler (Google, Bing, etc.)</option>
+          <option value="ai_crawler">AI Crawler (GPTBot, ClaudeBot, etc.)</option>
+          <option value="seo_crawler">SEO/Analytics Crawler</option>
+          <option value="monitoring">Monitoring/Uptime Check</option>
+          <option value="feed_reader">Feed Reader/RSS Bot</option>
+          <option value="archiver">Web Archiver (Archive.org, etc.)</option>
+          <option value="social_media">Social Media Bot (preview, sharing)</option>
+          <option value="security_scanner">Security Scanner (authorized)</option>
+          <option value="api_client">API Client/Integration</option>
+          <option value="other">Other Legitimate Bot</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Notes (optional)</label>
+        <input type="text" class="form-input" id="labelNotes" placeholder="Any additional observations...">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Confidence (1-5)</label>
+        <input type="number" class="form-input" id="labelConfidence" min="1" max="5" value="3">
+      </div>
+      <div class="form-actions">
+        <button class="btn" onclick="closeLabelModal()">Cancel</button>
+        <button class="btn btn-primary" onclick="submitLabel()">Save Label</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let currentDetection = null;
+    let allDetections = [];
+    let filteredDetections = [];
+    let selectedDetections = new Set();
+    let labeledData = JSON.parse(localStorage.getItem('labeledDetections') || '{}');
+
+    // Theme toggle function
+    function toggleTheme() {
+      const body = document.body;
+      const themeToggle = document.getElementById('themeToggle');
+      
+      if (body.classList.contains('light-theme')) {
+        body.classList.remove('light-theme');
+        themeToggle.textContent = '🌙';
+        localStorage.setItem('theme', 'dark');
+      } else {
+        body.classList.add('light-theme');
+        themeToggle.textContent = '☀️';
+        localStorage.setItem('theme', 'light');
+      }
+    }
+
+    // Load saved theme on page load
+    window.addEventListener('DOMContentLoaded', function() {
+      const savedTheme = localStorage.getItem('theme');
+      if (savedTheme === 'light') {
+        document.body.classList.add('light-theme');
+        const themeToggle = document.getElementById('themeToggle');
+        if (themeToggle) {
+          themeToggle.textContent = '☀️';
+        }
+      }
+    });
+
+    // Filter functions
+    function updateConfidenceLabel() {
+      const val = document.getElementById('confidenceFilter').value;
+      document.getElementById('confidenceLabel').textContent = val + '%';
+    }
+
+    function applyFilters() {
+      const categoryFilter = document.getElementById('categoryFilter').value;
+      const statusFilter = document.getElementById('statusFilter').value;
+      const minConfidence = parseInt(document.getElementById('confidenceFilter').value) / 100;
+
+      filteredDetections = allDetections.filter(det => {
+        // Category filter
+        if (categoryFilter && det.bot_category !== categoryFilter) {
+          return false;
+        }
+
+        // Status filter
+        if (statusFilter === 'blocked' && !det.would_block) {
+          return false;
+        }
+        if (statusFilter === 'allowed' && det.would_block) {
+          return false;
+        }
+
+        // Confidence filter
+        if (det.confidence != null && det.confidence < minConfidence) {
+          return false;
+        }
+
+        return true;
+      });
+
+      renderDetections(filteredDetections);
+    }
+
+    function clearFilters() {
+      document.getElementById('categoryFilter').value = '';
+      document.getElementById('statusFilter').value = '';
+      document.getElementById('confidenceFilter').value = '0';
+      updateConfidenceLabel();
+      applyFilters();
+    }
+
+    // Tab switching
+    function switchTab(tab) {
+      document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+      document.querySelectorAll('.container').forEach(cont => cont.classList.remove('active'));
+      
+      event.target.classList.add('active');
+      document.getElementById(tab + 'Tab').classList.add('active');
+      
+      if (tab === 'feedback') {
+        fetchFeedbackStats();
+        fetchAllowlist();
+        fetchPatterns();
+      }
+      if (tab === 'labeling') fetchLabels();
+      if (tab === 'statistics') fetchStatistics();
+      if (tab === 'history') fetchHistory();
+      if (tab === 'verified') fetchVerifiedBots();
+      if (tab === 'analytics') fetchAnalytics();
+    }
+
+    // Multi-select functions
+    function toggleSelectAll(checkbox) {
+      const checkboxes = document.querySelectorAll('#detectionsTable input[type="checkbox"]');
+      checkboxes.forEach(cb => {
+        cb.checked = checkbox.checked;
+        const ip = cb.dataset.ip;
+        if (checkbox.checked) {
+          selectedDetections.add(ip);
+        } else {
+          selectedDetections.delete(ip);
+        }
+      });
+      updateActionBar();
+    }
+
+    function toggleDetectionSelect(checkbox, ip) {
+      if (checkbox.checked) {
+        selectedDetections.add(ip);
+      } else {
+        selectedDetections.delete(ip);
+      }
+      updateActionBar();
+    }
+
+    function updateActionBar() {
+      const actionBar = document.getElementById('actionBar');
+      const singleActions = document.getElementById('singleActions');
+      const multiActions = document.getElementById('multiActions');
+      const selectedCount = document.getElementById('selectedCount');
+      
+      if (selectedDetections.size > 0) {
+        actionBar.style.display = 'flex';
+        singleActions.style.display = 'none';
+        multiActions.style.display = 'flex';
+        selectedCount.textContent = `${selectedDetections.size} selected`;
+      } else if (currentDetection) {
+        actionBar.style.display = 'flex';
+        singleActions.style.display = 'flex';
+        multiActions.style.display = 'none';
+      } else {
+        actionBar.style.display = 'none';
+      }
+    }
+
+    // Detections
+    async function fetchDetections() {
+      try {
+        const res = await fetch('/api/detections');
+        const data = await res.json();
+        allDetections = data || [];
+        applyFilters(); // Apply current filters
+        document.getElementById('lastUpdate').textContent = new Date().toLocaleTimeString();
+        
+        // If a detection is currently selected, refresh its details if updated
+        if (currentDetection && currentDetection.ip) {
+          const updatedDet = data.find(d => d.ip === currentDetection.ip);
+          if (updatedDet) {
+            // Check if detection has been updated (compare timestamps or signal count)
+            if (updatedDet.signal_count !== currentDetection.signal_count || 
+                updatedDet.detection_time !== currentDetection.detection_time) {
+              // Silently update the current detection and refresh details
+              currentDetection = updatedDet;
+              displayDetectionDetails(updatedDet);
+            }
+          }
+        }
+      } catch (e) {
+        console.error('Failed to fetch detections:', e);
+      }
+    }
+
+    function renderDetections(dets) {
+      const tbody = document.getElementById('detectionsTable');
+      tbody.innerHTML = '';
+      
+      if (!dets || dets.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="8" style="text-align: center; padding: 2rem; color: var(--text-muted);">No detections yet</td></tr>';
+        return;
+      }
+      
+      dets.sort((a,b) => (b.detection_time || '').localeCompare(a.detection_time||''));
+      dets.forEach(det => {
+        const tr = document.createElement('tr');
+        const category = det.bot_category || 'unknown';
+        const time = det.detection_time ? new Date(det.detection_time) : null;
+        const org = det.org || 'Unknown';
+        const orgShort = org.length > 30 ? org.substring(0, 27) + '...' : org;
+        const isSelected = selectedDetections.has(det.ip);
+        
+        // Add row styling based on blocking status
+        if (det.would_block) {
+          tr.className = 'blocking-detection';
+        } else {
+          tr.className = 'suspicious-detection';
+        }
+        
+        const statusBadge = det.would_block 
+          ? '<span class="badge" style="background: #ef4444; color: white; font-size: 0.75rem; margin-left: 0.5rem;">BLOCKING</span>'
+          : '<span class="badge" style="background: #f59e0b; color: white; font-size: 0.75rem; margin-left: 0.5rem;">SUSPICIOUS</span>';
+        
+        tr.innerHTML = `
+          <td><input type="checkbox" data-ip="${det.ip}" ${isSelected ? 'checked' : ''} onchange="toggleDetectionSelect(this, '${det.ip}')" onclick="event.stopPropagation()"></td>
+          <td><strong>${det.ip || ''}</strong></td>
+          <td>${det.asn || ''}</td>
+          <td title="${org}">${orgShort}</td>
+          <td><span class="badge badge-${category}">${category}</span>${statusBadge}</td>
+          <td>${det.confidence != null ? (det.confidence * 100).toFixed(0) + '%' : ''}</td>
+          <td>${det.signal_count || 0}</td>
+          <td>${time ? time.toLocaleTimeString() : ''}</td>
+        `;
+        tr.onclick = (e) => {
+          if (e.target.type !== 'checkbox') {
+            selectDetection(det, tr);
+          }
+        };
+        if (currentDetection && det.ip === currentDetection.ip) {
+          tr.classList.add('selected');
+        }
+        tbody.appendChild(tr);
+      });
+    }
+
+    async function selectDetection(det, row) {
+      currentDetection = det;
+      selectedDetections.clear();
+      document.getElementById('selectAll').checked = false;
+      document.querySelectorAll('#detectionsTable tr').forEach(r => r.classList.remove('selected'));
+      document.querySelectorAll('#detectionsTable input[type="checkbox"]').forEach(cb => cb.checked = false);
+      row.classList.add('selected');
+      
+      try {
+        const res = await fetch(`/api/ip/${encodeURIComponent(det.ip)}`);
+        const data = await res.json();
+        renderDetails(data);
+        updateActionBar();
+      } catch (e) {
+        console.error('Failed to fetch details:', e);
+      }
+    }
+
+    function renderDetails(data) {
+      const panel = document.getElementById('detailsPanel');
+      const det = data.detection;
+      
+      if (!det) {
+        panel.innerHTML = '<div class="empty-state"><div>No detection data</div></div>';
+        return;
+      }
+      
+      // Helper to escape HTML
+      const escapeHtml = (text) => {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+      };
+      
+      let html = `
+        <div class="detail-section">
+          <div class="detail-title">Source IP</div>
+          <div class="detail-value">${det.ip}</div>
+          <div style="color: var(--text-muted);">${det.asn} - ${det.org}</div>
+        </div>
+
+        <div class="detail-section">
+          <div class="detail-title">Destination</div>
+          <div class="detail-value" style="font-family: monospace;">
+            ${det.dest_ip ? escapeHtml(det.dest_ip) : 'N/A'}${det.dst_port ? ':' + det.dst_port : ''}
+          </div>
+        </div>
+      `;
+      
+      // Display HTTP Request Info if available
+      if (det.hostname || det.method || det.path) {
+        html += `
+          <div class="detail-section">
+            <div class="detail-title">HTTP Request</div>
+            <div style="font-family: monospace; font-size: 0.875rem; background: #f8fafc; padding: 0.75rem; border-radius: 0.375rem; border: 1px solid #e2e8f0;">
+              ${det.method ? '<strong>' + escapeHtml(det.method) + '</strong> ' : ''}${det.hostname ? escapeHtml(det.hostname) : ''}${det.path ? escapeHtml(det.path) : ''}
+            </div>
+          </div>
+        `;
+      }
+      
+      // Display User-Agent if available
+      if (det.user_agent && det.user_agent.trim() !== '') {
+        html += `
+          <div class="detail-section">
+            <div class="detail-title">User-Agent</div>
+            <div style="font-family: monospace; font-size: 0.875rem; word-break: break-all; background: #f8fafc; padding: 0.75rem; border-radius: 0.375rem; border: 1px solid #e2e8f0;">
+              ${escapeHtml(det.user_agent)}
+            </div>
+          </div>
+        `;
+      }
+      
+      html += `
+        <div class="metric-grid">
+          <div class="metric-card">
+            <div class="metric-label">Pattern</div>
+            <div class="metric-value">${det.rule_confidence ? (det.rule_confidence * 100).toFixed(1) + '%' : 'N/A'}</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-label">ML Model</div>
+            <div class="metric-value">${det.ml_confidence ? (det.ml_confidence * 100).toFixed(1) + '%' : 'N/A'}</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-label">ML Tier</div>
+            <div class="metric-value" style="font-size: 0.75rem;">
+              ${det.ml_model_tier === 'pattern' ? '<span style="color: #10b981; font-weight: 600;">PATTERN</span>' : 
+                det.ml_model_tier === 'onnx' ? '<span style="color: #3b82f6; font-weight: 600;">ONNX</span>' : 
+                det.ml_model_tier === 'statistical' ? '<span style="color: #f59e0b; font-weight: 600;">STATISTICAL</span>' : 
+                '<span style="color: #6b7280;">N/A</span>'}
+            </div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-label">Final</div>
+            <div class="metric-value" style="font-size: 1.5rem; font-weight: 700;">${(det.confidence * 100).toFixed(1)}%</div>
+          </div>
+        </div>
+        
+        <div class="metric-grid" style="margin-top: 0.5rem;">
+          <div class="metric-card">
+            <div class="metric-label">Score</div>
+            <div class="metric-value">${det.score ? det.score.toFixed(0) : '0'}</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-label">Signals</div>
+            <div class="metric-value">${det.signal_count}</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-label">Status</div>
+            <div class="metric-value" style="font-size: 0.875rem;">
+              ${det.would_block ? '<span style="color: #ef4444; font-weight: 600;">BLOCKING</span>' : '<span style="color: #f59e0b; font-weight: 600;">MONITORING</span>'}
+            </div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-label">Conf Threshold</div>
+            <div class="metric-value" style="font-size: 0.875rem;">70%</div>
+          </div>
+        </div>
+        
+        <div class="detail-section">
+          <div class="detail-title">Category</div>
+          <span class="badge badge-${det.bot_category}">${det.bot_category}</span>
+        </div>
+        
+        <div class="detail-section">
+          <div class="detail-title">${det.would_block ? 'Block Reason' : 'Detection Reason (Not Blocking)'}</div>
+          <div>${det.block_reason || 'N/A'}</div>
+        </div>
+        
+        <div class="detail-section">
+          <div class="detail-title">Signal Breakdown</div>
+      `;
+      
+      for (const [type, count] of Object.entries(det.signal_breakdown || {})) {
+        html += `
+          <div class="signal-item">
+            <div class="signal-header">
+              <span class="signal-type">${type.replace(/_/g, ' ')}</span>
+              <span class="signal-count">${count}</span>
+            </div>
+          </div>
+        `;
+      }
+      
+      html += `</div>`;
+      
+      // Display individual signals with metadata
+      if (det.signals && det.signals.length > 0) {
+        html += `
+          <div class="detail-section">
+            <div class="detail-title">Detailed Signals (Click to expand)</div>
+        `;
+        
+        det.signals.forEach((signal, idx) => {
+          const signalId = `signal-${idx}`;
+          html += `
+            <div class="signal-item" id="${signalId}" onclick="toggleSignalDetail(event, '${signalId}')">
+              <div class="signal-header">
+                <span class="signal-type">${signal.type.replace(/_/g, ' ')}</span>
+                <span style="font-size: 0.875rem; color: var(--text-muted);">▼</span>
+              </div>
+              <div class="signal-metadata" id="${signalId}-meta" style="display: none;">
+          `;
+          
+          // Display metadata fields
+          if (signal.metadata && Object.keys(signal.metadata).length > 0) {
+            for (const [key, value] of Object.entries(signal.metadata)) {
+              if (value && value !== '') {
+                html += `
+                  <div class="metadata-row">
+                    <div class="metadata-label">${key.replace(/_/g, ' ')}:</div>
+                    <div class="metadata-value">${formatMetadataValue(value)}</div>
+                  </div>
+                `;
+              }
+            }
+          } else {
+            html += `<div style="color: var(--text-muted); font-style: italic;">No metadata available</div>`;
+          }
+          
+          html += `
+              </div>
+            </div>
+          `;
+        });
+        
+        html += `</div>`;
+      }
+      
+      if (det.ja4) {
+        html += `
+          <div class="detail-section">
+            <div class="detail-title">Fingerprints</div>
+            <div style="font-family: monospace; font-size: 0.875rem;">
+              <div><strong>JA4:</strong> ${det.ja4}</div>
+              ${det.ja4h ? `<div><strong>JA4H:</strong> ${det.ja4h}</div>` : ''}
+            </div>
+          </div>
+        `;
+      }
+      
+      panel.innerHTML = html;
+    }
+    
+    function formatMetadataValue(value) {
+      if (typeof value === 'object' && value !== null) {
+        return JSON.stringify(value, null, 2);
+      }
+      return String(value);
+    }
+    
+    function toggleSignalDetail(event, signalId) {
+      event.stopPropagation();
+      const signal = document.getElementById(signalId);
+      const meta = document.getElementById(signalId + '-meta');
+      
+      if (meta.style.display === 'none') {
+        meta.style.display = 'block';
+        signal.classList.add('expanded');
+      } else {
+        meta.style.display = 'none';
+        signal.classList.remove('expanded');
+      }
+    }
+
+    // Feedback functions
+    async function reportTruePositive() {
+      if (!currentDetection) return;
+      
+      try {
+        const res = await fetch('/api/feedback/report-tp', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ip: currentDetection.ip })
+        });
+        const data = await res.json();
+        
+        // Start recording with 'tp' label
+        await fetch('/api/sessions/record', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ip: currentDetection.ip, label: 'tp' })
+        });
+        
+        alert('✓ True positive recorded\n🔴 Started 5-minute recording with TP label');
+      } catch (e) {
+        alert('Failed to report: ' + e.message);
+      }
+    }
+
+    async function reportFalsePositive() {
+      if (!currentDetection) return;
+      
+      const reason = prompt('Reason for false positive (optional):');
+      
+      try {
+        const res = await fetch('/api/feedback/report-fp', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ 
+            ip: currentDetection.ip, 
+            reason,
+            labels: ['legitimate', 'false_positive']
+          })
+        });
+        const data = await res.json();
+        
+        // Start recording with 'fp' label
+        await fetch('/api/sessions/record', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ip: currentDetection.ip, label: 'fp' })
+        });
+        
+        alert('✓ False positive recorded - Labeled as legitimate for ML training\n✓ IP added to allowlist for 24h\n🔴 Started 5-minute recording with FP label');
+      } catch (e) {
+        alert('Failed to report: ' + e.message);
+      }
+    }
+
+    // Batch action functions
+    async function batchReportTruePositive() {
+      if (selectedDetections.size === 0) return;
+      
+      if (!confirm(`Mark ${selectedDetections.size} detections as true positives?`)) return;
+      
+      let success = 0;
+      let failed = 0;
+      
+      for (const ip of selectedDetections) {
+        try {
+          const detection = allDetections.find(d => d.ip === ip);
+          const labels = ['malicious', 'bot'];
+          if (detection && detection.bot_category) {
+            labels.push(detection.bot_category);
+          }
+          
+          await fetch('/api/feedback/report-tp', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ 
+              ip,
+              labels: labels,
+              reason: 'Batch true positive confirmation'
+            })
+          });
+          success++;
+        } catch (e) {
+          console.error(`Failed to report ${ip}:`, e);
+          failed++;
+        }
+      }
+      
+      alert(`✓ Batch complete: ${success} succeeded, ${failed} failed`);
+      selectedDetections.clear();
+      document.getElementById('selectAll').checked = false;
+      updateActionBar();
+      fetchDetections();
+    }
+
+    async function batchReportFalsePositive() {
+      if (selectedDetections.size === 0) return;
+      
+      const reason = prompt('Reason for false positives (optional):');
+      if (!confirm(`Mark ${selectedDetections.size} detections as false positives?`)) return;
+      
+      let success = 0;
+      let failed = 0;
+      
+      for (const ip of selectedDetections) {
+        try {
+          await fetch('/api/feedback/report-fp', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ 
+              ip, 
+              reason: reason || 'Batch false positive',
+              labels: ['legitimate', 'false_positive']
+            })
+          });
+          success++;
+        } catch (e) {
+          console.error(`Failed to report ${ip}:`, e);
+          failed++;
+        }
+      }
+      
+      alert(`✓ Batch complete: ${success} succeeded, ${failed} failed\n✓ All IPs added to allowlist for 24h`);
+      selectedDetections.clear();
+      document.getElementById('selectAll').checked = false;
+      updateActionBar();
+      fetchDetections();
+    }
+
+    async function fetchFeedbackStats() {
+      try {
+        const res = await fetch('/api/feedback/stats');
+        const stats = await res.json();
+        renderFeedbackStats(stats);
+      } catch (e) {
+        console.error('Failed to fetch feedback stats:', e);
+      }
+      fetchAllowlist();
+    }
+
+    function renderFeedbackStats(stats) {
+      const container = document.getElementById('feedbackStats');
+      
+      if (!stats.enabled) {
+        container.innerHTML = '<div class="stat-card"><div class="stat-label">Feedback loop is disabled</div></div>';
+        return;
+      }
+      
+      const fpRate = ((stats.false_positive_rate || 0) * 100).toFixed(2);
+      const threshold = ((stats.current_threshold || 0) * 100).toFixed(1);
+      const targetRate = ((stats.target_fp_rate || 0.01) * 100).toFixed(1);
+      
+      container.innerHTML = `
+        <div class="stat-card">
+          <div class="stat-label">Current Threshold</div>
+          <div class="stat-value">${threshold}%</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">False Positive Rate</div>
+          <div class="stat-value">${fpRate}%</div>
+          <div class="stat-label">Target: ${targetRate}%</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">True Positives</div>
+          <div class="stat-value">${stats.total_true_positive || 0}</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">False Positives</div>
+          <div class="stat-value">${stats.total_false_positive || 0}</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Adjustments</div>
+          <div class="stat-value">${stats.adjustment_count || 0}</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Allowlist Size</div>
+          <div class="stat-value">${stats.allowlist_size || 0}</div>
+        </div>
+      `;
+    }
+
+    async function fetchAllowlist() {
+      try {
+        const res = await fetch('/api/feedback/allowlist');
+        const allowlist = await res.json();
+        renderAllowlist(allowlist);
+      } catch (e) {
+        console.error('Failed to fetch allowlist:', e);
+      }
+    }
+
+    function renderAllowlist(allowlist) {
+      const panel = document.getElementById('allowlistPanel');
+      
+      if (!allowlist || allowlist.length === 0) {
+        panel.innerHTML = '<div class="empty-state"><div>No IPs in allowlist</div></div>';
+        document.getElementById('deleteAllowlistBtn').style.display = 'none';
+        return;
+      }
+      
+      let html = '<div style="margin-bottom: 0.5rem;"><input type="checkbox" id="selectAllAllowlist" onchange="toggleAllAllowlist(this.checked)"> <label for="selectAllAllowlist" style="cursor: pointer;">Select All</label></div>';
+      allowlist.forEach(entry => {
+        const expires = new Date(entry.expires_at);
+        const now = new Date();
+        const remaining = Math.max(0, expires - now);
+        const hours = Math.floor(remaining / 3600000);
+        const minutes = Math.floor((remaining % 3600000) / 60000);
+        
+        // Check for invalid dates
+        const isValidDate = expires && !isNaN(expires.getTime());
+        const expiresStr = isValidDate ? expires.toLocaleString() : 'Invalid date';
+        const timeStr = isValidDate ? `${hours}h ${minutes}m` : 'N/A';
+        
+        html += `
+          <div class="allowlist-item">
+            <div style="display: flex; align-items: center; gap: 0.5rem;">
+              <input type="checkbox" class="allowlist-checkbox" value="${entry.ip}" onchange="updateDeleteAllowlistBtn()">
+              <div>
+                <strong>${entry.ip}</strong>
+                <div class="expires-in">Expires in ${timeStr}</div>
+              </div>
+            </div>
+            <div style="display: flex; align-items: center; gap: 1rem;">
+              <div>${expiresStr}</div>
+              <button class="btn btn-danger btn-sm" onclick="deleteFromAllowlist('${entry.ip}')" title="Remove from allowlist">🗑️ Delete</button>
+            </div>
+          </div>
+        `;
+      });
+      
+      panel.innerHTML = html;
+      document.getElementById('deleteAllowlistBtn').style.display = 'none';
+    }
+
+    async function deleteFromAllowlist(ip) {
+      if (!confirm(`Remove ${ip} from allowlist?`)) return;
+      
+      try {
+        await fetch('/api/feedback/allowlist', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ip })
+        });
+        alert('✓ Removed from allowlist');
+        fetchAllowlist();
+      } catch (e) {
+        alert('Failed to remove: ' + e.message);
+      }
+    }
+
+    function toggleAllAllowlist(checked) {
+      document.querySelectorAll('.allowlist-checkbox').forEach(cb => cb.checked = checked);
+      updateDeleteAllowlistBtn();
+    }
+
+    function updateDeleteAllowlistBtn() {
+      const selected = document.querySelectorAll('.allowlist-checkbox:checked').length;
+      const btn = document.getElementById('deleteAllowlistBtn');
+      if (selected > 0) {
+        btn.style.display = 'inline-block';
+        btn.textContent = `☒ Delete Selected (${selected})`;
+      } else {
+        btn.style.display = 'none';
+      }
+    }
+
+    async function deleteSelectedAllowlist() {
+      const checkboxes = document.querySelectorAll('.allowlist-checkbox:checked');
+      const ips = Array.from(checkboxes).map(cb => cb.value);
+      
+      if (ips.length === 0) {
+        alert('No IPs selected');
+        return;
+      }
+      
+      if (!confirm(`Remove ${ips.length} selected IPs from allowlist?`)) return;
+      
+      try {
+        await fetch('/api/feedback/allowlist/bulk-delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ips })
+        });
+        
+        alert(`✓ Removed ${ips.length} IPs from allowlist`);
+        fetchAllowlist();
+      } catch (e) {
+        alert('Failed to delete: ' + e.message);
+      }
+    }
+
+    async function clearAllowlist() {
+      if (!confirm('⚠️ Clear ALL entries from allowlist? This cannot be undone.')) return;
+      
+      try {
+        const res = await fetch('/api/feedback/allowlist');
+        const allowlist = await res.json();
+        const ips = allowlist.map(e => e.ip);
+        
+        if (ips.length === 0) {
+          alert('Allowlist is already empty');
+          return;
+        }
+        
+        await fetch('/api/feedback/allowlist/bulk-delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ips })
+        });
+        
+        alert(`✓ Cleared ${ips.length} entries from allowlist`);
+        fetchAllowlist();
+      } catch (e) {
+        alert('Failed to clear allowlist: ' + e.message);
+      }
+    }
+
+    async function clearLearningWindow() {
+      if (!confirm('⚠️ Clear ALL learning window labels? This cannot be undone.')) return;
+      
+      try {
+        const res = await fetch('/api/feedback/learning/clear', {
+          method: 'POST'
+        });
+        const data = await res.json();
+        alert(`✓ Cleared ${data.count} learning labels`);
+        fetchStatistics();
+      } catch (e) {
+        alert('Failed to clear learning window: ' + e.message);
+      }
+    }
+
+    async function recordAllLearningIPs() {
+      try {
+        const res = await fetch('/api/feedback/learning/ips');
+        const ips = await res.json();
+        
+        if (!ips || ips.length === 0) {
+          alert('No IPs in learning window');
+          return;
+        }
+        
+        if (!confirm(`Start recording for ${ips.length} IPs in learning window?`)) return;
+        
+        let success = 0;
+        let failed = 0;
+        
+        for (const ip of ips) {
+          try {
+            await fetch('/api/sessions/record', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ ip })
+            });
+            success++;
+          } catch (e) {
+            console.error(`Failed to start recording for ${ip}:`, e);
+            failed++;
+          }
+        }
+        
+        alert(`✓ Started recording for ${success} IPs${failed > 0 ? `\n⚠️ Failed: ${failed}` : ''}`);
+        // Refresh active recordings
+        setTimeout(refreshActiveRecordings, 1000);
+      } catch (e) {
+        alert('Failed to get learning IPs: ' + e.message);
+      }
+    }
+
+    async function recordAllLabeledIPs() {
+      try {
+        // Fetch full labeled dataset to get IP-to-label mappings
+        const res = await fetch('/api/labels/export');
+        const samples = await res.json();
+        
+        if (!samples || samples.length === 0) {
+          alert('No labeled samples in dataset');
+          return;
+        }
+        
+        // Build IP to label mapping (last seen label for each IP wins)
+        const ipLabels = new Map();
+        for (const sample of samples) {
+          if (sample.ip && sample.label) {
+            // Use the stored label from the labeled dataset
+            ipLabels.set(sample.ip, sample.label);
+          }
+        }
+        
+        if (ipLabels.size === 0) {
+          alert('No IPs with labels found in dataset');
+          return;
+        }
+        
+        if (!confirm(`Start recording for ${ipLabels.size} labeled IPs?\n\nThis will record traffic with their original labels for ML training.`)) return;
+        
+        let success = 0;
+        let failed = 0;
+        const labelCounts = {};
+        
+        for (const [ip, label] of ipLabels) {
+          try {
+            await fetch('/api/sessions/record', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ ip, label })
+            });
+            success++;
+            labelCounts[label] = (labelCounts[label] || 0) + 1;
+          } catch (e) {
+            console.error(`Failed to start recording for ${ip}:`, e);
+            failed++;
+          }
+        }
+        
+        // Build label summary
+        const labelSummary = Object.entries(labelCounts)
+          .map(([label, count]) => `${label}: ${count}`)
+          .join(', ');
+        
+        alert(`✓ Started recording for ${success} IPs${failed > 0 ? `\n⚠️ Failed: ${failed}` : ''}\n\n📊 Labels: ${labelSummary}`);
+        // Refresh active recordings
+        setTimeout(refreshActiveRecordings, 1000);
+      } catch (e) {
+        alert('Failed to get labeled dataset: ' + e.message);
+      }
+    }
+
+    async function startManualRecording() {
+      const ipInput = document.getElementById('manualRecordIP');
+      const labelSelect = document.getElementById('manualRecordLabel');
+      const ip = ipInput.value.trim();
+      const label = labelSelect.value;
+      
+      if (!ip) {
+        alert('Please enter an IP address');
+        return;
+      }
+      
+      try {
+        const res = await fetch('/api/sessions/record', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ip, label })
+        });
+        const data = await res.json();
+        alert(`✓ Started recording for ${ip} with label: ${label}\\n🔴 Recording for 5 minutes`);
+        ipInput.value = '';
+        // Refresh active recordings to show the new one
+        setTimeout(refreshActiveRecordings, 1000);
+      } catch (e) {
+        alert('Failed to start recording: ' + e.message);
+      }
+    }
+
+    async function fetchPatterns() {
+      try {
+        const res = await fetch('/api/patterns');
+        const patterns = await res.json();
+        renderPatterns(patterns);
+      } catch (e) {
+        console.error('Failed to fetch patterns:', e);
+      }
+    }
+
+    function renderPatterns(patterns) {
+      const panel = document.getElementById('patternsPanel');
+      
+      if (!patterns || patterns.length === 0) {
+        panel.innerHTML = '<div style="padding: 1rem;">No learned patterns yet. Label detections to build pattern database.</div>';
+        return;
+      }
+
+      // Sort by confidence descending
+      patterns.sort((a, b) => b.confidence - a.confidence);
+
+      let html = '<div style="max-height: 500px; overflow-y: auto;">';
+      patterns.forEach(pattern => {
+        const labelClass = pattern.label === 'legitimate' ? 'badge-legitimate' : 'badge-malicious';
+        const sourceIcon = pattern.labeled_by_user ? '👤 User' : '🤖 Auto';
+        
+        // Build pattern description
+        let desc = [];
+        if (pattern.user_agent) desc.push(`UA: ${pattern.user_agent.substring(0, 60)}${pattern.user_agent.length > 60 ? '...' : ''}`);
+        if (pattern.asn) desc.push(`ASN: ${pattern.asn}`);
+        if (pattern.ja4h) desc.push(`JA4H: ${pattern.ja4h.substring(0, 12)}...`);
+        
+        const firstSeen = new Date(pattern.first_seen).toLocaleString();
+        const lastSeen = new Date(pattern.last_seen).toLocaleString();
+        
+        html += `
+          <div class="allowlist-item" style="border-left: 4px solid ${pattern.label === 'legitimate' ? 'var(--success)' : 'var(--danger)'};">
+            <div>
+              <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem;">
+                <span class="badge ${labelClass}">${pattern.label}</span>
+                <span style="font-size: 0.75rem; color: var(--secondary);">${sourceIcon}</span>
+                <span style="font-size: 0.75rem; color: var(--secondary);">Confidence: ${(pattern.confidence * 100).toFixed(0)}%</span>
+                <span style="font-size: 0.75rem; color: var(--secondary);">Seen ${pattern.observed_count}× </span>
+              </div>
+              <div style="font-family: monospace; font-size: 0.85rem; margin-bottom: 0.5rem;">${desc.join(' | ')}</div>
+              ${pattern.notes ? `<div style="font-size: 0.75rem; color: var(--secondary); margin-bottom: 0.5rem;">📝 ${pattern.notes}</div>` : ''}
+              <div style="font-size: 0.75rem; color: var(--secondary);">
+                First: ${firstSeen} | Last: ${lastSeen}
+                ${pattern.true_positive_count > 0 ? ` | ✓ ${pattern.true_positive_count} correct` : ''}
+                ${pattern.false_positive_count > 0 ? ` | ✗ ${pattern.false_positive_count} incorrect` : ''}
+              </div>
+            </div>
+            <div>
+              <button class="btn btn-danger btn-sm" onclick="deletePattern('${pattern.key}')" title="Delete pattern">🗑️ Delete</button>
+            </div>
+          </div>
+        `;
+      });
+      html += '</div>';
+      
+      panel.innerHTML = html;
+    }
+
+    async function deletePattern(key) {
+      if (!confirm(`Delete this learned pattern?\n\nKey: ${key}`)) return;
+      
+      try {
+        await fetch('/api/patterns/delete', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ key })
+        });
+        alert('✓ Pattern deleted');
+        fetchPatterns();
+      } catch (e) {
+        alert('Failed to delete pattern: ' + e.message);
+      }
+    }
+
+    // Labeling functions
+    function openLabelModal() {
+      if (!currentDetection) return;
+      
+      document.getElementById('labelModalContent').innerHTML = `
+        <div style="padding: 1rem; background: var(--bg); border-radius: 0.375rem; margin-bottom: 1rem;">
+          <div><strong>IP:</strong> ${currentDetection.ip}</div>
+          <div><strong>ASN:</strong> ${currentDetection.asn} - ${currentDetection.org}</div>
+          <div><strong>Signals:</strong> ${currentDetection.signal_count}</div>
+          <div><strong>Auto Category:</strong> ${currentDetection.bot_category}</div>
+        </div>
+      `;
+      
+      document.getElementById('labelModal').classList.add('active');
+      updateBotTypeVisibility();
+    }
+
+    function closeLabelModal() {
+      document.getElementById('labelModal').classList.remove('active');
+    }
+
+    document.getElementById('labelSelect').addEventListener('change', updateBotTypeVisibility);
+
+    function updateBotTypeVisibility() {
+      const label = document.getElementById('labelSelect').value;
+      document.getElementById('botTypeGroup').style.display = label === 'bot' ? 'block' : 'none';
+      document.getElementById('legitBotTypeGroup').style.display = label === 'bot_legitimate' ? 'block' : 'none';
+    }
+
+    async function submitLabel() {
+      if (!currentDetection) return;
+      
+      const label = document.getElementById('labelSelect').value;
+      const botType = document.getElementById('botTypeSelect').value;
+      const legitBotType = document.getElementById('legitBotTypeSelect').value;
+      const notes = document.getElementById('labelNotes').value;
+      const confidence = parseInt(document.getElementById('labelConfidence').value);
+      
+      const labelData = {
+        ip: currentDetection.ip,
+        asn: currentDetection.asn,
+        org: currentDetection.org,
+        ja4: currentDetection.ja4,
+        ja4h: currentDetection.ja4h,
+        timestamp: currentDetection.detection_time,
+        signal_count: currentDetection.signal_count,
+        confidence: currentDetection.confidence,
+        ml_confidence: currentDetection.ml_confidence,
+        auto_category: currentDetection.bot_category,
+        signal_breakdown: currentDetection.signal_breakdown,
+        source_breakdown: currentDetection.source_breakdown,
+        label: label,
+        bot_type: label === 'bot' ? botType : (label === 'bot_legitimate' ? legitBotType : null),
+        notes: notes,
+        label_confidence: confidence
+      };
+      
+      try {
+        const res = await fetch('/api/labels/submit', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(labelData)
+        });
+        
+        if (!res.ok) {
+          const error = await res.text();
+          throw new Error(error);
+        }
+        
+        const result = await res.json();
+        
+        // Start recording with the selected label
+        const recordingLabel = label === 'bot' ? 'bot' : (label === 'bot_legitimate' ? 'human' : label);
+        await fetch('/api/sessions/record', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ip: currentDetection.ip, label: recordingLabel })
+        });
+        
+        closeLabelModal();
+        
+        let message = '✓ Label saved and ML model trained!';
+        if (result.added_to_allowlist) {
+          message += '\\n✓ Added to allowlist (legitimate traffic)';
+        }
+        message += '\\n✓ 10-minute learning window started';
+        message += '\\n🔴 Started 5-minute recording with label: ' + recordingLabel;
+        
+        alert(message);
+        fetchLabels();
+      } catch (e) {
+        alert('Failed to submit label: ' + e.message);
+      }
+    }
+
+    function renderLabelingTable() {
+      const tbody = document.getElementById('labelingTable');
+      tbody.innerHTML = '';
+      
+      allDetections.forEach(det => {
+        const key = det.ip + '_' + det.detection_time;
+        const labeled = labeledData[key];
+        const tr = document.createElement('tr');
+        
+        tr.innerHTML = `
+          <td><strong>${det.ip}</strong></td>
+          <td><span class="badge badge-${det.bot_category}">${det.bot_category}</span></td>
+          <td>${(det.confidence * 100).toFixed(0)}%</td>
+          <td>${det.signal_count}</td>
+          <td>${labeled ? `<span class="badge" style="background: #10b981; color: white;">Labeled: ${labeled.label}</span>` : '<span class="badge badge-unknown">Unlabeled</span>'}</td>
+          <td><button class="btn btn-primary btn-sm" onclick="labelDetection('${det.ip}', '${det.detection_time}')">🏷️ Label</button></td>
+        `;
+        
+        tbody.appendChild(tr);
+      });
+    }
+
+    function labelDetection(ip, time) {
+      currentDetection = allDetections.find(d => d.ip === ip && d.detection_time === time);
+      if (currentDetection) {
+        openLabelModal();
+      }
+    }
+
+    function exportLabels() {
+      if (labeledSamples.length === 0) {
+        alert('No labels to export');
+        return;
+      }
+      
+      const jsonl = labeledSamples.map(l => JSON.stringify(l)).join('\n');
+      const blob = new Blob([jsonl], { type: 'application/x-ndjson' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'labeled_detections_' + new Date().toISOString().split('T')[0] + '.jsonl';
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+
+    // Labels management functions from server
+    let labeledSamples = [];
+
+    async function fetchLabels() {
+      try {
+        const res = await fetch('/api/labels/export');
+        labeledSamples = await res.json();
+        renderLabels(labeledSamples);
+      } catch (e) {
+        console.error('Failed to fetch labels:', e);
+      }
+    }
+
+    function renderLabels(samples) {
+      const panel = document.getElementById('labelsPanel');
+      
+      if (!samples || samples.length === 0) {
+        panel.innerHTML = '<div class="empty-state"><div>No labeled data yet</div></div>';
+        return;
+      }
+
+      let html = '<table><thead><tr><th>IP</th><th>Label</th><th>Labels</th><th>Confidence</th><th>Signals</th><th>Timestamp</th><th>Actions</th></tr></thead><tbody>';
+      
+      samples.forEach(sample => {
+        const labelBadge = sample.label === 'bot' ? 'badge-malicious' : 'badge-legitimate';
+        const labels = Array.isArray(sample.labels) ? sample.labels.join(', ') : '';
+        const timestamp = new Date(sample.timestamp).toLocaleString();
+        
+        html += `
+          <tr>
+            <td><strong>${sample.ip || 'N/A'}</strong><br><small>${sample.asn || 'N/A'}</small></td>
+            <td><span class="badge ${labelBadge}">${sample.label || 'unknown'}</span></td>
+            <td><small>${labels}</small></td>
+            <td>${sample.confidence ? (sample.confidence * 100).toFixed(0) + '%' : 'N/A'}</td>
+            <td>${sample.signal_count || 0}</td>
+            <td><small>${timestamp}</small></td>
+            <td><button class="btn btn-danger btn-sm" onclick="deleteLabel('${sample.ip}', '${sample.timestamp}')" title="Delete label">🗑️</button></td>
+          </tr>
+        `;
+      });
+      
+      html += '</tbody></table>';
+      panel.innerHTML = html;
+    }
+
+    async function deleteLabel(ip, timestamp) {
+      if (!confirm(`Delete label for ${ip}?`)) return;
+      
+      try {
+        await fetch('/api/labels/delete', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ip, timestamp })
+        });
+        alert('✓ Label deleted');
+        fetchLabels();
+      } catch (e) {
+        alert('Failed to delete: ' + e.message);
+      }
+    }
+
+    function downloadLabelsCSV() {
+      if (labeledSamples.length === 0) {
+        alert('No labels to export');
+        return;
+      }
+      
+      // Create CSV header
+      let csv = 'IP,ASN,Org,Label,Labels,Confidence,ML Confidence,Signals,Bot Category,Timestamp,Reason\n';
+      
+      // Add rows
+      labeledSamples.forEach(sample => {
+        const labels = Array.isArray(sample.labels) ? sample.labels.join(';') : '';
+        const reason = (sample.reason || '').replace(/,/g, ';').replace(/\n/g, ' ');
+        csv += `${sample.ip || ''},${sample.asn || ''},${sample.org || ''},${sample.label || ''},${labels},${sample.confidence || ''},${sample.ml_confidence || ''},${sample.signal_count || 0},${sample.bot_category || ''},${sample.timestamp || ''},${reason}\n`;
+      });
+      
+      const blob = new Blob([csv], { type: 'text/csv' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'labeled_detections_' + new Date().toISOString().split('T')[0] + '.csv';
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+
+    // Statistics
+    async function fetchStatistics() {
+      try {
+        const res = await fetch('/api/feedback/statistics');
+        const stats = await res.json();
+        renderStatistics(stats);
+      } catch (e) {
+        console.error('Failed to fetch statistics:', e);
+      }
+    }
+
+    function renderStatistics(stats) {
+      // ML Tier Distribution
+      const mlTierHTML = `
+        <div class="stat-card">
+          <div class="stat-label">Pattern Matches</div>
+          <div class="stat-value" style="color: #10b981;">${stats.ml_tier_pattern || 0}</div>
+          <div class="stat-subtext">${(stats.ml_tier_pattern_pct || 0).toFixed(1)}% - Known traffic (instant)</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">ONNX Inferences</div>
+          <div class="stat-value" style="color: #3b82f6;">${stats.ml_tier_onnx || 0}</div>
+          <div class="stat-subtext">${(stats.ml_tier_onnx_pct || 0).toFixed(1)}% - ML model (~10ms)</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Statistical Fallback</div>
+          <div class="stat-value" style="color: #f59e0b;">${stats.ml_tier_statistical || 0}</div>
+          <div class="stat-subtext">${(stats.ml_tier_statistical_pct || 0).toFixed(1)}% - Threshold-based</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Efficiency</div>
+          <div class="stat-value" style="color: ${(stats.ml_tier_pattern_pct || 0) > 50 ? '#10b981' : '#f59e0b'};">
+            ${((stats.ml_tier_pattern_pct || 0) + (stats.ml_tier_onnx_pct || 0)).toFixed(1)}%
+          </div>
+          <div class="stat-subtext">Pattern + ML coverage (last 1000)</div>
+        </div>
+      `;
+      document.getElementById('mlTierStats').innerHTML = mlTierHTML;
+      
+      // Learning window stats
+      const learningHTML = `
+        <div class="stat-card">
+          <div class="stat-label">Learning Window Size</div>
+          <div class="stat-value">${stats.learning_window_size || 0}</div>
+          <div class="stat-subtext">IPs being tracked for auto-training</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Learning: Legitimate</div>
+          <div class="stat-value" style="color: #10b981;">${stats.learning_legitimate || 0}</div>
+          <div class="stat-subtext">False positives (10min window)</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Learning: Malicious</div>
+          <div class="stat-value" style="color: #ef4444;">${stats.learning_malicious || 0}</div>
+          <div class="stat-subtext">Confirmed bad actors (10min window)</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Auto-Train Count</div>
+          <div class="stat-value" style="color: #3b82f6;">${stats.auto_train_count || 0}</div>
+          <div class="stat-subtext">Total training operations from learning</div>
+        </div>
+      `;
+      document.getElementById('learningStats').innerHTML = learningHTML;
+
+      // Detection outcomes
+      const totalDetections = stats.total_detections || 0;
+      const fpRate = stats.false_positive_rate || 0;
+      const detectionHTML = `
+        <div class="stat-card">
+          <div class="stat-label">Total Detections</div>
+          <div class="stat-value">${totalDetections}</div>
+          <div class="stat-subtext">All-time detection count</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Total Blocks</div>
+          <div class="stat-value">${stats.total_blocks || 0}</div>
+          <div class="stat-subtext">Actions that triggered blocks</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">True Positives</div>
+          <div class="stat-value" style="color: #10b981;">${stats.total_true_positive || 0}</div>
+          <div class="stat-subtext">Confirmed bad actors</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">False Positives</div>
+          <div class="stat-value" style="color: #ef4444;">${stats.total_false_positive || 0}</div>
+          <div class="stat-subtext">Legitimate traffic blocked</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">FP Rate</div>
+          <div class="stat-value" style="color: ${fpRate > (stats.target_fp_rate || 0.01) ? '#ef4444' : '#10b981'};">${(fpRate * 100).toFixed(2)}%</div>
+          <div class="stat-subtext">Target: ${((stats.target_fp_rate || 0.01) * 100).toFixed(2)}%</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Allowlist Size</div>
+          <div class="stat-value">${stats.allowlist_size || 0}</div>
+          <div class="stat-subtext">IPs temporarily allowlisted (24h)</div>
+        </div>
+      `;
+      document.getElementById('detectionStats').innerHTML = detectionHTML;
+
+      // Threshold stats
+      const currentThreshold = stats.current_threshold || 0;
+      const thresholdHTML = `
+        <div class="stat-card">
+          <div class="stat-label">Current Threshold</div>
+          <div class="stat-value" style="color: #3b82f6;">${(currentThreshold * 100).toFixed(1)}%</div>
+          <div class="stat-subtext">Adaptive confidence threshold</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Threshold Range</div>
+          <div class="stat-value" style="font-size: 1.25rem;">${(stats.min_threshold * 100 || 50).toFixed(0)}-${(stats.max_threshold * 100 || 95).toFixed(0)}%</div>
+          <div class="stat-subtext">Min-Max allowed range</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Adjustments Made</div>
+          <div class="stat-value">${stats.adjustment_count || 0}</div>
+          <div class="stat-subtext">↑ ${stats.threshold_increases || 0} / ↓ ${stats.threshold_decreases || 0}</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Unique IPs</div>
+          <div class="stat-value">${(stats.fp_ips || 0) + (stats.tp_ips || 0)}</div>
+          <div class="stat-subtext">FP: ${stats.fp_ips || 0} / TP: ${stats.tp_ips || 0}</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Learned Patterns</div>
+          <div class="stat-value">${stats.learned_patterns || 0}</div>
+          <div class="stat-subtext">✓ ${stats.patterns_legitimate || 0} legit / ✗ ${stats.patterns_malicious || 0} bad</div>
+        </div>
+      `;
+      document.getElementById('thresholdStats').innerHTML = thresholdHTML;
+    }
+
+    // History
+    async function fetchHistory() {
+      try {
+        const res = await fetch('/api/detections/history');
+        const detections = await res.json();
+        renderHistory(detections);
+      } catch (e) {
+        console.error('Failed to fetch history:', e);
+      }
+    }
+
+    function renderHistory(detections) {
+      const tbody = document.getElementById('historyTable');
+      tbody.innerHTML = '';
+      
+      if (!detections || detections.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; color: var(--text-muted); padding: 2rem;">No detections in the last 6 hours</td></tr>';
+        return;
+      }
+      
+      detections.forEach(det => {
+        const tr = document.createElement('tr');
+        const time = det.detection_time ? new Date(det.detection_time) : null;
+        const org = det.org || 'Unknown';
+        const orgShort = org.length > 30 ? org.substring(0, 27) + '...' : org;
+        const category = det.bot_category || 'unknown';
+        const statusBadge = det.would_block ? '<span class="badge badge-malicious" style="margin-left: 0.5rem;">BLOCKED</span>' : '';
+        
+        tr.innerHTML = `
+          <td style="font-family: monospace; font-weight: 600;">${det.ip || ''}</td>
+          <td>${det.asn || ''}</td>
+          <td title="${org}">${orgShort}</td>
+          <td><span class="badge badge-${category}">${category}</span>${statusBadge}</td>
+          <td>${det.confidence != null ? (det.confidence * 100).toFixed(0) + '%' : ''}</td>
+          <td>${det.signal_count || 0}</td>
+          <td><small>${time ? time.toLocaleString() : ''}</small></td>
+        `;
+        tbody.appendChild(tr);
+      });
+    }
+
+    // Analytics functions
+    async function fetchAnalytics() {
+      try {
+        const res = await fetch('/api/analytics/traffic');
+        const data = await res.json();
+        renderAnalytics(data);
+      } catch (e) {
+        console.error('Failed to fetch analytics:', e);
+      }
+    }
+
+    function renderAnalytics(data) {
+      // Update summary stats
+      document.getElementById('totalRequests').textContent = data.total_requests || 0;
+      document.getElementById('uniqueHostnames').textContent = data.hostnames?.length || 0;
+      document.getElementById('uniquePaths').textContent = data.paths?.length || 0;
+      document.getElementById('uniqueUAs').textContent = data.user_agents?.length || 0;
+      document.getElementById('uniqueASNs').textContent = data.asns?.length || 0;
+
+      // Helper function
+      const escapeHtml = (text) => {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+      };
+
+      // Render top hostnames
+      const hostnamesEl = document.getElementById('topHostnames');
+      if (!data.hostnames || data.hostnames.length === 0) {
+        hostnamesEl.innerHTML = '<div class="empty-state"><div class="empty-state-icon">🌐</div><div>No hostnames data</div></div>';
+      } else {
+        let html = '<table><thead><tr><th>Hostname</th><th style="text-align: right;">Requests</th></tr></thead><tbody>';
+        data.hostnames.forEach(item => {
+          const pct = ((item.count / data.total_requests) * 100).toFixed(1);
+          html += `<tr>
+            <td style="font-family: monospace;">${escapeHtml(item.name)}</td>
+            <td style="text-align: right; font-weight: 700;">${item.count} <span style="color: var(--text-muted); font-size: 0.875rem;">(${pct}%)</span></td>
+          </tr>`;
+        });
+        html += '</tbody></table>';
+        hostnamesEl.innerHTML = html;
+      }
+
+      // Render top paths
+      const pathsEl = document.getElementById('topPaths');
+      if (!data.paths || data.paths.length === 0) {
+        pathsEl.innerHTML = '<div class="empty-state"><div class="empty-state-icon">📁</div><div>No paths data</div></div>';
+      } else {
+        let html = '<table><thead><tr><th>Path</th><th style="text-align: right;">Requests</th></tr></thead><tbody>';
+        data.paths.forEach(item => {
+          const pct = ((item.count / data.total_requests) * 100).toFixed(1);
+          html += `<tr>
+            <td style="font-family: monospace; word-break: break-all;">${escapeHtml(item.name)}</td>
+            <td style="text-align: right; font-weight: 700; white-space: nowrap;">${item.count} <span style="color: var(--text-muted); font-size: 0.875rem;">(${pct}%)</span></td>
+          </tr>`;
+        });
+        html += '</tbody></table>';
+        pathsEl.innerHTML = html;
+      }
+
+      // Render HTTP methods
+      const methodsEl = document.getElementById('topMethods');
+      if (!data.methods || data.methods.length === 0) {
+        methodsEl.innerHTML = '<div class="empty-state"><div class="empty-state-icon">📊</div><div>No methods data</div></div>';
+      } else {
+        let html = '<div style="padding: 1.5rem;">';
+        const methodColors = {
+          'GET': 'var(--success)',
+          'POST': 'var(--info)',
+          'PUT': 'var(--warning)',
+          'DELETE': 'var(--danger)',
+          'PATCH': 'var(--primary)',
+          'HEAD': 'var(--text-muted)',
+          'OPTIONS': 'var(--text-muted)'
+        };
+        data.methods.forEach(item => {
+          const pct = ((item.count / data.total_requests) * 100).toFixed(1);
+          const color = methodColors[item.name] || 'var(--text-muted)';
+          html += `
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 1rem; padding: 1rem; background: rgba(15, 23, 42, 0.3); border-radius: 0.5rem; border-left: 3px solid ${color};">
+              <div>
+                <div style="font-weight: 700; font-size: 1.125rem; color: ${color};">${item.name}</div>
+                <div style="font-size: 0.875rem; color: var(--text-muted); margin-top: 0.25rem;">${pct}% of requests</div>
+              </div>
+              <div style="font-size: 1.5rem; font-weight: 800; color: ${color};">${item.count}</div>
+            </div>
+          `;
+        });
+        html += '</div>';
+        methodsEl.innerHTML = html;
+      }
+
+      // Render top user agents
+      const uasEl = document.getElementById('topUserAgents');
+      if (!data.user_agents || data.user_agents.length === 0) {
+        uasEl.innerHTML = '<div class="empty-state"><div class="empty-state-icon">🤖</div><div>No user agents data</div></div>';
+      } else {
+        let html = '<table><thead><tr><th>User Agent</th><th style="text-align: right;">Requests</th></tr></thead><tbody>';
+        data.user_agents.forEach(item => {
+          const pct = ((item.count / data.total_requests) * 100).toFixed(1);
+          html += `<tr>
+            <td style="font-family: monospace; font-size: 0.75rem; word-break: break-all;">${escapeHtml(item.name)}</td>
+            <td style="text-align: right; font-weight: 700; white-space: nowrap;">${item.count} <span style="color: var(--text-muted); font-size: 0.875rem;">(${pct}%)</span></td>
+          </tr>`;
+        });
+        html += '</tbody></table>';
+        uasEl.innerHTML = html;
+      }
+
+      // Render top ASNs
+      const asnsEl = document.getElementById('topASNs');
+      if (!data.asns || data.asns.length === 0) {
+        asnsEl.innerHTML = '<div class="empty-state"><div class="empty-state-icon">🌐</div><div>No ASN data</div></div>';
+      } else {
+        let html = '<table><thead><tr><th>ASN</th><th style="text-align: right;">Requests</th></tr></thead><tbody>';
+        data.asns.forEach(item => {
+          const pct = ((item.count / data.total_requests) * 100).toFixed(1);
+          html += `<tr>
+            <td style="font-family: monospace;">${escapeHtml(item.name)}</td>
+            <td style="text-align: right; font-weight: 700; white-space: nowrap;">${item.count} <span style="color: var(--text-muted); font-size: 0.875rem;">(${pct}%)</span></td>
+          </tr>`;
+        });
+        html += '</tbody></table>';
+        asnsEl.innerHTML = html;
+      }
+    }
+
+    function renderHistory(detections) {
+      const tbody = document.getElementById('historyTable');
+      tbody.innerHTML = '';
+      
+      if (!detections || detections.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; color: var(--text-muted); padding: 2rem;">No detections in the last 6 hours</td></tr>';
+        return;
+      }
+      
+      detections.forEach(det => {
+        const tr = document.createElement('tr');
+        const time = det.detection_time ? new Date(det.detection_time) : null;
+        const category = det.bot_category || 'unknown';
+        const org = det.org || 'Unknown';
+        const orgShort = org.length > 30 ? org.substring(0, 27) + '...' : org;
+        
+        const statusBadge = det.would_block 
+          ? '<span class="badge" style="background: #fee2e2; color: #991b1b; margin-left: 0.5rem;">BLOCK</span>'
+          : '';
+        
+        tr.innerHTML = `
+          <td><small>${time ? time.toLocaleString() : ''}</small></td>
+          <td style="font-family: monospace; font-weight: 600;">${det.ip || ''}</td>
+          <td>${det.asn || ''}</td>
+          <td title="${org}">${orgShort}</td>
+          <td><span class="badge badge-${category}">${category}</span>${statusBadge}</td>
+          <td>${det.confidence != null ? (det.confidence * 100).toFixed(0) + '%' : ''}</td>
+          <td>${det.signal_count || 0}</td>
+        `;
+        
+        tbody.appendChild(tr);
+      });
+    }
+
+    // Verified Bots
+    async function fetchVerifiedBots() {
+      try {
+        const res = await fetch('/api/detections/verified');
+        const bots = await res.json();
+        renderVerifiedBots(bots);
+      } catch (e) {
+        console.error('Failed to fetch verified bots:', e);
+      }
+    }
+
+    function renderVerifiedBots(bots) {
+      const tbody = document.getElementById('verifiedBotsTable');
+      tbody.innerHTML = '';
+      
+      if (!bots || bots.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; color: var(--text-muted); padding: 2rem;">No verified bots detected yet</td></tr>';
+        return;
+      }
+      
+      bots.forEach(bot => {
+        const tr = document.createElement('tr');
+        const time = bot.detection_time ? new Date(bot.detection_time) : null;
+        const org = bot.org || 'Unknown';
+        const orgShort = org.length > 30 ? org.substring(0, 27) + '...' : org;
+        const userAgent = bot.user_agent || '';
+        const uaShort = userAgent.length > 50 ? userAgent.substring(0, 47) + '...' : userAgent;
+        
+        // Extract bot type from metadata or user agent
+        let botType = 'verified_bot';
+        if (bot.metadata && bot.metadata.bot_type) {
+          botType = bot.metadata.bot_type.replace('ai_crawler_', '').replace('search_engine_', '');
+        } else if (userAgent.toLowerCase().includes('googlebot')) {
+          botType = 'Googlebot';
+        } else if (userAgent.toLowerCase().includes('amazonbot')) {
+          botType = 'Amazonbot';
+        } else if (userAgent.toLowerCase().includes('bingbot')) {
+          botType = 'Bingbot';
+        }
+        
+        tr.innerHTML = `
+          <td style="font-family: monospace; font-weight: 600;">${bot.ip || ''}</td>
+          <td><span class="badge badge-legitimate">${botType}</span></td>
+          <td>${bot.asn || ''}</td>
+          <td title="${org}">${orgShort}</td>
+          <td title="${userAgent}"><small>${uaShort}</small></td>
+          <td><small>${time ? time.toLocaleString() : ''}</small></td>
+          <td>
+            <button class="btn btn-sm" onclick="selectVerifiedBot('${bot.ip}')">View</button>
+            <button class="btn btn-primary btn-sm" onclick="startRecordingForBot('${bot.ip}')">📹 Record</button>
+          </td>
+        `;
+        tbody.appendChild(tr);
+      });
+    }
+
+    async function startRecordingForBot(ip) {
+      if (!ip) return;
+      try {
+        const res = await fetch('/api/sessions/record', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ip: ip, label: 'verified_bot'})
+        });
+        const data = await res.json();
+        if (res.ok) {
+          alert('✓ Recording started for ' + ip + '\nSession will run for 5 minutes');
+          console.log('Recording response:', data);
+        } else {
+          const errorMsg = data.message || data.error || 'Unknown error';
+          alert('Failed to start recording: ' + errorMsg);
+          console.error('Recording failed:', data);
+        }
+      } catch (e) {
+        console.error('Failed to start recording:', e);
+        alert('Error starting recording: ' + e.message);
+      }
+    }
+
+    async function selectVerifiedBot(ip) {
+      if (!ip) return;
+      // Switch to detections tab to show details
+      document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+      document.querySelectorAll('.container').forEach(cont => cont.classList.remove('active'));
+      document.querySelector('[onclick*="detections"]').classList.add('active');
+      document.getElementById('detectionsTab').classList.add('active');
+      
+      // Fetch full detection details for this IP
+      try {
+        const res = await fetch(`/api/ip/${encodeURIComponent(ip)}`);
+        const data = await res.json();
+        currentDetection = data.detection;
+        selectedDetections.clear();
+        document.getElementById('selectAll').checked = false;
+        renderDetails(data);
+        updateActionBar();
+      } catch (e) {
+        console.error('Failed to fetch bot details:', e);
+        alert('Error loading bot details: ' + e.message);
+      }
+    }
+
+    async function recordAllVerifiedBots() {
+      try {
+        const res = await fetch('/api/detections/verified');
+        const bots = await res.json();
+        if (!bots || bots.length === 0) {
+          alert('No verified bots to record');
+          return;
+        }
+        
+        let successCount = 0;
+        let failCount = 0;
+        
+        for (const bot of bots) {
+          try {
+            const startRes = await fetch('/api/sessions/record', {
+              method: 'POST',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({ip: bot.ip, label: 'verified_bot'})
+            });
+            if (startRes.ok) {
+              successCount++;
+            } else {
+              failCount++;
+            }
+          } catch (e) {
+            console.error('Failed to start recording for', bot.ip, e);
+            failCount++;
+          }
+        }
+        
+        if (failCount === 0) {
+          alert(`✓ Recording started for all ${successCount} verified bots`);
+        } else {
+          alert(`✓ Recording started for ${successCount} bots${failCount > 0 ? `\n⚠️ Failed: ${failCount}` : ''}`);
+        }
+      } catch (e) {
+        console.error('Failed to record all bots:', e);
+        alert('Error starting recordings: ' + e.message);
+      }
+    }
+
+    // Session recordings
+    async function refreshSessionsList() {
+      try {
+        const res = await fetch('/api/sessions/list');
+        const sessions = await res.json();
+        
+        // Group by IP
+        const sessionsByIP = {};
+        sessions.forEach(session => {
+          const ip = session.IP || 'unknown';
+          if (!sessionsByIP[ip]) {
+            sessionsByIP[ip] = [];
+          }
+          sessionsByIP[ip].push(session);
+        });
+        
+        // Sort IPs by most recent session
+        const sortedIPs = Object.keys(sessionsByIP).sort((a, b) => {
+          const aTime = new Date(sessionsByIP[a][0].StartTime).getTime();
+          const bTime = new Date(sessionsByIP[b][0].StartTime).getTime();
+          return bTime - aTime;
+        });
+        
+        let html = '';
+        if (sortedIPs.length === 0) {
+          html = '<p style="color: #6b7280; text-align: center; padding: 2rem;">No session recordings yet</p>';
+        } else {
+          html = '<div style="max-height: 600px; overflow-y: auto;">';
+          sortedIPs.forEach(ip => {
+            const ipSessions = sessionsByIP[ip];
+            html += `
+              <div style="border: 1px solid #e5e7eb; border-radius: 4px; margin-bottom: 1rem; padding: 1rem;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
+                  <strong style="font-size: 1.1rem;">${ip}</strong>
+                  <span style="color: #6b7280; font-size: 0.875rem;">${ipSessions.length} sessions</span>
+                </div>
+                <div style="display: grid; gap: 0.5rem;">`;
+            
+            ipSessions.forEach(session => {
+              const startTime = new Date(session.StartTime);
+              const outcome = session.Outcome || 'unknown';
+              const outcomeColor = {
+                'blocked': '#ef4444',
+                'escalated': '#f97316',
+                'disappeared': '#eab308',
+                'allowed': '#22c55e',
+                'unknown': '#6b7280'
+              }[outcome] || '#6b7280';
+              
+              html += `
+                <div style="display: flex; justify-content: space-between; align-items: center; padding: 0.5rem; background: #f9fafb; border-radius: 4px;">
+                  <div style="flex: 1;">
+                    <span style="color: #374151; font-size: 0.875rem;">${startTime.toLocaleString()}</span>
+                    <span style="margin-left: 1rem; color: ${outcomeColor}; font-weight: 500;">${outcome}</span>
+                    <span style="margin-left: 1rem; color: #6b7280; font-size: 0.875rem;">${session.TotalEvents || 0} events</span>
+                  </div>
+                  <button class="btn btn-sm" style="background: #ef4444; color: white; border: none; padding: 0.25rem 0.75rem; border-radius: 4px; cursor: pointer;" onclick="deleteSession('${session.SessionID}')">🗑️ Delete</button>
+                </div>`;
+            });
+            
+            html += `
+                </div>
+              </div>`;
+          });
+          html += '</div>';
+        }
+        
+        document.getElementById('sessionsListContainer').innerHTML = html;
+        document.getElementById('sessionCount').textContent = `${sessions.length} recordings`;
+        
+        // Also refresh active recordings
+        await refreshActiveRecordings();
+      } catch (e) {
+        console.error('Failed to load sessions:', e);
+        document.getElementById('sessionsListContainer').innerHTML = 
+          '<p style="color: #ef4444; text-align: center; padding: 2rem;">Failed to load sessions</p>';
+      }
+    }
+
+    async function refreshActiveRecordings() {
+      try {
+        const res = await fetch('/api/sessions/active');
+        const activeRecordings = await res.json();
+        
+        let html = '';
+        if (!activeRecordings || activeRecordings.length === 0) {
+          html = '<p style="color: #6b7280; font-style: italic; padding: 1rem;">No active recordings</p>';
+        } else {
+          html = '<div style="display: grid; gap: 0.75rem;">';
+          activeRecordings.forEach(rec => {
+            const elapsedSec = Math.round(rec.elapsed / 1000000000); // nanoseconds to seconds
+            const remainingSec = Math.round(rec.remaining / 1000000000);
+            const totalSec = 300; // 5 minutes
+            const progress = Math.min(100, (elapsedSec / totalSec) * 100);
+            
+            const minutes = Math.floor(remainingSec / 60);
+            const seconds = remainingSec % 60;
+            const timeStr = `${minutes}:${seconds.toString().padStart(2, '0')}`;
+            
+            // Display label with appropriate styling
+            let labelDisplay = 'recording';
+            let labelColor = '#6b7280';
+            let labelBg = '#f3f4f6';
+            
+            if (rec.label) {
+              const labelMap = {
+                'tp': { text: '✓ TP (Malicious)', color: '#dc2626', bg: '#fee2e2' },
+                'fp': { text: '✗ FP (Legitimate)', color: '#059669', bg: '#d1fae5' },
+                'tn': { text: '✓ TN (Legitimate)', color: '#059669', bg: '#d1fae5' },
+                'fn': { text: '✗ FN (Malicious)', color: '#dc2626', bg: '#fee2e2' },
+                'bot': { text: '🤖 Bot', color: '#dc2626', bg: '#fee2e2' },
+                'human': { text: '👤 Human', color: '#059669', bg: '#d1fae5' },
+                'manual': { text: '📝 Manual', color: '#6b7280', bg: '#f3f4f6' }
+              };
+              const mapping = labelMap[rec.label] || { text: rec.label, color: '#6b7280', bg: '#f3f4f6' };
+              labelDisplay = mapping.text;
+              labelColor = mapping.color;
+              labelBg = mapping.bg;
+            }
+            
+            html += `
+              <div style="border: 2px solid #ef4444; border-radius: 6px; padding: 1rem; background: #fef2f2;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
+                  <div>
+                    <strong style="font-size: 1rem; color: #dc2626;">🔴 ${rec.ip}</strong>
+                    <span style="margin-left: 0.5rem; padding: 0.25rem 0.5rem; border-radius: 4px; background: ${labelBg}; color: ${labelColor}; font-size: 0.75rem; font-weight: 600;">${labelDisplay}</span>
+                  </div>
+                  <span style="font-size: 1.25rem; font-weight: 600; color: #dc2626;">${timeStr}</span>
+                </div>
+                <div style="background: #e5e7eb; height: 8px; border-radius: 4px; overflow: hidden; margin-bottom: 0.5rem;">
+                  <div style="background: linear-gradient(90deg, #dc2626, #f97316); height: 100%; width: ${progress}%; transition: width 1s linear;"></div>
+                </div>
+                <div style="display: flex; justify-content: space-between; font-size: 0.75rem; color: #6b7280;">
+                  <span>${rec.event_count || 0} events captured</span>
+                  <span>Session: ${rec.session_id}</span>
+                </div>
+              </div>`;
+          });
+          html += '</div>';
+        }
+        
+        document.getElementById('activeRecordingsContainer').innerHTML = html;
+      } catch (e) {
+        console.error('Failed to load active recordings:', e);
+        document.getElementById('activeRecordingsContainer').innerHTML = 
+          '<p style="color: #ef4444; font-style: italic; padding: 1rem;">Failed to load active recordings</p>';
+      }
+    }
+
+    async function deleteSession(sessionID) {
+      if (!confirm(`Delete session ${sessionID}?`)) {
+        return;
+      }
+      try {
+        await fetch('/api/sessions/delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ session_id: sessionID })
+        });
+        await refreshSessionsList();
+      } catch (e) {
+        console.error('Failed to delete session:', e);
+        alert('Failed to delete session');
+      }
+    }
+
+    async function exportSessionRecordings() {
+      try {
+        const res = await fetch('/api/sessions/export');
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'session_recordings_' + new Date().toISOString().split('T')[0] + '.jsonl';
+        a.click();
+        URL.revokeObjectURL(url);
+        alert('Session recordings exported successfully');
+      } catch (e) {
+        console.error('Failed to export sessions:', e);
+        alert('Failed to export session recordings');
+      }
+    }
+
+    // Initialize
+    fetchDetections();
+    setInterval(fetchDetections, 5000);
+    refreshSessionsList();
+    setInterval(refreshSessionsList, 30000);
+    refreshActiveRecordings();
+    setInterval(refreshActiveRecordings, 2000); // Update active recordings more frequently
+  </script>
+</body>
+</html>

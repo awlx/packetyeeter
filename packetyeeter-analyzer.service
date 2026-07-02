@@ -1,0 +1,25 @@
+[Unit]
+Description=PacketYeeter Analyzer - AI/ML analysis and threat intelligence
+Documentation=https://github.com/awlx/packetyeeter
+After=network.target
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/default/packetyeeter-analyzer
+ExecStart=/opt/packetyeeter/analyzer/packetyeeter-analyzer \
+    -listen-addr ${LISTEN_ADDR:-0.0.0.0:9090} \
+    -metrics-addr ${METRICS_ADDR:-:9091} \
+    -geoip-asn ${GEOIP_ASN_PATH:-/var/lib/GeoIP/GeoLite2-ASN.mmdb} \
+    ${EXTRA_ARGS}
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65535
+
+# Security - analyzer doesn't need BPF capabilities
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/packetyeeter
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,32 @@
+[Unit]
+Description=PacketYeeter Collector - eBPF-based packet collection and enforcement
+Documentation=https://github.com/awlx/packetyeeter
+After=network.target
+Wants=packetyeeter-analyzer.service
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/default/packetyeeter-collector
+ExecStart=/opt/packetyeeter/collector/packetyeeter-collector \
+    -i ${INTERFACE:-eth0} \
+    -analyzer-addr ${ANALYZER_ADDR:-127.0.0.1:9090} \
+    -metrics-addr ${METRICS_ADDR:-:2112} \
+    -haproxy-port ${HAPROXY_PORT:-8765} \
+    -spoe-port ${SPOE_PORT:-9876} \
+    ${ALLOWLIST:+-allowlist "$ALLOWLIST"} \
+    -socket ${SOCKET_PATH:-/var/run/packetyeeter-collector.sock} \
+    -geoip-asn ${GEOIP_ASN_PATH:-/var/lib/GeoIP/GeoLite2-ASN.mmdb} \
+    -block-duration ${BLOCK_DURATION:-300s} \
+    ${EXTRA_ARGS}
+Restart=on-failure
+RestartSec=5
+LimitMEMLOCK=infinity
+LimitNOFILE=65535
+
+# Security
+NoNewPrivileges=false
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_NET_ADMIN CAP_BPF CAP_PERFMON CAP_NET_RAW
+AmbientCapabilities=CAP_SYS_ADMIN CAP_NET_ADMIN CAP_BPF CAP_PERFMON CAP_NET_RAW
+
+[Install]
+WantedBy=multi-user.target

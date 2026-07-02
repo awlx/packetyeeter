@@ -1,0 +1,24 @@
+# Build artifacts
+packetyeeter
+packetyeeter-collector
+packetyeeter-analyzer
+yeetctl
+yeetexplorer
+
+# Compiled eBPF objects
+*.o
+
+# Python
+__pycache__/
+*.py[cod]
+
+# GeoIP databases (user-supplied)
+*.mmdb
+
+# ML models / runtimes (user-supplied)
+*.onnx
+onnxruntime-*/
+
+# Local overrides / secrets
+*.local
+.env

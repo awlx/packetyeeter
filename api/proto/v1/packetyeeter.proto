@@ -1,0 +1,350 @@
+syntax = "proto3";
+
+package packetyeeter.v1;
+
+option go_package = "PacketYeeter/api/proto/v1;apiv1";
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/empty.proto";
+
+// AnalyzerService is the main service that the Collector connects to
+// for sending signals and receiving commands.
+service AnalyzerService {
+  // Bidirectional streaming for real-time signal exchange
+  rpc StreamSignals(stream Signal) returns (stream Command);
+  
+  // Lookup JA4H fingerprint in the database
+  rpc LookupJA4H(JA4HLookupRequest) returns (JA4HLookupResponse);
+  
+  // Lookup JA4T fingerprint
+  rpc LookupJA4T(JA4TLookupRequest) returns (JA4TLookupResponse);
+  
+  // Verify if an IP/UA combination is a legitimate bot
+  rpc VerifyBot(BotVerifyRequest) returns (BotVerifyResponse);
+  
+  // Verify AI crawler (OpenAI, Anthropic, etc.)
+  rpc VerifyAICrawler(AICrawlerVerifyRequest) returns (AICrawlerVerifyResponse);
+  
+  // Get threat intelligence for an IP
+  rpc GetThreatIntel(ThreatIntelRequest) returns (ThreatIntelResponse);
+  
+  // Get reputation score for an entity
+  rpc GetReputation(ReputationRequest) returns (ReputationResponse);
+  
+  // Report blocked IP (for metrics/tracking)
+  rpc ReportBlock(BlockReport) returns (google.protobuf.Empty);
+  
+  // Health check
+  rpc Health(google.protobuf.Empty) returns (HealthResponse);
+}
+
+// CollectorService allows the Analyzer to push commands to connected Collectors
+service CollectorService {
+  // Execute a blocking command
+  rpc ExecuteCommand(Command) returns (CommandResult);
+  
+  // Get collector status
+  rpc GetStatus(google.protobuf.Empty) returns (CollectorStatus);
+  
+  // Health check
+  rpc Health(google.protobuf.Empty) returns (HealthResponse);
+}
+
+// Signal represents a detection signal from the collector
+message Signal {
+  string id = 1;
+  google.protobuf.Timestamp timestamp = 2;
+  SignalType type = 3;
+  SignalSource source = 4;
+  
+  // Network context
+  bytes ip = 5;  // Can be IPv4 or IPv6
+  string asn = 6;
+  string org = 7;
+  
+  // Fingerprints
+  string ja4h = 8;
+  string ja4t = 9;
+  string ja4s = 10;
+  
+  // Weight for scoring
+  double weight = 11;
+  
+  // Additional metadata
+  map<string, string> metadata = 12;
+  
+  // HTTP context (from SPOE)
+  HTTPContext http_context = 13;
+  
+  // TCP context (from eBPF)
+  TCPContext tcp_context = 14;
+
+  // TLS JA4 (client hello)
+  string ja4 = 15;
+}
+
+enum SignalType {
+  SIGNAL_UNKNOWN = 0;
+  
+  // eBPF signals
+  SIGNAL_SYN_FLOOD = 1;
+  SIGNAL_BAD_FLAGS = 2;
+  SIGNAL_ICMP_FLOOD = 3;
+  SIGNAL_UDP_FLOOD = 4;
+  SIGNAL_TTL_ANOMALY = 5;
+  SIGNAL_WINDOW_ANOMALY = 6;
+  SIGNAL_PACKET_SIZE_UNIFORM = 7;
+  SIGNAL_TIMING_PATTERN = 8;
+  SIGNAL_PORT_SCANNING = 9;
+  SIGNAL_INCOMPLETE_HANDSHAKE = 10;
+  SIGNAL_TCP_METADATA = 11; // Per-packet TCP metadata (timestamps, entropy)
+  
+  // SPOE/HTTP signals
+  SIGNAL_HTTP_REQUEST = 20;  // Raw HTTP request from SPOE
+  SIGNAL_BOT_UA = 21;
+  SIGNAL_SUSPICIOUS_UA = 22;
+  SIGNAL_MISSING_ACCEPT_LANG = 23;
+  SIGNAL_MISSING_ACCEPT_ENC = 24;
+  SIGNAL_NO_COOKIES = 25;
+  SIGNAL_NO_REFERER = 26;
+  SIGNAL_MISSING_JA4H = 27;
+  SIGNAL_PROXY_LAG = 28;
+  SIGNAL_KNOWN_SCANNER = 29;
+  SIGNAL_HIGH_THREAT_SCORE = 30;
+  SIGNAL_TOR_NODE = 31;
+  SIGNAL_VPN_PROXY = 32;
+  
+  // Fingerprint signals
+  SIGNAL_JA4T_SUSPICIOUS = 40;
+  SIGNAL_HIGH_LATENCY_HANDSHAKE = 41;
+  SIGNAL_LATENCY_MISMATCH = 42;
+  SIGNAL_GEO_ANOMALY = 43;
+  SIGNAL_CONNECTION_PATTERN = 44;
+  
+  // Analysis signals
+  SIGNAL_CLOCK_SKEW_ANOMALY = 50;
+  SIGNAL_ENTROPY_ANOMALY = 51;
+  SIGNAL_BASELINE_ANOMALY = 52;
+}
+
+enum SignalSource {
+  SOURCE_UNKNOWN = 0;
+  SOURCE_EBPF = 1;
+  SOURCE_SPOE = 2;
+  SOURCE_FINGERPRINTER = 3;
+  SOURCE_HAPROXY = 4;
+  SOURCE_ANALYZER = 5;
+}
+
+message HTTPContext {
+  string user_agent = 1;
+  string accept_language = 2;
+  string accept_encoding = 3;
+  string referer = 4;
+  bool has_cookies = 5;
+  string host = 6;
+  string method = 7;
+  string path = 8;
+  int64 client_req_ms = 9;
+  double packet_rtt_ms = 10;
+  uint32 dst_port = 11;  // Destination port (80, 443, etc.)
+  string dst_ip = 12;     // Destination IP address
+  uint32 status_code = 13; // HTTP response status code (200, 404, 403, etc.)
+}
+
+message TCPContext {
+  uint32 syn_count = 1;
+  uint32 rst_count = 2;
+  uint32 fin_count = 3;
+  uint32 ttl = 4;
+  uint32 window_size = 5;
+  uint32 mss = 6;
+  uint32 tcp_options = 7;
+  int64 handshake_rtt_ns = 8;
+  uint32 tcp_timestamp = 9;  // TCP timestamp value (TSval) for clock skew analysis
+  uint32 entropy_score = 10; // Payload entropy estimate (0-100)
+}
+
+// Command represents an action for the collector to execute
+message Command {
+  string id = 1;
+  google.protobuf.Timestamp timestamp = 2;
+  CommandType type = 3;
+  
+  // Target
+  bytes ip = 4;
+  string cidr = 5;  // For network-level blocks
+  
+  // Duration (for temporary blocks)
+  int64 duration_seconds = 6;
+  
+  // Reason for audit trail
+  string reason = 7;
+  
+  // Priority (higher = more urgent)
+  int32 priority = 8;
+  
+  // Source that triggered this command
+  string source = 9;
+}
+
+enum CommandType {
+  COMMAND_UNKNOWN = 0;
+  COMMAND_BLOCK_IP = 1;
+  COMMAND_UNBLOCK_IP = 2;
+  COMMAND_BLOCK_CIDR = 3;
+  COMMAND_UNBLOCK_CIDR = 4;
+  COMMAND_ALLOWLIST_IP = 5;
+  COMMAND_REMOVE_ALLOWLIST_IP = 6;
+}
+
+message CommandResult {
+  string command_id = 1;
+  bool success = 2;
+  string error = 3;
+}
+
+// JA4H Lookup
+message JA4HLookupRequest {
+  string fingerprint = 1;
+}
+
+message JA4HLookupResponse {
+  bool found = 1;
+  string application = 2;
+  string library = 3;
+  string device = 4;
+  bool verified = 5;
+  string category = 6;  // "browser", "bot", "scanner", "malware", etc.
+  double threat_score = 7;
+  bool is_wildcard_match = 8;  // True if matched via partial/wildcard
+}
+
+// JA4T Lookup
+message JA4TLookupRequest {
+  string fingerprint = 1;
+  string ip = 2;  // For correlation
+}
+
+message JA4TLookupResponse {
+  bool suspicious = 1;
+  string reason = 2;
+  double risk_score = 3;
+  repeated string matched_patterns = 4;
+}
+
+// Bot Verification
+message BotVerifyRequest {
+  bytes ip = 1;
+  string user_agent = 2;
+  bool force_lookup = 3;  // Bypass cache
+}
+
+message BotVerifyResponse {
+  bool is_verified = 1;
+  string bot_type = 2;  // "googlebot", "bingbot", etc.
+  string reverse_dns = 3;
+  string forward_dns = 4;
+  string error = 5;
+  bool is_impersonation = 6;
+  BotCategory category = 7;
+}
+
+enum BotCategory {
+  BOT_CATEGORY_UNKNOWN = 0;
+  BOT_CATEGORY_SEARCH_ENGINE = 1;
+  BOT_CATEGORY_SOCIAL_MEDIA = 2;
+  BOT_CATEGORY_LEGITIMATE = 3;
+  BOT_CATEGORY_AI_CRAWLER = 4;
+  BOT_CATEGORY_SCRAPER = 5;
+  BOT_CATEGORY_MALICIOUS = 6;
+}
+
+// AI Crawler Verification
+message AICrawlerVerifyRequest {
+  bytes ip = 1;
+  string user_agent = 2;
+}
+
+message AICrawlerVerifyResponse {
+  bool is_verified = 1;
+  string crawler_type = 2;  // "openai", "anthropic", "amazon", etc.
+  bool is_impersonation = 3;
+}
+
+// Threat Intelligence
+message ThreatIntelRequest {
+  bytes ip = 1;
+  bool enrich = 2;  // Trigger async enrichment if not cached
+}
+
+message ThreatIntelResponse {
+  bool found = 1;
+  double threat_score = 2;
+  bool is_known_scanner = 3;
+  bool is_tor = 4;
+  bool is_vpn = 5;
+  bool is_cloud = 6;
+  bool is_proxy = 7;
+  repeated string tags = 8;
+  repeated string sources = 9;
+  int32 open_ports = 10;  // Count of open ports
+}
+
+// Reputation
+message ReputationRequest {
+  string key = 1;
+  string type = 2;  // "ip", "asn", "ja4h", etc.
+}
+
+enum EntityType {
+  ENTITY_UNKNOWN = 0;
+  ENTITY_IP = 1;
+  ENTITY_ASN = 2;
+  ENTITY_JA4H = 3;
+  ENTITY_JA4T = 4;
+}
+
+message ReputationResponse {
+  double score = 1;
+  int32 offenses = 2;
+  google.protobuf.Timestamp last_seen = 3;
+  bool is_bad = 4;  // Score exceeds threshold
+  string reason = 5;
+}
+
+// Block Report
+message BlockReport {
+  bytes ip = 1;
+  string reason = 2;
+  string source = 3;
+  int64 duration_seconds = 4;
+  google.protobuf.Timestamp timestamp = 5;
+}
+
+// Health
+message HealthResponse {
+  bool healthy = 1;
+  string version = 2;
+  google.protobuf.Timestamp uptime_since = 3;
+  map<string, string> components = 4;  // Component name -> status
+}
+
+// Collector Status
+message CollectorStatus {
+  string collector_id = 1;
+  string interface_name = 2;
+  bool ebpf_attached = 3;
+  bool spoe_running = 4;
+  bool haproxy_running = 5;
+  uint64 blocked_ipv4_count = 6;
+  uint64 blocked_ipv6_count = 7;
+  bool dry_run = 8;
+  google.protobuf.Timestamp started_at = 9;
+  
+  // Counters
+  uint64 tcp_blocks_total = 10;
+  uint64 udp_blocks_total = 11;
+  uint64 icmp_blocks_total = 12;
+  uint64 haproxy_blocks_total = 13;
+}

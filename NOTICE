@@ -1,0 +1,42 @@
+PacketYeeter
+Copyright (C) 2025 Annika Wickert
+
+This product is licensed under the GNU General Public License v2.0.
+See the LICENSE file for the full license text.
+
+================================================================================
+Third-Party Algorithms and Attributions
+================================================================================
+
+JA4 / JA4+ Fingerprinting
+-------------------------------------------------------------------------------
+PacketYeeter implements traffic fingerprinting based on the JA4+ suite
+(JA4H, JA4T, JA4L), originally developed by FoxIO LLC.
+
+  Source:  https://github.com/FoxIO-LLC/ja4
+
+Licensing of the underlying algorithms:
+  * JA4 (TLS client fingerprint): BSD 3-Clause License
+  * JA4+ family (JA4H, JA4T, JA4L, etc.): FoxIO License 1.1
+    https://github.com/FoxIO-LLC/ja4/blob/main/LICENSE
+
+The FoxIO License 1.1 imposes field-of-use restrictions (notably around
+commercial redistribution) that are separate from and additional to the
+GPL-2.0 license covering PacketYeeter's own source code. Users intending to
+deploy PacketYeeter commercially should review the FoxIO License and contact
+FoxIO LLC regarding the JA4+ components.
+
+The reference JA4H Lua implementation in examples/ja4h.lua is:
+  Copyright (C) 2025 Rath Pascal
+  License: MIT (algorithm license: FoxIO License 1.1)
+
+The reference JA4 Lua implementation in examples/ja4.lua is:
+  License: MIT (algorithm license: BSD 3-Clause)
+
+MaxMind GeoLite2
+-------------------------------------------------------------------------------
+PacketYeeter can optionally enrich metrics using MaxMind GeoLite2 ASN
+databases. These databases are NOT distributed with PacketYeeter and must be
+obtained separately by the user under MaxMind's own license terms.
+
+  https://www.maxmind.com/en/geolite2/eula

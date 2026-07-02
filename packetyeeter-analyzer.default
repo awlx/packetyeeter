@@ -1,0 +1,19 @@
+# PacketYeeter Analyzer Configuration
+# Copy to /etc/default/packetyeeter-analyzer
+
+# gRPC listen address for collectors
+LISTEN_ADDR=0.0.0.0:9090
+
+# Prometheus metrics HTTP listen address
+METRICS_ADDR=:9091
+
+# GeoIP ASN database path
+GEOIP_ASN_PATH=/var/lib/GeoIP/GeoLite2-ASN.mmdb
+
+# Threat intelligence uses the free, keyless Shodan InternetDB API (no API key required)
+
+# Reputation thresholds
+# EXTRA_ARGS=-reputation-threshold 75
+
+# Enable verbose logging
+# EXTRA_ARGS=-v
