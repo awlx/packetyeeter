@@ -1110,10 +1110,6 @@ func (a *Analyzer) HandleDetection(event aidetection.DetectionEvent) {
 	if threshold == 0 {
 		threshold = 0.7 // default if unset
 	}
-	scoreSuspicious := a.Config.AISuspiciousScoreThreshold
-	if scoreSuspicious == 0 {
-		scoreSuspicious = 5
-	}
 	scoreBlock := a.Config.AIBlockScoreThreshold
 	if scoreBlock == 0 {
 		scoreBlock = 15

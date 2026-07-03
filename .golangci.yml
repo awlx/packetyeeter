@@ -1,0 +1,17 @@
+version: "2"
+
+# Minimal, low-noise config for the first CI lint pass.
+#
+# `errcheck` and `staticcheck` are intentionally disabled for now: a baseline
+# run surfaced ~53 pre-existing findings (mostly unchecked errors on
+# `defer x.Close()`/`Destroy()` calls, plus a few staticcheck style/deprecation
+# hints) that are out of scope for this change. Re-enable them in a follow-up
+# PR once those are triaged and fixed, so this gate can start clean.
+linters:
+  enable:
+    - govet
+    - ineffassign
+    - unused
+  disable:
+    - errcheck
+    - staticcheck

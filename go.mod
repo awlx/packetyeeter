@@ -1,6 +1,6 @@
 module PacketYeeter
 
-go 1.24.0
+go 1.26.4
 
 require (
 	github.com/cilium/ebpf v0.20.0
@@ -12,8 +12,9 @@ require (
 	github.com/rivo/tview v0.42.0
 	github.com/sirupsen/logrus v1.9.4
 	github.com/vishvananda/netlink v1.3.1
-	golang.org/x/sys v0.40.0
-	google.golang.org/grpc v1.78.0
+	github.com/yalue/onnxruntime_go v1.25.0
+	golang.org/x/sys v0.43.0
+	google.golang.org/grpc v1.82.0
 	google.golang.org/protobuf v1.36.11
 )
 
@@ -31,12 +32,9 @@ require (
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/rogpeppe/go-internal v1.14.1 // indirect
 	github.com/vishvananda/netns v0.0.5 // indirect
-	github.com/yalue/onnxruntime_go v1.25.0 // indirect
-	go.opentelemetry.io/otel v1.39.0 // indirect
-	go.opentelemetry.io/otel/sdk/metric v1.39.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.2 // indirect
-	golang.org/x/net v0.49.0 // indirect
-	golang.org/x/term v0.39.0 // indirect
-	golang.org/x/text v0.33.0 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20260114163908-3f89685c29c3 // indirect
+	golang.org/x/net v0.53.0 // indirect
+	golang.org/x/term v0.42.0 // indirect
+	golang.org/x/text v0.36.0 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260414002931-afd174a4e478 // indirect
 )

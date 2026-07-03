@@ -1,10 +1,8 @@
 package aidetection
 
 import (
-	"container/ring"
 	"net"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -309,10 +307,4 @@ type ActiveRecordingInfo struct {
 	SessionID       string        `json:"session_id"`
 	InitialCategory string        `json:"initial_category"`
 	Label           string        `json:"label"` // ML training label (tp/fp/tn/fn/bot/human/manual)
-}
-
-// RollingBuffer maintains pre-detection event history
-type RollingBuffer struct {
-	buffer *ring.Ring
-	mu     sync.Mutex
 }
