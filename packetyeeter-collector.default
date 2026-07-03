@@ -7,7 +7,8 @@ INTERFACE=eth0
 # Address of the analyzer daemon (host:port)
 ANALYZER_ADDR=127.0.0.1:9090
 
-# Prometheus metrics HTTP listen address
+# Prometheus metrics HTTP listen address. Bind to loopback or a trusted
+# management network unless Prometheus reaches this host over protected links.
 METRICS_ADDR=:2112
 
 # HAProxy peer protocol port
@@ -16,7 +17,7 @@ HAPROXY_PORT=8765
 # SPOE agent port
 SPOE_PORT=9876
 
-# Unix socket for CLI management
+# Unix socket for CLI management. Keep local and permission-restricted.
 SOCKET_PATH=/var/run/packetyeeter-collector.sock
 
 # GeoIP ASN database path

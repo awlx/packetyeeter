@@ -15,7 +15,9 @@ Restart=on-failure
 RestartSec=5
 LimitNOFILE=65535
 
-# Security - analyzer doesn't need BPF capabilities
+# Security - analyzer is userspace-only and does not need BPF capabilities.
+# Keep writable state under /var/lib/packetyeeter when enabling model/cache
+# files so ProtectSystem=strict can remain in place.
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true

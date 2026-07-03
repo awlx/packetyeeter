@@ -1,0 +1,16 @@
+# Example Prometheus scrape config for PacketYeeter.
+# Replace hostnames with your analyzer and collector hosts, and restrict access
+# to these endpoints with network controls where possible.
+scrape_configs:
+  - job_name: packetyeeter-analyzer
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - analyzer.example.com:9091
+
+  - job_name: packetyeeter-collector
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - webfrontend01.example.com:2112
+          - webfrontend02.example.com:2112

@@ -4,13 +4,18 @@
 # gRPC listen address for collectors
 LISTEN_ADDR=0.0.0.0:9090
 
-# Prometheus metrics HTTP listen address
+# Prometheus metrics HTTP listen address. Bind to loopback or a trusted
+# management network unless Prometheus reaches this host over protected links.
 METRICS_ADDR=:9091
 
 # GeoIP ASN database path
 GEOIP_ASN_PATH=/var/lib/GeoIP/GeoLite2-ASN.mmdb
 
 # Threat intelligence uses the free, keyless Shodan InternetDB API (no API key required)
+
+# Operational safety: start new deployments with -dry-run, keep the inspector
+# on loopback or behind trusted access controls, and enable pprof only briefly.
+# EXTRA_ARGS=-dry-run -inspect-addr 127.0.0.1:9092
 
 # Reputation thresholds
 # EXTRA_ARGS=-reputation-threshold 75

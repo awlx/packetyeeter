@@ -104,6 +104,13 @@ PacketYeeter is a high-performance, eBPF-based DDoS protection and traffic filte
     *   **Structured Logging**: All logs are emitted in JSON format for easy ingestion by Logstash/Fluentd/Vector.
     *   **Grafana Dashboard**: Includes a pre-built dashboard (`grafana-dashboard.json`) for visualizing attack traffic (IPs excluded in default dashboard; private dashboards can include IPs from metrics).
 
+## Project Docs
+
+*   [`CONTRIBUTING.md`](CONTRIBUTING.md): build, test, and PR workflow.
+*   [`SECURITY.md`](SECURITY.md): private vulnerability reporting guidance.
+*   [`docs/operations.md`](docs/operations.md): deployment, listener exposure, systemd, and rollout guidance.
+*   [`docs/troubleshooting.md`](docs/troubleshooting.md): common eBPF, build, and runtime issues.
+
 ## Architecture
 
 PacketYeeter runs as **two cooperating daemons** connected over gRPC:
@@ -214,7 +221,9 @@ The `AnalyzerService` gRPC contract (`api/proto/v1/packetyeeter.proto`) exposes 
 ## Usage
 
 Start the **analyzer** first (anywhere; no root needed), then the **collector**
-on each protected host pointing at the analyzer's gRPC address.
+on each protected host pointing at the analyzer's gRPC address. For new
+deployments, start the analyzer with `-dry-run`, review logs and metrics, then
+roll out enforcement gradually after tuning thresholds and allowlists.
 
 ```bash
 # Analyzer (brain) — listens for collectors on :9090, metrics on :9091
@@ -297,11 +306,14 @@ PacketYeeter is designed to be monitored via **Prometheus** and **Grafana**.
 2.  **Inspector UI**:
     The analyzer serves a read-only web inspector at `http://127.0.0.1:9092`
     (`-inspect-addr`) for live inspection of sessions, detections, and reputation.
+    Keep it bound to loopback or behind trusted access controls.
 
 3.  **Grafana Dashboard**:
     A production-ready dashboard is included: `grafana-dashboard.json`. Import it
     into Grafana with a Prometheus data source configured. The default dashboard
-    excludes IPs; build a private dashboard if IP visibility is needed.
+    excludes IPs; build a private dashboard if IP visibility is needed. See
+    [`examples/prometheus-scrape.yml`](examples/prometheus-scrape.yml) for a
+    minimal Prometheus scrape config.
 
 4.  **Logs**:
     Logs are output in structured JSON format, e.g.:
@@ -363,6 +375,9 @@ copies them into place, or install manually:
     The collector runs with `CAP_SYS_ADMIN/NET_ADMIN/BPF/PERFMON/NET_RAW` and
     `LimitMEMLOCK=infinity`; the analyzer runs hardened (`NoNewPrivileges`,
     `ProtectSystem=strict`, `ReadWritePaths=/var/lib/packetyeeter`).
+    Avoid removing collector capabilities or adding restrictive device/network
+    hardening unless BPF load, XDP attach, TC attach, and map access have been
+    validated on the target kernel.
 
 4.  **Enable & start** (start the analyzer first; the collector `Wants` it):
     ```bash
