@@ -166,6 +166,117 @@ func TestCampaignDetectionEventIncludesBaselineMetadata(t *testing.T) {
 	}
 }
 
+// TestCampaignBaselineGrowthCapBoundsSlowRampPoisoning demonstrates that a
+// slow-ramp attack (traffic growing steadily every observation window, each
+// step staying under the anomaly multiplier relative to the *previous*
+// baseline) can no longer drag the adaptive baseline all the way up to the
+// attack's own rate. With growth capping enabled the baseline lags behind a
+// sustained ramp and the multiplier eventually exceeds the anomaly
+// threshold; with capping disabled (the pre-fix behavior, MaxGrowthPerObservation: 1)
+// the baseline keeps tracking the ramp and normalizes it, so the campaign
+// never gets flagged even after a long sustained ramp.
+func TestCampaignBaselineGrowthCapBoundsSlowRampPoisoning(t *testing.T) {
+	newTracker := func(maxGrowth float64) *CampaignBaselineTracker {
+		return NewCampaignBaselineTracker(CampaignBaselineConfig{
+			Tau:                     time.Minute,
+			MinSamples:              3,
+			MinRate:                 1,
+			AnomalyMultiplier:       3,
+			MaxKeys:                 16,
+			MaxGrowthPerObservation: maxGrowth,
+		})
+	}
+
+	capped := newTracker(1.05)  // growth capped at 5% per observation
+	uncapped := newTracker(1.0) // 1.0 (<=1) disables the cap entirely
+
+	key := CampaignBaselineKey{Protocol: "udp", DstPortBucket: "53", Vector: SignalDNSReflection}
+	now := time.Date(2026, 7, 3, 9, 0, 0, 0, time.UTC)
+
+	rate := 5.0
+	var cappedObs, uncappedObs CampaignBaselineObservation
+	for i := 0; i < 40; i++ {
+		ts := now.Add(time.Duration(i) * 30 * time.Second)
+		cappedObs = capped.Observe(key, rate, ts)
+		uncappedObs = uncapped.Observe(key, rate, ts)
+		rate *= 1.15 // slow, steady 15% ramp every window
+	}
+
+	if !cappedObs.EnoughSamples || !uncappedObs.EnoughSamples {
+		t.Fatalf("expected both trackers past warmup after 40 samples")
+	}
+
+	if cappedObs.BaselineRate >= uncappedObs.BaselineRate {
+		t.Fatalf("expected growth-capped baseline to lag the uncapped baseline: capped=%.3f uncapped=%.3f", cappedObs.BaselineRate, uncappedObs.BaselineRate)
+	}
+	if !cappedObs.Anomalous {
+		t.Fatalf("expected growth cap to leave the sustained ramp anomalous (baseline could not fully normalize the attack), got multiplier=%.3f", cappedObs.Multiplier)
+	}
+	if uncappedObs.Anomalous {
+		t.Fatalf("expected the uncapped baseline to have been poisoned into normalizing the ramp (demonstrating the pre-fix bug), got multiplier=%.3f", uncappedObs.Multiplier)
+	}
+}
+
+// TestCampaignBaselineGrowthCapDoesNotAffectSuddenSpike verifies the growth
+// cap does not introduce a regression in detecting a sudden spike against an
+// already-established baseline: since the cap only limits how fast the
+// baseline itself can move, a single anomalous observation is still compared
+// against the (unmoved) prior baseline and is flagged exactly as before.
+func TestCampaignBaselineGrowthCapDoesNotAffectSuddenSpike(t *testing.T) {
+	tracker := NewCampaignBaselineTracker(CampaignBaselineConfig{
+		Tau:               time.Hour,
+		MinSamples:        3,
+		MinRate:           1,
+		AnomalyMultiplier: 3,
+		MaxKeys:           16,
+		// Intentionally omitted MaxGrowthPerObservation to exercise the
+		// default cap.
+	})
+	now := time.Date(2026, 7, 3, 9, 0, 0, 0, time.UTC)
+	key := CampaignBaselineKey{Protocol: "udp", DstPortBucket: "53", Vector: SignalDNSReflection}
+
+	for i := 0; i < 3; i++ {
+		obs := tracker.Observe(key, 2, now.Add(time.Duration(i)*time.Minute))
+		if obs.Anomalous {
+			t.Fatalf("sample %d unexpectedly marked anomalous during warmup", i)
+		}
+	}
+
+	obs := tracker.Observe(key, 50, now.Add(3*time.Minute))
+	if !obs.Anomalous {
+		t.Fatalf("expected sudden spike to trip the anomaly multiplier immediately, got multiplier=%.3f", obs.Multiplier)
+	}
+	if obs.Multiplier < 20 {
+		t.Fatalf("expected the spike to be compared against the pre-spike baseline (multiplier ~25), got %.3f", obs.Multiplier)
+	}
+}
+
+// TestCampaignBaselineGrowthCapDisabledWithValueOne documents the escape
+// hatch: setting MaxGrowthPerObservation to exactly 1 restores the pre-fix
+// unbounded growth behavior.
+func TestCampaignBaselineGrowthCapDisabledWithValueOne(t *testing.T) {
+	tracker := NewCampaignBaselineTracker(CampaignBaselineConfig{
+		Tau:                     time.Minute,
+		MinSamples:              1,
+		MinRate:                 1,
+		AnomalyMultiplier:       3,
+		MaxKeys:                 16,
+		MaxGrowthPerObservation: 1,
+	})
+	now := time.Date(2026, 7, 3, 9, 0, 0, 0, time.UTC)
+	key := CampaignBaselineKey{Protocol: "udp", DstPortBucket: "53", Vector: SignalDNSReflection}
+
+	tracker.Observe(key, 5, now)
+	tracker.Observe(key, 5000, now.Add(time.Minute))
+	// A third observation lets us see how far the previous unbounded update
+	// pushed the baseline: with Tau == dt, alpha = 1 - e^-1 ≈ 0.632, so the
+	// baseline should have moved most of the way from 5 toward 5000.
+	obs := tracker.Observe(key, 5000, now.Add(2*time.Minute))
+	if obs.BaselineRate < 1000 {
+		t.Fatalf("expected uncapped baseline to move freely toward the spike, got %.3f", obs.BaselineRate)
+	}
+}
+
 func recordDNSCampaignSignals(agg *CampaignAggregator, start time.Time, firstIP, lastIP int) {
 	for i := firstIP; i <= lastIP; i++ {
 		agg.Record(Signal{

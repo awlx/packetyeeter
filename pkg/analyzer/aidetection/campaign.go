@@ -2,6 +2,7 @@ package aidetection
 
 import (
 	"fmt"
+	"math"
 	"net"
 	"strconv"
 	"strings"
@@ -467,6 +468,88 @@ func (a *CampaignAggregator) evaluateCampaignLocked(c *attackCampaign) (Campaign
 		SampleASN:        sampleASN,
 		SampleOrg:        sampleOrg,
 	}, true
+}
+
+// campaignRuleConfidence derives a rule-based confidence score for a campaign
+// detection from the evidence that actually triggered it (signal volume,
+// breadth relative to the configured thresholds, source/collector/vector
+// diversity, and adaptive-baseline corroboration) instead of a fixed magic
+// constant. It mirrors the spirit of CalculateConfidence but is built from
+// campaign-level aggregates since no single per-signal confidence exists at
+// this aggregation level. The result is meant to be fed into
+// blendMLConfidence alongside a representative ML prediction, exactly like
+// the non-campaign detection path in handleDetection.
+func campaignRuleConfidence(detection CampaignDetection, cfg CampaignConfig) float64 {
+	confidence := 0.5
+
+	if cfg.MinSignals > 0 {
+		volumeExcess := math.Max(0, float64(detection.SignalCount)/float64(cfg.MinSignals)-1)
+		confidence += math.Min(volumeExcess/10.0, 0.15)
+	}
+
+	breadthExcess := make([]float64, 0, 4)
+	if cfg.MinDestIPs > 0 && detection.DestinationIPs > 0 {
+		breadthExcess = append(breadthExcess, float64(detection.DestinationIPs)/float64(cfg.MinDestIPs)-1)
+	}
+	if cfg.MinDestSubnets > 0 && detection.DestSubnets > 0 {
+		breadthExcess = append(breadthExcess, float64(detection.DestSubnets)/float64(cfg.MinDestSubnets)-1)
+	}
+	if cfg.MinDestPorts > 0 && detection.DestinationPorts > 0 {
+		breadthExcess = append(breadthExcess, float64(detection.DestinationPorts)/float64(cfg.MinDestPorts)-1)
+	}
+	if cfg.MinWeakSourceIPs > 0 && detection.SourceIPs > 0 {
+		breadthExcess = append(breadthExcess, float64(detection.SourceIPs)/float64(cfg.MinWeakSourceIPs)-1)
+	}
+	maxExcess := 0.0
+	for _, r := range breadthExcess {
+		if r > maxExcess {
+			maxExcess = r
+		}
+	}
+	if maxExcess > 0 {
+		confidence += math.Min(maxExcess/10.0, 0.2)
+	}
+
+	diversity := detection.ASNs + detection.Collectors + detection.SourceKinds
+	confidence += math.Min(float64(diversity)/10.0, 0.1)
+
+	if detection.Baseline.EnoughSamples && detection.Baseline.Anomalous {
+		confidence += math.Min(detection.Baseline.Multiplier/20.0, 0.2)
+	}
+
+	return clampConfidence(confidence)
+}
+
+// campaignSeverityMultiplier scales reputation penalties for a campaign
+// detection with how far it exceeds the configured breadth thresholds, so
+// larger/broader campaigns (and repeated campaign involvement) accumulate
+// proportionally larger reputation penalties over time. It is capped to keep
+// a single detection cycle from applying an unbounded penalty even for very
+// large carpet-bombing campaigns.
+func campaignSeverityMultiplier(detection CampaignDetection, cfg CampaignConfig) float64 {
+	const maxMultiplier = 5.0
+	multiplier := 1.0
+
+	if cfg.MinSignals > 0 {
+		multiplier = math.Max(multiplier, float64(detection.SignalCount)/float64(cfg.MinSignals))
+	}
+	if cfg.MinDestIPs > 0 && detection.DestinationIPs > 0 {
+		multiplier = math.Max(multiplier, float64(detection.DestinationIPs)/float64(cfg.MinDestIPs))
+	}
+	if cfg.MinDestSubnets > 0 && detection.DestSubnets > 0 {
+		multiplier = math.Max(multiplier, float64(detection.DestSubnets)/float64(cfg.MinDestSubnets))
+	}
+	if cfg.MinWeakSourceIPs > 0 && detection.SourceIPs > 0 {
+		multiplier = math.Max(multiplier, float64(detection.SourceIPs)/float64(cfg.MinWeakSourceIPs))
+	}
+	if detection.Baseline.EnoughSamples && detection.Baseline.Anomalous && detection.Baseline.Multiplier > 1 {
+		multiplier = math.Max(multiplier, detection.Baseline.Multiplier/3.0)
+	}
+
+	if multiplier > maxMultiplier {
+		multiplier = maxMultiplier
+	}
+	return multiplier
 }
 
 func campaignKey(vector SignalType, source SignalSource, collector, destSubnet string) string {
