@@ -2793,13 +2793,6 @@ func (e *Engine) capturePostDetectionEventLocked(ip string, signal Signal) {
 	}
 }
 
-// capturePostDetectionEvent adds event to active recording (with lock)
-func (e *Engine) capturePostDetectionEvent(ip string, signal Signal) {
-	e.sessionRecordingsMu.Lock()
-	defer e.sessionRecordingsMu.Unlock()
-	e.capturePostDetectionEventLocked(ip, signal)
-}
-
 // finalizeRecording completes a session recording and moves to completed list
 func (e *Engine) finalizeRecording(ip string) {
 	e.sessionRecordingsMu.Lock()

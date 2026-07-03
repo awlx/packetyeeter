@@ -5,7 +5,7 @@ Thanks for helping improve PacketYeeter. Keep changes focused, operationally saf
 ## Development workflow
 
 1. Fork and clone the repository.
-2. Install Go 1.24+ and, for collector/eBPF work on Linux, `clang`, `llvm`, `libbpf-dev`, and matching `linux-headers`.
+2. Install Go 1.26.4+ and, for collector/eBPF work on Linux, `clang`, `llvm`, `libbpf-dev`, and matching `linux-headers`.
 3. Download Go dependencies:
 
    ```bash

@@ -170,7 +170,7 @@ func (h *Handler) VerifyBot(ip net.IP, userAgent, asn, org string) *VerifyResult
 				metrics.AIVerificationResults.WithLabelValues("verified").Inc()
 
 				// Categorize verified bot
-				botCategory := aidetection.BotCategorySearchEngine
+				var botCategory aidetection.BotCategory
 				switch dnsResult.BotType {
 				case "googlebot", "bingbot", "baiduspider", "yandexbot":
 					botCategory = aidetection.BotCategorySearchEngine

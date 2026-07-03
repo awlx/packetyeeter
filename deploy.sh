@@ -34,6 +34,13 @@ SRC_DIR="/usr/local/src/packetyeeter"
 COLLECTOR_BIN_DIR="/opt/packetyeeter/collector"
 ANALYZER_BIN_DIR="/opt/packetyeeter/analyzer"
 
+# Proto toolchain versions. Keep these in sync with the pinned versions in
+# the Makefile (BUF_VERSION, PROTOC_GEN_GO_VERSION, PROTOC_GEN_GO_GRPC_VERSION)
+# so remote/production builds are reproducible and match local/CI builds.
+BUF_VERSION="v1.65.0"
+PROTOC_GEN_GO_VERSION="v1.36.11"
+PROTOC_GEN_GO_GRPC_VERSION="v1.6.0"
+
 # Defaults
 INTERFACE="eth0"
 ANALYZER_ADDR="127.0.0.1:9090"
@@ -126,12 +133,12 @@ if [ "$INSTALL_DEPS" = true ]; then
         sudo apt-get -o DPkg::Lock::Timeout=60 update && \
         sudo apt-get -o DPkg::Lock::Timeout=60 install -y bpfcc-tools libbpfcc libbpfcc-dev clang llvm libbpf-dev linux-headers-\$(uname -r) wget
 
-        echo 'Installing/Ensuring Go 1.25.6...'
-        if ! /usr/local/go/bin/go version 2>/dev/null | grep -q 'go1.25.6'; then
-            echo 'Downloading Go 1.25.6...'
-            wget -q https://go.dev/dl/go1.25.6.linux-amd64.tar.gz
-            sudo rm -rf /usr/local/go && sudo tar -C /usr/local -xzf go1.25.6.linux-amd64.tar.gz
-            rm go1.25.6.linux-amd64.tar.gz
+        echo 'Installing/Ensuring Go 1.26.4...'
+        if ! /usr/local/go/bin/go version 2>/dev/null | grep -q 'go1.26.4'; then
+            echo 'Downloading Go 1.26.4...'
+            wget -q https://go.dev/dl/go1.26.4.linux-amd64.tar.gz
+            sudo rm -rf /usr/local/go && sudo tar -C /usr/local -xzf go1.26.4.linux-amd64.tar.gz
+            rm go1.26.4.linux-amd64.tar.gz
         fi
     "
 fi
@@ -172,10 +179,10 @@ if [ "$REGEN_PROTO" = true ]; then
             rm protoc-\${PROTOC_VERSION}-linux-x86_64.zip
         fi
 
-        # Install Go protoc plugins
+        # Install Go protoc plugins (versions pinned to match the Makefile)
         echo 'Installing protoc-gen-go plugins...'
-        go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
-        go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
+        go install google.golang.org/protobuf/cmd/protoc-gen-go@$PROTOC_GEN_GO_VERSION
+        go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@$PROTOC_GEN_GO_GRPC_VERSION
         export PATH=\$PATH:\$(go env GOPATH)/bin
 
         # Regenerate
@@ -196,10 +203,10 @@ BUILD_CMDS="export GO111MODULE=on GOFLAGS=-mod=mod PATH=/usr/local/go/bin:\$HOME
     rm -f api/proto/packetyeeter.proto packetyeeter.pb.go packetyeeter_grpc.pb.go && \
     echo 'Running go mod download and tidy...' && \
     go mod download && go mod tidy && \
-    echo 'Installing buf and protoc-gen-go tools...' && \
-    go install github.com/bufbuild/buf/cmd/buf@latest && \
-    go install google.golang.org/protobuf/cmd/protoc-gen-go@latest && \
-    go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest && \
+    echo 'Installing buf and protoc-gen-go tools (versions pinned to match the Makefile)...' && \
+    go install github.com/bufbuild/buf/cmd/buf@$BUF_VERSION && \
+    go install google.golang.org/protobuf/cmd/protoc-gen-go@$PROTOC_GEN_GO_VERSION && \
+    go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@$PROTOC_GEN_GO_GRPC_VERSION && \
     echo 'Regenerating proto files...' && \
     export PATH=/usr/local/go/bin:\$HOME/go/bin:\$PATH && make proto && \
     echo 'Verifying generated proto files...' && \

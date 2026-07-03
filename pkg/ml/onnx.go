@@ -616,10 +616,3 @@ func loadONNXModelInternal(modelPath string, threshold float64) (*ONNXModel, err
 		outputNames: outputNames,
 	}, nil
 }
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}

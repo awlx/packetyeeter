@@ -163,7 +163,7 @@ The `AnalyzerService` gRPC contract (`api/proto/v1/packetyeeter.proto`) exposes 
     *   `clang`, `llvm`
     *   `libbpf-dev`
     *   `linux-headers` (matching current kernel)
-*   **Go**: 1.24+
+*   **Go**: 1.26.4+
 *   **Proto (optional, only to regenerate)**: `buf`, `protoc-gen-go`, `protoc-gen-go-grpc` (`make install-buf`).
 
 ## Installation
