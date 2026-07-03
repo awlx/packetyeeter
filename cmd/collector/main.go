@@ -11,6 +11,7 @@ import (
 
 	"github.com/sirupsen/logrus"
 
+	"PacketYeeter/pkg/buildinfo"
 	"PacketYeeter/pkg/collector"
 )
 
@@ -27,9 +28,14 @@ func main() {
 		blockDuration   = flag.Duration("block-duration", 5*time.Minute, "Default block duration")
 		pollInterval    = flag.Duration("poll-interval", 1*time.Second, "How often to poll eBPF maps")
 		signalQueueSize = flag.Int("signal-queue-size", 10000, "Collector signal queue size")
+		showVersion     = flag.Bool("version", false, "Print build version and exit")
 		verbose         = flag.Bool("v", false, "Verbose logging")
 	)
 	flag.Parse()
+	if *showVersion {
+		fmt.Println(buildinfo.String())
+		return
+	}
 
 	logger := logrus.New()
 	if *verbose {

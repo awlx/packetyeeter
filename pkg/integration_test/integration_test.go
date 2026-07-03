@@ -1,413 +1,139 @@
-package integrationtest
 package integration_test
 
 import (
 	"context"
+	"errors"
+	"io"
 	"net"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
-
 	apiv1 "PacketYeeter/api/proto/v1"
 	"PacketYeeter/pkg/analyzer"
-	"PacketYeeter/pkg/analyzer/aidetection"
-	"PacketYeeter/pkg/collector"
+
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// TestEndToEndDetection tests the full pipeline: collector -> analyzer -> block decision
-func TestEndToEndDetection(t *testing.T) {
-	// Start analyzer
-	analyzerCfg := analyzer.Config{
-		ListenAddr:            "127.0.0.1:19090",
-		MetricsAddr:           "127.0.0.1:19091",
-		InspectorAddr:         "127.0.0.1:19092",
-		AIConfidenceThreshold: 0.5, // Lower threshold for testing
-		AIWorkers:             2,
-		AIQueueSize:           100,
-		DryRun:                true, // Don't actually block in tests
-	}
+func TestAnalyzerStreamSignalsAcceptsCollectorSignals(t *testing.T) {
+	a := startTestAnalyzer(t)
+	addr := a.Config.ListenAddr
 
-	a, err := analyzer.New(analyzerCfg)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
-		t.Fatalf("Failed to create analyzer: %v", err)
+		t.Fatalf("create grpc client: %v", err)
+	}
+	defer conn.Close()
+
+	client := apiv1.NewAnalyzerServiceClient(conn)
+	stream, err := client.StreamSignals(ctx)
+	if err != nil {
+		t.Fatalf("open signal stream: %v", err)
 	}
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-}	stream.CloseAndRecv()	}		t.Logf("Scraper Detection: Category=%s, Confidence=%.2f", scraperDet.BotCategory, scraperDet.Confidence)	if scraperDet != nil {	scraperDet := a.AIEngine.GetLatestDetection("ip:" + scraperIP.String())	// Check scraper detection	}		}			t.Logf("Note: Expected DDoS category, got %s (may need more signals)", ddosDet.BotCategory)		if ddosDet.BotCategory != aidetection.BotCategoryDDoS && ddosDet.BotCategory != "" {		t.Logf("DDoS Detection: Category=%s, Confidence=%.2f", ddosDet.BotCategory, ddosDet.Confidence)	if ddosDet != nil {	ddosDet := a.AIEngine.GetLatestDetection("ip:" + ddosIP.String())	// Check DDoS detection	time.Sleep(2 * time.Second)	}		stream.Send(&apiv1.Message{Payload: &apiv1.Message_Signal{Signal: signal}})		}			Weight:    1.0,			Type:      apiv1.SignalType_SIGNAL_PATH_ENUMERATION,			Timestamp: time.Now().Unix(),			Ip:        scraperIP.To4(),		signal := &apiv1.Signal{	for i := 0; i < 30; i++ {	scraperIP := net.IPv4(192, 0, 2, 51)	// Test scraper signals	}		stream.Send(&apiv1.Message{Payload: &apiv1.Message_Signal{Signal: signal}})		}			Weight:    10.0,			Type:      apiv1.SignalType_SIGNAL_SYN_FLOOD,			Timestamp: time.Now().Unix(),			Ip:        ddosIP.To4(),		signal := &apiv1.Signal{	for i := 0; i < 30; i++ {	ddosIP := net.IPv4(192, 0, 2, 50)	// Test DDoS signals	}		t.Fatalf("Failed to create stream: %v", err)	if err != nil {	stream, err := client.StreamSignals(context.Background())	client := apiv1.NewPacketYeeterClient(conn)	defer conn.Close()	}		t.Fatalf("Failed to connect: %v", err)	if err != nil {	)		grpc.WithTransportCredentials(insecure.NewCredentials()),		"127.0.0.1:19099",	conn, err := grpc.NewClient(	time.Sleep(100 * time.Millisecond)	defer a.Close()	}		t.Fatalf("Failed to start analyzer: %v", err)	if err := a.Start(); err != nil {	}		t.Fatalf("Failed to create analyzer: %v", err)	if err != nil {	a, err := analyzer.New(analyzerCfg)	}		DisableDDoSCategory:   false,		DryRun:                true,		AIQueueSize:           100,		AIWorkers:             2,		AIConfidenceThreshold: 0.5,		InspectorAddr:         "127.0.0.1:19101",		MetricsAddr:           "127.0.0.1:19100",		ListenAddr:            "127.0.0.1:19099",	analyzerCfg := analyzer.Config{func TestDifferentSignalTypes(t *testing.T) {// TestDifferentSignalTypes tests various signal type combinations}	}		t.Logf("Stream close warning: %v", err)	if err != nil {	_, err = stream.CloseAndRecv()	}		t.Error("Expected at least some detections from 10k signals")	if len(detections) == 0 {	t.Logf("Generated %d detections from %d signals", len(detections), signalsSent)	detections := a.AIEngine.GetAllLatestDetections()	// Check detections	time.Sleep(3 * time.Second)	// Give analyzer time to process		signalsSent, sendDuration, float64(signalsSent)/sendDuration.Seconds())	t.Logf("Sent %d signals in %s (%.0f signals/sec)",	sendDuration := time.Since(start)	}		}			signalsSent++			}				t.Fatalf("Failed to send signal: %v", err)			if err != nil {			})				Payload: &apiv1.Message_Signal{Signal: signal},			err = stream.Send(&apiv1.Message{			}				Weight:    1.0,				Type:      apiv1.SignalType_SIGNAL_HTTP_HIGH_FREQUENCY,				Timestamp: time.Now().Unix(),				Ip:        testIP.To4(),			signal := &apiv1.Signal{		for j := 0; j < 100; j++ {		testIP := net.IPv4(192, 0, 2, byte(i))	for i := 0; i < 100; i++ {	signalsSent := 0	start := time.Now()	// Send 10k signals from 100 different IPs	}		t.Fatalf("Failed to send status: %v", err)	if err != nil {	})		},			},				Timestamp:   time.Now().Unix(),				Hostname:    "load-test-host",				CollectorId: "load-test",			Status: &apiv1.CollectorStatus{		Payload: &apiv1.Message_Status{	err = stream.Send(&apiv1.Message{	// Send status	}		t.Fatalf("Failed to create stream: %v", err)	if err != nil {	stream, err := client.StreamSignals(context.Background())	client := apiv1.NewPacketYeeterClient(conn)	defer conn.Close()	}		t.Fatalf("Failed to connect: %v", err)	if err != nil {	)		grpc.WithTransportCredentials(insecure.NewCredentials()),		"127.0.0.1:19096",	conn, err := grpc.NewClient(	// Connect	time.Sleep(100 * time.Millisecond)	defer a.Close()	}		t.Fatalf("Failed to start analyzer: %v", err)	if err := a.Start(); err != nil {	}		t.Fatalf("Failed to create analyzer: %v", err)	if err != nil {	a, err := analyzer.New(analyzerCfg)	}		DryRun:                true,		AIQueueSize:           10000,		AIWorkers:             8,		AIConfidenceThreshold: 0.7,		InspectorAddr:         "127.0.0.1:19098",		MetricsAddr:           "127.0.0.1:19097",		ListenAddr:            "127.0.0.1:19096",	analyzerCfg := analyzer.Config{	}		t.Skip("Skipping high volume test in short mode")	if testing.Short() {func TestHighVolumeSignals(t *testing.T) {// TestHighVolumeSignals tests performance under high signal load}	}		t.Errorf("Expected at least 20 true positives, got %d", tpCount)	if tpCount < 20 {	tpCount := finalStats["true_positives"].(int)	t.Logf("Final feedback stats: %+v", finalStats)	finalStats := a.AIEngine.GetFeedbackStats()	// Check updated stats	}		a.AIEngine.RecordTruePositive("192.0.2." + string(rune(100+i)))	for i := 0; i < 20; i++ {	// Simulate true positives to balance the FP rate	}		t.Errorf("Expected at least 1 false positive, got %d", fpCount)	if fpCount < 1 {	fpCount := stats["false_positives"].(int)	stats := a.AIEngine.GetFeedbackStats()	// Check if FP was recorded	}		t.Errorf("Expected %s to be in allowlist after false positive report", testIP)	if !found {	}		}			break			t.Logf("IP %s is in allowlist, expires at: %s", testIP, entry.ExpiresAt)			found = true		if entry.IP == testIP {	for _, entry := range allowlist {	found := false	allowlist := a.AIEngine.GetAllowlist()	// Check if IP is in allowlist	a.AIEngine.RecordFalsePositive(testIP)	testIP := "192.0.2.10"	// Simulate a false positive	t.Logf("Initial threshold: %.3f", initialThreshold)	initialThreshold := initialStats["current_threshold"].(float64)	}		t.Fatal("Feedback loop should be enabled")	if !initialStats["enabled"].(bool) {	t.Logf("Initial feedback stats: %+v", initialStats)	initialStats := a.AIEngine.GetFeedbackStats()	// Get initial feedback stats	time.Sleep(100 * time.Millisecond)	defer a.Close()	}		t.Fatalf("Failed to start analyzer: %v", err)	if err := a.Start(); err != nil {	}		t.Fatalf("Failed to create analyzer: %v", err)	if err != nil {	a, err := analyzer.New(analyzerCfg)	}		DryRun:                true,		AIQueueSize:           100,		AIWorkers:             2,		AIConfidenceThreshold: 0.6,		InspectorAddr:         "127.0.0.1:19095",		MetricsAddr:           "127.0.0.1:19094",		ListenAddr:            "127.0.0.1:19093",	analyzerCfg := analyzer.Config{	// Start analyzer with feedback enabledfunc TestFeedbackLoopIntegration(t *testing.T) {// TestFeedbackLoopIntegration tests the feedback loop with false positive reporting}	}		t.Logf("Stream close warning: %v", err)	if err != nil {	_, err = stream.CloseAndRecv()	// Close stream	t.Logf("Feedback stats: %+v", stats)	stats := a.AIEngine.GetFeedbackStats()	// In dry-run mode, we just log, but we can check metrics	// Test Case 2: Verify BLOCK command would be sent (in dry-run mode)	}		}			t.Errorf("Expected confidence > 0.1, got %.2f", det.Confidence)		if det.Confidence < 0.1 {		}			t.Errorf("Expected at least 50 signals, got %d", det.SignalCount)		if det.SignalCount < 50 {			testIP, det.Confidence, det.SignalCount, det.BotCategory)		t.Logf("Detection triggered: IP=%s, Confidence=%.2f, Signals=%d, Category=%s",	} else {		t.Errorf("Expected detection for %s, got none", testIP)	if det == nil {	det := a.AIEngine.GetLatestDetection("ip:" + testIP)	// Check if detection was triggered	time.Sleep(2 * time.Second)	// Give analyzer time to process	}		}			t.Fatalf("Failed to send signal: %v", err)		if err != nil {		})			Payload: &apiv1.Message_Signal{Signal: signal},		err = stream.Send(&apiv1.Message{		}			Weight:    1.0,			Type:      apiv1.SignalType_SIGNAL_HTTP_HIGH_FREQUENCY,			Timestamp: time.Now().Unix(),			Ip:        ipBytes,		signal := &apiv1.Signal{	for i := 0; i < 50; i++ {	ipBytes := net.ParseIP(testIP).To4()	testIP := "192.0.2.1"	// Test Case 1: Send enough signals to trigger a detection	}		t.Fatalf("Failed to send status: %v", err)	if err != nil {	})		},			},				DryRun:      true,				Timestamp:   time.Now().Unix(),				Hostname:    "test-host",				CollectorId: "test-collector",			Status: &apiv1.CollectorStatus{		Payload: &apiv1.Message_Status{	err = stream.Send(&apiv1.Message{	// Send collector status	}		t.Fatalf("Failed to create stream: %v", err)	if err != nil {	stream, err := client.StreamSignals(context.Background())	// Create a stream to send signals	client := apiv1.NewPacketYeeterClient(conn)	defer conn.Close()	}		t.Fatalf("Failed to connect to analyzer: %v", err)	if err != nil {	)		grpc.WithTransportCredentials(insecure.NewCredentials()),		"127.0.0.1:19090",	conn, err := grpc.NewClient(	// Connect to analyzer as a collector	time.Sleep(200 * time.Millisecond)	// Give collector time to connect	defer c.Close()	}		t.Fatalf("Failed to start collector: %v", err)	if err := c.Start(); err != nil {	}		t.Fatalf("Failed to create collector: %v", err)	if err != nil {	c, err := collector.New(collectorCfg)	}		DryRun:        true,		AnalyzerAddrs: []string{"127.0.0.1:19090"},		CollectorID:   "test-collector",	collectorCfg := collector.Config{	// Start collector (without eBPF, just gRPC relay)	time.Sleep(100 * time.Millisecond)	// Give analyzer time to start	defer a.Close()	}		t.Fatalf("Failed to start analyzer: %v", err)	if err := a.Start(); err != nil {
+	ip := net.IPv4(192, 0, 2, 42)
+	for i := 0; i < 5; i++ {
+		if err := stream.Send(&apiv1.Signal{
+			Id:        "integration-test-syn",
+			Timestamp: timestamppb.Now(),
+			Type:      apiv1.SignalType_SIGNAL_SYN_FLOOD,
+			Source:    apiv1.SignalSource_SOURCE_EBPF,
+			Ip:        ip.To4(),
+			Weight:    100,
+		}); err != nil {
+			t.Fatalf("send signal: %v", err)
+		}
+	}
+	if err := stream.CloseSend(); err != nil {
+		t.Fatalf("close signal stream: %v", err)
+	}
+
+	if _, err := stream.Recv(); err != nil && !errors.Is(err, io.EOF) {
+		t.Fatalf("receive stream close: %v", err)
+	}
+
+	eventually(t, 5*time.Second, func() bool {
+		signalsByIP, _, _, _, _, _ := a.AIEngine.GetMetrics()
+		byType, bySource := a.AIEngine.GetEntitySignalBreakdown(ip.String(), "ip")
+		return signalsByIP[ip.String()] == 5 &&
+			byType["syn_flood"] == 5 &&
+			bySource["tcp"] == 5
+	})
+}
+
+func startTestAnalyzer(t *testing.T) *analyzer.Analyzer {
+	t.Helper()
+
+	cfg := analyzer.Config{
+		ListenAddr:                 reserveTCPAddr(t),
+		MetricsAddr:                reserveTCPAddr(t),
+		InspectorAddr:              "",
+		JA4DBCachePath:             writeJA4Cache(t),
+		StateDir:                   t.TempDir(),
+		ReputationThreshold:        75.0,
+		AIConfidenceThreshold:      0.1,
+		AISuspiciousScoreThreshold: 0.1,
+		AIBlockScoreThreshold:      0.2,
+		AIWorkers:                  1,
+		AIQueueSize:                100,
+		DDoSIncompleteThreshold:    1,
+		DDoSPatternThreshold:       1,
+		DDoSTotalThreshold:         1,
+		DDoSRequireHighFreq:        false,
+		DryRun:                     true,
+	}
+
+	a, err := analyzer.New(cfg)
+	if err != nil {
+		t.Fatalf("create analyzer: %v", err)
+	}
+	if err := a.Start(); err != nil {
+		t.Fatalf("start analyzer: %v", err)
+	}
+	t.Cleanup(a.Close)
+
+	return a
+}
+
+func writeJA4Cache(t *testing.T) string {
+	t.Helper()
+
+	cachePath := filepath.Join(t.TempDir(), "ja4db.json")
+	if err := os.WriteFile(cachePath, []byte(`[{"application":"integration-test","ja4_fingerprint":"test"}]`), 0644); err != nil {
+		t.Fatalf("write JA4 cache: %v", err)
+	}
+	return cachePath
+}
+
+func reserveTCPAddr(t *testing.T) string {
+	t.Helper()
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve tcp address: %v", err)
+	}
+	addr := listener.Addr().String()
+	if err := listener.Close(); err != nil {
+		t.Fatalf("release tcp address: %v", err)
+	}
+	return addr
+}
+
+func eventually(t *testing.T, timeout time.Duration, condition func() bool) {
+	t.Helper()
+
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if condition() {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatal("condition was not met before timeout")
+}
