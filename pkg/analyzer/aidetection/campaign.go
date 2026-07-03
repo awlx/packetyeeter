@@ -211,11 +211,11 @@ func (a *CampaignAggregator) Evaluate(now time.Time) []CampaignDetection {
 			continue
 		}
 
-		baseline := a.observeBaselineLocked(c, now)
 		detection, ok := a.evaluateCampaignLocked(c)
 		if !ok {
 			continue
 		}
+		baseline := a.observeBaselineLocked(c, now)
 		detection.Baseline = baseline
 		if c.lastReason == detection.Reason && !c.lastDetection.IsZero() && now.Sub(c.lastDetection) < a.cfg.Window {
 			continue
