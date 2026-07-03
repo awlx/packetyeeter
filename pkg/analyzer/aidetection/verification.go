@@ -3,8 +3,11 @@ package aidetection
 import (
 	"PacketYeeter/pkg/analyzer/ja4db"
 	"PacketYeeter/pkg/metrics"
+	"context"
 	"net"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/sirupsen/logrus"
 )
@@ -23,12 +26,35 @@ type CrawlerVerifier struct {
 	verifiedDomains map[string][]string
 	// JA4 database for fingerprint-based verification
 	ja4DB JA4Verifier
+
+	resolver      crawlerDNSResolver
+	lookupTimeout time.Duration
+	cacheTTL      time.Duration
+	cacheMu       sync.Mutex
+	cache         map[string]crawlerVerificationCacheEntry
 }
 
 // NewCrawlerVerifier creates a new crawler verifier
 func NewCrawlerVerifier(ja4DB JA4Verifier) *CrawlerVerifier {
+	return newCrawlerVerifier(ja4DB, defaultCrawlerResolver{}, 500*time.Millisecond, 10*time.Minute)
+}
+
+func newCrawlerVerifier(ja4DB JA4Verifier, resolver crawlerDNSResolver, timeout, cacheTTL time.Duration) *CrawlerVerifier {
+	if resolver == nil {
+		resolver = defaultCrawlerResolver{}
+	}
+	if timeout <= 0 {
+		timeout = 500 * time.Millisecond
+	}
+	if cacheTTL <= 0 {
+		cacheTTL = 10 * time.Minute
+	}
 	return &CrawlerVerifier{
-		ja4DB: ja4DB,
+		ja4DB:         ja4DB,
+		resolver:      resolver,
+		lookupTimeout: timeout,
+		cacheTTL:      cacheTTL,
+		cache:         make(map[string]crawlerVerificationCacheEntry),
 		verifiedDomains: map[string][]string{
 			// Search engines
 			"googlebot":   {".googlebot.com", ".google.com"},
@@ -59,6 +85,26 @@ func NewCrawlerVerifier(ja4DB JA4Verifier) *CrawlerVerifier {
 	}
 }
 
+type crawlerDNSResolver interface {
+	LookupAddr(ctx context.Context, addr string) ([]string, error)
+	LookupIPAddr(ctx context.Context, host string) ([]net.IPAddr, error)
+}
+
+type defaultCrawlerResolver struct{}
+
+func (defaultCrawlerResolver) LookupAddr(ctx context.Context, addr string) ([]string, error) {
+	return net.DefaultResolver.LookupAddr(ctx, addr)
+}
+
+func (defaultCrawlerResolver) LookupIPAddr(ctx context.Context, host string) ([]net.IPAddr, error) {
+	return net.DefaultResolver.LookupIPAddr(ctx, host)
+}
+
+type crawlerVerificationCacheEntry struct {
+	status    VerificationStatus
+	expiresAt time.Time
+}
+
 // VerifyCrawler attempts to verify a crawler's identity using reverse DNS
 func (v *CrawlerVerifier) VerifyCrawler(ip net.IP, userAgent string) VerificationStatus {
 	ua := strings.ToLower(userAgent)
@@ -77,8 +123,22 @@ func (v *CrawlerVerifier) VerifyCrawler(ip net.IP, userAgent string) Verificatio
 		return VerificationSkipped
 	}
 
+	cacheKey := ip.String() + "|" + claimedBot
+	if status, ok := v.cachedVerification(cacheKey); ok {
+		return status
+	}
+
+	status := v.verifyCrawlerUncached(ip, claimedBot)
+	v.storeVerification(cacheKey, status)
+	return status
+}
+
+func (v *CrawlerVerifier) verifyCrawlerUncached(ip net.IP, claimedBot string) VerificationStatus {
+	ctx, cancel := context.WithTimeout(context.Background(), v.lookupTimeout)
+	defer cancel()
+
 	// Perform reverse DNS lookup
-	names, err := net.LookupAddr(ip.String())
+	names, err := v.resolver.LookupAddr(ctx, ip.String())
 	if err != nil {
 		logrus.WithFields(logrus.Fields{
 			"ip":    ip.String(),
@@ -92,13 +152,14 @@ func (v *CrawlerVerifier) VerifyCrawler(ip net.IP, userAgent string) Verificatio
 	}
 
 	// Check if any reverse DNS name matches verified domains
-	hostname := names[0]
+	hostname := strings.TrimSuffix(strings.ToLower(names[0]), ".")
 	expectedDomains := v.verifiedDomains[claimedBot]
 
 	for _, domain := range expectedDomains {
+		domain = strings.TrimSuffix(strings.ToLower(domain), ".")
 		if strings.HasSuffix(hostname, domain) {
 			// Verify forward DNS matches
-			if v.verifyForwardDNS(hostname, ip) {
+			if v.verifyForwardDNS(ctx, hostname, ip) {
 				return VerificationVerified
 			}
 		}
@@ -108,19 +169,43 @@ func (v *CrawlerVerifier) VerifyCrawler(ip net.IP, userAgent string) Verificatio
 }
 
 // verifyForwardDNS checks that the hostname resolves back to the IP
-func (v *CrawlerVerifier) verifyForwardDNS(hostname string, expectedIP net.IP) bool {
-	ips, err := net.LookupIP(hostname)
+func (v *CrawlerVerifier) verifyForwardDNS(ctx context.Context, hostname string, expectedIP net.IP) bool {
+	ips, err := v.resolver.LookupIPAddr(ctx, hostname)
 	if err != nil {
 		return false
 	}
 
 	for _, ip := range ips {
-		if ip.Equal(expectedIP) {
+		if ip.IP.Equal(expectedIP) {
 			return true
 		}
 	}
 
 	return false
+}
+
+func (v *CrawlerVerifier) cachedVerification(cacheKey string) (VerificationStatus, bool) {
+	v.cacheMu.Lock()
+	defer v.cacheMu.Unlock()
+
+	entry, ok := v.cache[cacheKey]
+	if !ok {
+		return "", false
+	}
+	if time.Now().After(entry.expiresAt) {
+		delete(v.cache, cacheKey)
+		return "", false
+	}
+	return entry.status, true
+}
+
+func (v *CrawlerVerifier) storeVerification(cacheKey string, status VerificationStatus) {
+	v.cacheMu.Lock()
+	defer v.cacheMu.Unlock()
+	v.cache[cacheKey] = crawlerVerificationCacheEntry{
+		status:    status,
+		expiresAt: time.Now().Add(v.cacheTTL),
+	}
 }
 
 func formatJA4Info(entry ja4db.JA4Entry) string {

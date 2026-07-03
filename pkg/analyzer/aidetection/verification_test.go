@@ -1,6 +1,12 @@
 package aidetection
 
-import "testing"
+import (
+	"context"
+	"errors"
+	"net"
+	"testing"
+	"time"
+)
 
 func TestCategorizeBotBrowserInfo(t *testing.T) {
 	v := NewCrawlerVerifier(nil)
@@ -21,5 +27,64 @@ func TestIsBrowserInfo(t *testing.T) {
 	}
 	if IsBrowserInfo("headlesschrome 120") {
 		t.Fatalf("expected headlesschrome to be ignored")
+	}
+}
+
+type fakeCrawlerResolver struct {
+	addrCalls int
+	ipCalls   int
+	names     []string
+	ips       []net.IPAddr
+	err       error
+}
+
+func (r *fakeCrawlerResolver) LookupAddr(ctx context.Context, addr string) ([]string, error) {
+	r.addrCalls++
+	if r.err != nil {
+		return nil, r.err
+	}
+	return r.names, nil
+}
+
+func (r *fakeCrawlerResolver) LookupIPAddr(ctx context.Context, host string) ([]net.IPAddr, error) {
+	r.ipCalls++
+	if r.err != nil {
+		return nil, r.err
+	}
+	return r.ips, nil
+}
+
+func TestVerifyCrawlerUsesResolverAndCaches(t *testing.T) {
+	ip := net.ParseIP("66.249.66.1")
+	resolver := &fakeCrawlerResolver{
+		names: []string{"crawl-66-249-66-1.googlebot.com."},
+		ips:   []net.IPAddr{{IP: ip}},
+	}
+	v := newCrawlerVerifier(nil, resolver, time.Second, time.Minute)
+	v.verifiedDomains["googlebot"] = []string{".googlebot.com."}
+
+	status := v.VerifyCrawler(ip, "Mozilla/5.0 Googlebot/2.1")
+	if status != VerificationVerified {
+		t.Fatalf("expected verified crawler, got %s", status)
+	}
+	status = v.VerifyCrawler(ip, "Mozilla/5.0 Googlebot/2.1")
+	if status != VerificationVerified {
+		t.Fatalf("expected cached verified crawler, got %s", status)
+	}
+	if resolver.addrCalls != 1 || resolver.ipCalls != 1 {
+		t.Fatalf("expected cached verification to avoid duplicate DNS lookups, got reverse=%d forward=%d", resolver.addrCalls, resolver.ipCalls)
+	}
+}
+
+func TestVerifyCrawlerResolverFailureIsDeterministic(t *testing.T) {
+	resolver := &fakeCrawlerResolver{err: errors.New("dns timeout")}
+	v := newCrawlerVerifier(nil, resolver, time.Nanosecond, time.Minute)
+
+	status := v.VerifyCrawler(net.ParseIP("192.0.2.10"), "Googlebot/2.1")
+	if status != VerificationFailed {
+		t.Fatalf("expected failed verification on resolver error, got %s", status)
+	}
+	if resolver.addrCalls != 1 {
+		t.Fatalf("expected exactly one reverse DNS lookup, got %d", resolver.addrCalls)
 	}
 }

@@ -31,6 +31,29 @@ func TestIsDDoSPatternRequireHighFreq(t *testing.T) {
 	}
 }
 
+func TestIsDDoSPatternDistributedASN(t *testing.T) {
+	e := New(Config{
+		DDoSIncompleteThreshold: 10,
+		DDoSPatternThreshold:    50,
+		DDoSTotalThreshold:      100,
+		DDoSRequireHighFreq:     true,
+		DDoSMinIPFloodPPS:       1000,
+		DDoSMinASNFloodPPS:      2000,
+	})
+
+	signals := make([]Signal, 10)
+	for i := range signals {
+		signals[i] = Signal{Type: SignalIncompleteHandshake, Source: SourceTCP, Weight: 1}
+	}
+	ok, info := e.isDDoSPattern(signals, 2500)
+	if !ok {
+		t.Fatalf("expected distributed ASN flood to trigger DDoS classification")
+	}
+	if got := info["ddos_reason"]; got != "distributed_asn_incomplete" {
+		t.Fatalf("expected distributed ASN reason, got %v", got)
+	}
+}
+
 func TestIsDDoSPatternDisabled(t *testing.T) {
 	e := New(Config{EnableDDoSCategory: false})
 	signals := make([]Signal, 600)

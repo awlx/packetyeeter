@@ -55,12 +55,13 @@ type Engine struct {
 	blockScoreThreshold      float64
 
 	// Dependencies
-	geoip       *geoip.Provider
-	reputation  *reputation.Engine
-	ja4Verifier JA4Verifier
-	mlModel     MLModel // Machine learning model for bot detection
-	threatIntel *threatintel.ThreatIntelligence
-	feedback    *FeedbackLoop // Adaptive threshold adjustment based on outcomes
+	geoip           *geoip.Provider
+	reputation      *reputation.Engine
+	ja4Verifier     JA4Verifier
+	crawlerVerifier *CrawlerVerifier
+	mlModel         MLModel // Machine learning model for bot detection
+	threatIntel     *threatintel.ThreatIntelligence
+	feedback        *FeedbackLoop // Adaptive threshold adjustment based on outcomes
 
 	// Metrics tracking
 	signalsByIP      map[string]uint64
@@ -275,6 +276,7 @@ func New(cfg Config) *Engine {
 		geoip:                    cfg.GeoIP,
 		reputation:               cfg.Reputation,
 		ja4Verifier:              cfg.JA4Verifier,
+		crawlerVerifier:          NewCrawlerVerifier(cfg.JA4Verifier),
 		mlModel:                  cfg.MLModel,
 		threatIntel:              cfg.ThreatIntel,
 		signalsByIP:              make(map[string]uint64),
@@ -1239,7 +1241,7 @@ func (e *Engine) evaluateWindow(windowSignals map[string][]Signal) {
 		}
 
 		if detected {
-			e.handleDetection(key, signals, ewmaBaseline, confidence)
+			e.handleDetection(key, signals, ewmaBaseline, confidence, asnFloodWeight)
 		}
 	}
 }
@@ -1315,9 +1317,16 @@ func (e *Engine) isDDoSPattern(signals []Signal, asnFloodWeight float64) (bool, 
 	}
 
 	// Thresholds tuned for 10s window; conservative defaults
+	ddosReason := func(reason string) string {
+		if floodWeight < e.ddosMinIPFloodPPS && asnFloodWeight >= e.ddosMinASNFloodPPS {
+			return "distributed_asn_" + reason
+		}
+		return reason
+	}
+
 	if countIncomplete >= e.ddosIncompleteThreshold {
 		if !requireFreq || countHighFreq > 0 || hasFlood {
-			info["ddos_reason"] = "incomplete"
+			info["ddos_reason"] = ddosReason("incomplete")
 			logrus.WithFields(info).Debug("DDoS pattern matched")
 			return true, info
 		}
@@ -1325,7 +1334,7 @@ func (e *Engine) isDDoSPattern(signals []Signal, asnFloodWeight float64) (bool, 
 
 	if patternCount >= e.ddosPatternThreshold {
 		if !requireFreq || countHighFreq > 0 || hasFlood {
-			info["ddos_reason"] = "pattern"
+			info["ddos_reason"] = ddosReason("pattern")
 			logrus.WithFields(info).Debug("DDoS pattern matched")
 			return true, info
 		}
@@ -1334,7 +1343,7 @@ func (e *Engine) isDDoSPattern(signals []Signal, asnFloodWeight float64) (bool, 
 	// Fallback: extreme signal volume triggers ddos classification
 	if len(signals) >= e.ddosTotalThreshold {
 		if (!requireFreq || patternCount > 0) && (floodWeight >= e.ddosMinIPFloodPPS || asnFloodWeight >= e.ddosMinASNFloodPPS) {
-			info["ddos_reason"] = "volume"
+			info["ddos_reason"] = ddosReason("volume")
 			logrus.WithFields(info).Debug("DDoS pattern matched")
 			return true, info
 		}
@@ -1387,7 +1396,43 @@ func (e *Engine) shouldLogDetection(key string) bool {
 	return true
 }
 
-func (e *Engine) handleDetection(key string, signals []Signal, ewmaBaseline, confidence float64) {
+const (
+	strongRuleConfidenceFloor = 0.80
+	legitimateMLConfidenceCap = 0.40
+	strongLegitimateMLMinConf = 0.90
+	strongLegitimateMLMaxBotP = 0.10
+)
+
+func blendMLConfidence(ruleConfidence float64, prediction MLPredictionResult) float64 {
+	mlConfidence := clampConfidence(prediction.Confidence)
+	ruleConfidence = clampConfidence(ruleConfidence)
+
+	if prediction.IsBot {
+		return math.Max(ruleConfidence, mlConfidence)
+	}
+	if isStrongLegitimateML(prediction) && ruleConfidence < strongRuleConfidenceFloor {
+		return math.Min(ruleConfidence, legitimateMLConfidenceCap)
+	}
+	return ruleConfidence
+}
+
+func isStrongLegitimateML(prediction MLPredictionResult) bool {
+	return !prediction.IsBot &&
+		prediction.Confidence >= strongLegitimateMLMinConf &&
+		prediction.BotProbability <= strongLegitimateMLMaxBotP
+}
+
+func clampConfidence(confidence float64) float64 {
+	if confidence < 0 {
+		return 0
+	}
+	if confidence > 1 {
+		return 1
+	}
+	return confidence
+}
+
+func (e *Engine) handleDetection(key string, signals []Signal, ewmaBaseline, confidence, asnFloodWeight float64) {
 	if len(signals) == 0 {
 		return
 	}
@@ -1483,7 +1528,7 @@ func (e *Engine) handleDetection(key string, signals []Signal, ewmaBaseline, con
 	}
 
 	// Verify crawler if applicable
-	verifier := NewCrawlerVerifier(e.ja4Verifier)
+	verifier := e.crawlerVerifier
 	verified := VerificationUnknown
 	if firstSignal.IP != nil && userAgent != "" {
 		verified = verifier.VerifyCrawler(firstSignal.IP, userAgent)
@@ -1506,7 +1551,7 @@ func (e *Engine) handleDetection(key string, signals []Signal, ewmaBaseline, con
 		return
 	}
 
-	ddosDetected, ddosInfo := e.isDDoSPattern(signals, 0)
+	ddosDetected, ddosInfo := e.isDDoSPattern(signals, asnFloodWeight)
 	if !ddosDetected && botCategory == BotCategoryDDoS {
 		botCategory = BotCategoryUnknown
 	}
@@ -1680,15 +1725,12 @@ func (e *Engine) handleDetection(key string, signals []Signal, ewmaBaseline, con
 			mlCategory = BotCategoryUnknown
 		}
 
-		// ML confidence is now the ONLY confidence used for decisions
-		// Rule-based confidence is stored only for display/debugging
 		ruleConfidence = confidence
-		confidence = mlConfidence
+		confidence = blendMLConfidence(ruleConfidence, prediction)
 
-		// If ML is highly confident it's legitimate (low bot probability),
-		// cap confidence to prevent blocking
-		if !prediction.IsBot && mlConfidence < 0.3 {
-			confidence = math.Min(confidence, 0.4) // Cap at 40% to prevent blocking
+		// If ML is highly confident it's legitimate, cap weak/moderate rule
+		// confidence to prevent blocking. Strong rule evidence remains a floor.
+		if !prediction.IsBot && isStrongLegitimateML(prediction) && ruleConfidence < strongRuleConfidenceFloor {
 			logrus.WithFields(logrus.Fields{
 				"ip":               firstSignal.IP.String(),
 				"ml_confidence":    mlConfidence,
