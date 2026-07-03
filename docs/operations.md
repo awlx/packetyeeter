@@ -41,6 +41,43 @@ The collector is intentionally less restricted because it loads eBPF, attaches X
 - Treat adaptive campaign baselines as rollout context, not enforcement. During analyzer startup or a new service/vector mix, `baseline_enough_samples=false` means the EWMA is still warming up; compare `baseline_current_rate`, `baseline_rate`, and `baseline_multiplier` only after enough samples have accumulated for that service key.
 - Roll back by re-enabling dry-run or stopping collectors before changing eBPF-related systemd hardening.
 
+## Modern DDoS runbook
+
+Use this workflow when campaign metrics or logs indicate a possible L3/L4 DDoS.
+Campaign and carpet-bombing detections are observe-only aggregate signals; they
+help operators understand blast radius and vector mix, but do not create block
+commands on their own.
+
+1. Confirm analyzer health and visibility. Check collector connectivity, signal
+   queue pressure, `packetyeeter_active_attack_campaigns`, and recent
+   `attack_campaign_observed` logs. If queues are dropping, treat the data as
+   incomplete until backpressure is resolved.
+2. Identify the dominant vector with
+   `sum by (vector) (rate(packetyeeter_attack_campaign_detections_total[5m]))`.
+   Interpret specific UDP labels as hints from existing port/protocol metadata:
+   `dns_reflection`, `ntp_reflection`, `ssdp_reflection`, `cldap_reflection`,
+   `memcached_reflection`, and `quic_initial_flood` are more specific than the
+   fallback `udp_flood`.
+3. Triage carpet-bombing breadth with
+   `packetyeeter_carpet_bombing_detections_total{reason=...}` and the matching
+   logs. Destination-subnet breadth usually points to distributed target
+   selection; destination-port breadth may indicate service discovery or
+   multi-service pressure; source breadth indicates distributed origin volume.
+4. Compare the current campaign to adaptive service baselines. Ignore
+   `enough_samples="false"` for enforcement decisions because the service key is
+   still warming up. Once enough samples exist, use the p95 baseline multiplier
+   and `packetyeeter_campaign_baseline_rate` to decide whether the campaign is
+   unusual for that protocol/port bucket/vector.
+5. Keep enforcement staged. Start or return to analyzer `-dry-run`, add or verify
+   allowlists for health checks, trusted proxies, monitoring, and upstream
+   providers, then canary enforcement on one collector before widening rollout.
+6. Document the vector, affected services, baseline state, actions taken, and
+   whether any block commands came from per-source detection paths rather than
+   observe-only campaign aggregation.
+
 ## Prometheus example
 
 An example scrape configuration is available in [`examples/prometheus-scrape.yml`](../examples/prometheus-scrape.yml). Adjust target hostnames and ports to match your deployment and keep scrape access on a trusted network.
+
+Example alert rules for modern DDoS observations are available in
+[`examples/prometheus-alerts.yml`](../examples/prometheus-alerts.yml).

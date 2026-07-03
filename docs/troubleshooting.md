@@ -94,6 +94,31 @@ Only enable `-enable-pprof` temporarily and bind it to a trusted address.
 
 Keep `-enable-high-cardinality-metrics=false` unless you need per-IP or per-fingerprint diagnostics. If enabled, use short retention or restricted scraping for the diagnostic job.
 
+### Campaign detections are firing but no blocks appear
+
+Attack campaign and carpet-bombing detections are observe-only aggregate
+observations. They are emitted to logs, detection history, and metrics to show
+blast radius and vector mix, but they do not send block commands by themselves.
+Use `packetyeeter_ai_detections_action_total`, `packetyeeter_*_blocks_total`,
+and `yeetctl list` to confirm whether a separate per-source detection path is
+blocking traffic.
+
+### UDP campaigns are labeled `udp_flood`
+
+`udp_flood` is the safe fallback when the analyzer does not have enough
+destination/source port or protocol metadata to classify DNS, NTP, SSDP, CLDAP,
+Memcached, or QUIC Initial traffic. Confirm collectors are reporting the
+expected metadata, then inspect `attack_campaign_observed` logs for sample
+destination ports before treating the vector as unknown reflection traffic.
+
+### Baseline multipliers look high after startup
+
+Adaptive campaign baselines need warmup samples per low-cardinality service key
+(`protocol`, destination port bucket, and vector). Treat
+`enough_samples="false"` and `baseline_enough_samples=false` as warmup, not as a
+standalone attack signal. During warmup, compare campaign counters, source and
+destination breadth, and block metrics instead of paging on multiplier alone.
+
 ### Management socket access fails
 
 The collector and `yeetctl` must use the same socket path. The default is `/var/run/packetyeeter-collector.sock`:
