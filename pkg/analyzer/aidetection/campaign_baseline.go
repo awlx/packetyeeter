@@ -158,6 +158,11 @@ type CampaignBaselineKey struct {
 	Protocol      string
 	DstPortBucket string
 	Vector        SignalType
+	// Scope distinguishes the fine-grained per-subnet campaign from the
+	// per-collector cross-subnet aggregate and the fully cross-collector
+	// global aggregate, so their sample rates never share (and inflate) the
+	// same adaptive baseline state. Defaults to "specific" when unset.
+	Scope string
 }
 
 func (k CampaignBaselineKey) String() string {
@@ -173,10 +178,14 @@ func (k CampaignBaselineKey) String() string {
 	if vector == "" {
 		vector = SignalType("unknown")
 	}
-	return fmt.Sprintf("protocol=%s|dst_port_bucket=%s|vector=%s", protocol, portBucket, vector)
+	scope := k.Scope
+	if scope == "" {
+		scope = "specific"
+	}
+	return fmt.Sprintf("protocol=%s|dst_port_bucket=%s|vector=%s|scope=%s", protocol, portBucket, vector, scope)
 }
 
-func campaignBaselineKey(vector SignalType, events []campaignSignal) CampaignBaselineKey {
+func campaignBaselineKey(vector SignalType, events []campaignSignal, scope string) CampaignBaselineKey {
 	protocolCounts := make(map[string]int)
 	portCounts := make(map[uint32]int)
 	for _, ev := range events {
@@ -191,6 +200,7 @@ func campaignBaselineKey(vector SignalType, events []campaignSignal) CampaignBas
 		Protocol:      mostCommonString(protocolCounts, "unknown"),
 		DstPortBucket: portBucket(mostCommonPort(portCounts)),
 		Vector:        vector,
+		Scope:         scope,
 	}
 }
 

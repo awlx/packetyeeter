@@ -307,8 +307,8 @@ var (
 
 	CampaignBaselineRate = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "packetyeeter_campaign_baseline_rate",
-		Help: "Adaptive EWMA campaign signal baseline rate by low-cardinality service labels",
-	}, []string{"vector", "protocol", "dst_port_bucket"})
+		Help: "Adaptive EWMA campaign signal baseline rate for a service key",
+	}, []string{"vector", "protocol", "dst_port_bucket", "enough_samples"})
 
 	AIBlocksBySignal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "packetyeeter_ai_blocks_by_signal_total",
