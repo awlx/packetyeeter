@@ -1253,7 +1253,7 @@ func addCampaignBaselineMetadata(metadata map[string]interface{}, baseline Campa
 	}
 	enoughSamples := strconv.FormatBool(baseline.EnoughSamples)
 	metrics.CampaignBaselineMultiplier.WithLabelValues(vector, protocol, portBucket, enoughSamples).Observe(baseline.Multiplier)
-	metrics.CampaignBaselineRate.WithLabelValues(vector, protocol, portBucket).Set(baseline.BaselineRate)
+	metrics.CampaignBaselineRate.WithLabelValues(vector, protocol, portBucket, enoughSamples).Set(baseline.BaselineRate)
 }
 
 // evaluateWindow checks if accumulated signals trigger a detection

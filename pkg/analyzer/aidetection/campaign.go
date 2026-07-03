@@ -155,14 +155,36 @@ func (a *CampaignAggregator) Record(signal Signal) {
 	}
 	campaignSignal := signal
 	campaignSignal.Type = classifyUDPAttackVector(signal)
+
+	// Every signal contributes to exactly three campaign buckets:
+	//  1. the specific-subnet campaign (vector+source+collector+destSubnet), which
+	//     tracks fine-grained breadth (destination IPs/ports, weak sources) for one
+	//     collector/subnet pair.
+	//  2. a per-collector cross-subnet aggregate ("dest_subnet=any") used to catch
+	//     carpet-bombing that spreads across many destination subnets behind a
+	//     single collector without inflating any one subnet's counters.
+	//  3. a fully global aggregate ("collector=any|dest_subnet=any") used to catch
+	//     carpet-bombing that also spreads across collectors, so an attacker can't
+	//     evade aggregation by varying collector_id alone.
+	// Each of these is a genuinely distinct rollup key (a separate campaign entry),
+	// not a duplicate copy of the same totals - evaluateCampaignLocked further
+	// guards the aggregate levels so they only ever report a detection when they
+	// represent breadth that the narrower scope beneath them does not already
+	// capture (see the distinctRollup check), preventing double-counted
+	// detections/baseline samples for the same underlying signal.
 	key := campaignKey(campaignSignal.Type, campaignSignal.Source, collector, destSubnet)
+	subnetAggKey := campaignKey(campaignSignal.Type, campaignSignal.Source, collector, "any")
+	globalAggKey := campaignKey(campaignSignal.Type, campaignSignal.Source, "any", "any")
 
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
 	a.recordLocked(key, campaignSignal, destIP, destSubnet, dstPort, collector)
-	if destSubnet != "any" {
-		a.recordLocked(campaignKey(campaignSignal.Type, campaignSignal.Source, collector, "any"), campaignSignal, destIP, destSubnet, dstPort, collector)
+	if subnetAggKey != key {
+		a.recordLocked(subnetAggKey, campaignSignal, destIP, destSubnet, dstPort, collector)
+	}
+	if globalAggKey != subnetAggKey {
+		a.recordLocked(globalAggKey, campaignSignal, destIP, destSubnet, dstPort, collector)
 	}
 }
 
@@ -235,8 +257,26 @@ func (a *CampaignAggregator) observeBaselineLocked(c *attackCampaign, now time.T
 	if windowSeconds <= 0 {
 		windowSeconds = 1
 	}
-	key := campaignBaselineKey(c.vector, c.events)
+	key := campaignBaselineKey(c.vector, c.events, campaignScope(c.key))
 	return a.baseline.Observe(key, float64(len(c.events))/windowSeconds, now)
+}
+
+// campaignScope classifies a campaign key as the fine-grained "specific"
+// campaign, the per-collector cross-subnet "subnet_aggregate" rollup, or the
+// fully cross-collector "global_aggregate" rollup. It is folded into the
+// baseline key so that samples from these genuinely different scopes never
+// share (and inflate) the same adaptive baseline/multiplier state.
+func campaignScope(key string) string {
+	anySubnet := strings.Contains(key, "dest_subnet=any")
+	anyCollector := strings.Contains(key, "collector=any")
+	switch {
+	case anySubnet && anyCollector:
+		return "global_aggregate"
+	case anySubnet:
+		return "subnet_aggregate"
+	default:
+		return "specific"
+	}
 }
 
 func (a *CampaignAggregator) ActiveCampaigns(now time.Time) int {
@@ -350,21 +390,56 @@ func (a *CampaignAggregator) evaluateCampaignLocked(c *attackCampaign) (Campaign
 		sourceKinds[sig.Source] = struct{}{}
 	}
 
-	reason := ""
+	// aggregateSubnetKey identifies either of the two cross-subnet rollups
+	// (per-collector "dest_subnet=any" and the fully global "collector=any|
+	// dest_subnet=any"). aggregateCollectorKey narrows that further to the
+	// fully global rollup.
 	aggregateSubnetKey := strings.Contains(c.key, "dest_subnet=any")
+	aggregateCollectorKey := strings.Contains(c.key, "collector=any")
+
+	if aggregateSubnetKey {
+		// A per-collector cross-subnet rollup only adds information beyond a
+		// single specific-subnet campaign when it genuinely spans more than
+		// one destination subnet. The fully global (cross-collector) rollup
+		// only adds information beyond the per-collector rollup when it
+		// genuinely spans more than one collector - otherwise, with a single
+		// collector in play, it is just a duplicate copy of that collector's
+		// subnet-aggregate campaign and must not be allowed to double-count
+		// detections or baseline samples for the same underlying signal.
+		var distinctRollup bool
+		if aggregateCollectorKey {
+			distinctRollup = len(collectors) > 1
+		} else {
+			distinctRollup = len(destSubnets) > 1
+		}
+		if !distinctRollup {
+			return CampaignDetection{}, false
+		}
+	}
+
+	destSubnetBreadth := len(destSubnets) >= a.cfg.MinDestSubnets
+	destIPBreadth := !aggregateSubnetKey && len(destIPs) >= a.cfg.MinDestIPs
+	destPortBreadth := !aggregateSubnetKey && len(destPorts) >= a.cfg.MinDestPorts
+	// Weak-source breadth is evaluated independently of the destination-breadth
+	// checks above (not gated behind them failing), so an attacker who spreads
+	// across many weak source IPs *and* many destination subnets/collectors at
+	// once is still caught - either individually or via the aggregate rollups -
+	// instead of evading detection by keeping every single check just under its
+	// own threshold.
+	weakSourceBreadth := len(sourceIPs) >= a.cfg.MinWeakSourceIPs &&
+		weakSourceWeights(sourceWeights, a.cfg.WeakSourceMaxWeight) &&
+		averageWeight(totalWeight, len(c.events)) <= a.cfg.WeakSignalMaxWeight
+
+	reason := ""
 	switch {
-	case len(destSubnets) >= a.cfg.MinDestSubnets:
+	case destSubnetBreadth:
 		reason = "destination_subnet_breadth"
-	case len(destIPs) >= a.cfg.MinDestIPs && !aggregateSubnetKey:
+	case destIPBreadth:
 		reason = "destination_ip_breadth"
-	case len(destPorts) >= a.cfg.MinDestPorts:
-		if !aggregateSubnetKey {
-			reason = "destination_port_breadth"
-		}
-	case len(sourceIPs) >= a.cfg.MinWeakSourceIPs && weakSourceWeights(sourceWeights, a.cfg.WeakSourceMaxWeight) && averageWeight(totalWeight, len(c.events)) <= a.cfg.WeakSignalMaxWeight:
-		if !aggregateSubnetKey {
-			reason = "weak_source_breadth"
-		}
+	case destPortBreadth:
+		reason = "destination_port_breadth"
+	case weakSourceBreadth:
+		reason = "weak_source_breadth"
 	}
 	if reason == "" {
 		return CampaignDetection{}, false

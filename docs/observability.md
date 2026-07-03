@@ -36,7 +36,7 @@ Campaign observation logs include low-cardinality aggregate fields such as
 | `packetyeeter_active_attack_campaigns` | gauge | none | Active campaign keys in the current analyzer aggregation window. |
 | `packetyeeter_carpet_bombing_detections_total` | counter | `vector`, `reason` | Campaigns broad enough across destinations, subnets, ports, or sources to be treated as carpet-bombing observations. |
 | `packetyeeter_campaign_baseline_multiplier` | histogram | `vector`, `protocol`, `dst_port_bucket`, `enough_samples` | Observed campaign signal rate divided by the adaptive EWMA service baseline. |
-| `packetyeeter_campaign_baseline_rate` | gauge | `vector`, `protocol`, `dst_port_bucket` | Adaptive EWMA campaign signal baseline rate for a service key. |
+| `packetyeeter_campaign_baseline_rate` | gauge | `vector`, `protocol`, `dst_port_bucket`, `enough_samples` | Adaptive EWMA campaign signal baseline rate for a service key. |
 
 Known low-cardinality UDP and DDoS vectors are `dns_reflection`,
 `ntp_reflection`, `ssdp_reflection`, `cldap_reflection`,
@@ -48,6 +48,22 @@ Campaign reasons are intentionally aggregate and bounded, for example
 destination breadth, destination subnet breadth, destination port breadth,
 source breadth, and total campaign weight. Do not add per-IP, per-subnet, JA4,
 or user-agent labels to shared dashboards or default alerting.
+
+Internally, the analyzer groups signals into a specific-subnet campaign
+(vector/source/collector/destination-subnet) plus two low-cardinality
+aggregate rollups: a per-collector cross-subnet rollup and a fully
+cross-collector rollup. The cross-collector rollup exists so an attacker
+that spreads traffic across many collectors (in addition to, or instead of,
+many destination subnets) cannot evade aggregation by varying
+`collector_id` alone. The weak-source-breadth ("many weak source IPs")
+check runs independently of the destination-breadth checks and applies to
+both the specific campaign and the aggregate rollups, so a combined
+attack - many weak source IPs *and* many destination subnets/collectors,
+each individually under its own threshold - is still caught. An aggregate
+rollup only reports a detection when it captures breadth its narrower scope
+does not already have (e.g. more than one destination subnet, or more than
+one collector), so the same underlying signals are never double-counted
+across the specific campaign and its aggregates.
 
 ### Existing detection and enforcement metrics
 
