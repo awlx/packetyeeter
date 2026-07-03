@@ -1,8 +1,8 @@
 package main
 
 import (
-	"PacketYeeter/pkg/collector/ebpf"
 	"PacketYeeter/pkg/analyzer/reputation"
+	"PacketYeeter/pkg/collector/ebpf"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -11,6 +11,8 @@ import (
 	"sort"
 	"time"
 )
+
+const defaultSocketPath = "/var/run/packetyeeter-collector.sock"
 
 var (
 	SocketPath string
@@ -37,7 +39,7 @@ func sortedEntries(m map[string]int) []kv {
 }
 
 func main() {
-	flag.StringVar(&SocketPath, "sock", "/var/run/packetyeeter.sock", "Path to PacketYeeter socket")
+	flag.StringVar(&SocketPath, "sock", defaultSocketPath, "Path to PacketYeeter collector socket")
 	flag.Parse()
 
 	args := flag.Args()
@@ -121,6 +123,9 @@ func main() {
 			e := entries[k]
 			fmt.Printf("%-40s | %-10.2f | %-10d | %-20s\n", k, e.Score, e.Offenses, e.LastSeen.Format(time.RFC822))
 		}
+		if len(keys) == 0 {
+			fmt.Println("(none; collector does not currently expose analyzer reputation state)")
+		}
 	} else if Command == "ai" {
 		type AISummary struct {
 			DetectionsByIP   map[string]int `json:"detections_by_ip"`
@@ -142,16 +147,28 @@ func main() {
 
 		fmt.Println("AI Scraper Detections (last run)")
 		fmt.Println("By IP:")
-		for _, item := range sortedEntries(summary.DetectionsByIP) {
+		ipEntries := sortedEntries(summary.DetectionsByIP)
+		for _, item := range ipEntries {
 			fmt.Printf("  %-20s %d\n", item.Key, item.Count)
+		}
+		if len(ipEntries) == 0 {
+			fmt.Println("  (none; collector does not currently expose analyzer AI state)")
 		}
 		fmt.Println("\nBy JA4H:")
-		for _, item := range sortedEntries(summary.DetectionsByJA4H) {
+		ja4hEntries := sortedEntries(summary.DetectionsByJA4H)
+		for _, item := range ja4hEntries {
 			fmt.Printf("  %-20s %d\n", item.Key, item.Count)
 		}
+		if len(ja4hEntries) == 0 {
+			fmt.Println("  (none; collector does not currently expose analyzer AI state)")
+		}
 		fmt.Println("\nBy ASN:")
-		for _, item := range sortedEntries(summary.DetectionsByASN) {
+		asnEntries := sortedEntries(summary.DetectionsByASN)
+		for _, item := range asnEntries {
 			fmt.Printf("  %-20s %d\n", item.Key, item.Count)
+		}
+		if len(asnEntries) == 0 {
+			fmt.Println("  (none; collector does not currently expose analyzer AI state)")
 		}
 	} else if Command == "bots" {
 		type BotStats struct {
@@ -194,6 +211,9 @@ func main() {
 			}
 			fmt.Printf("  %-35s %d\n", label, item.Count)
 		}
+		if len(stats.ByCategory) == 0 {
+			fmt.Println("  (none; collector does not currently expose analyzer bot state)")
+		}
 
 		fmt.Println("\nVerification Status:")
 		for _, item := range sortedEntries(stats.ByVerification) {
@@ -207,6 +227,9 @@ func main() {
 				status = "⏭️ Skipped"
 			}
 			fmt.Printf("  %-20s %d\n", status, item.Count)
+		}
+		if len(stats.ByVerification) == 0 {
+			fmt.Println("  (none; collector does not currently expose analyzer bot state)")
 		}
 
 		if len(stats.BehavioralPatterns) > 0 {
