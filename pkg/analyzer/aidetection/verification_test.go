@@ -3,10 +3,25 @@ package aidetection
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"testing"
 	"time"
 )
+
+// fakeClock lets tests control the passage of time seen by CrawlerVerifier
+// without sleeping, so TTL/eviction behavior can be tested deterministically.
+type fakeClock struct {
+	t time.Time
+}
+
+func (c *fakeClock) now() time.Time {
+	return c.t
+}
+
+func (c *fakeClock) advance(d time.Duration) {
+	c.t = c.t.Add(d)
+}
 
 func TestCategorizeBotBrowserInfo(t *testing.T) {
 	v := NewCrawlerVerifier(nil)
@@ -86,5 +101,72 @@ func TestVerifyCrawlerResolverFailureIsDeterministic(t *testing.T) {
 	}
 	if resolver.addrCalls != 1 {
 		t.Fatalf("expected exactly one reverse DNS lookup, got %d", resolver.addrCalls)
+	}
+}
+
+// TestVerificationCacheRespectsSizeCap ensures that generating a large
+// number of unique (IP, claimed-bot) cache keys cannot grow the cache
+// beyond its configured maximum size, which protects against a memory
+// exhaustion attack via unbounded unique-key generation.
+func TestVerificationCacheRespectsSizeCap(t *testing.T) {
+	resolver := &fakeCrawlerResolver{err: errors.New("dns timeout")}
+	v := newCrawlerVerifier(nil, resolver, time.Second, time.Minute)
+	v.maxCacheEntries = 50
+
+	for i := 0; i < 500; i++ {
+		ip := net.ParseIP(fmt.Sprintf("203.0.113.%d", i%256))
+		key := fmt.Sprintf("%s|googlebot-%d", ip.String(), i)
+		v.storeVerification(key, VerificationFailed)
+		if len(v.cache) > v.maxCacheEntries {
+			t.Fatalf("cache grew beyond cap: got %d entries, want <= %d", len(v.cache), v.maxCacheEntries)
+		}
+	}
+
+	if len(v.cache) != v.maxCacheEntries {
+		t.Fatalf("expected cache to settle at cap %d entries, got %d", v.maxCacheEntries, len(v.cache))
+	}
+}
+
+// TestNegativeVerificationExpiresBeforePositiveTTL demonstrates that a
+// failed/negative verification result is cached for a much shorter TTL than
+// a successful one, so a transient failure (or an attacker poisoning the
+// cache for a victim IP) self-heals and a legitimate crawler is
+// re-verified well before the full positive-result TTL would elapse.
+func TestNegativeVerificationExpiresBeforePositiveTTL(t *testing.T) {
+	ip := net.ParseIP("66.249.66.5")
+	resolver := &fakeCrawlerResolver{err: errors.New("dns timeout")}
+	// Long positive TTL so we can clearly observe the negative TTL expiring
+	// well before it, while sharing the same cacheKey.
+	v := newCrawlerVerifier(nil, resolver, time.Second, 10*time.Minute)
+
+	clock := &fakeClock{t: time.Now()}
+	v.now = clock.now
+
+	// First request fails DNS verification (negative cache entry).
+	status := v.VerifyCrawler(ip, "Mozilla/5.0 Googlebot/2.1")
+	if status != VerificationFailed {
+		t.Fatalf("expected initial verification to fail, got %s", status)
+	}
+	if resolver.addrCalls != 1 {
+		t.Fatalf("expected one reverse DNS lookup, got %d", resolver.addrCalls)
+	}
+
+	// Advance time past the negative TTL but well short of the positive TTL.
+	clock.advance(negativeVerificationCacheTTL + time.Second)
+
+	// The transient failure has "healed" (DNS now resolves correctly), and
+	// because the negative entry expired quickly, the legitimate crawler is
+	// re-verified rather than being stuck with the stale failure.
+	resolver.err = nil
+	resolver.names = []string{"crawl-66-249-66-5.googlebot.com."}
+	resolver.ips = []net.IPAddr{{IP: ip}}
+	v.verifiedDomains["googlebot"] = []string{".googlebot.com."}
+
+	status = v.VerifyCrawler(ip, "Mozilla/5.0 Googlebot/2.1")
+	if status != VerificationVerified {
+		t.Fatalf("expected re-verification to succeed after negative TTL expiry, got %s", status)
+	}
+	if resolver.addrCalls != 2 {
+		t.Fatalf("expected negative cache entry to expire and trigger a second lookup, got %d calls", resolver.addrCalls)
 	}
 }
