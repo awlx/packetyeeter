@@ -1,0 +1,497 @@
+package aidetection
+
+import (
+	"fmt"
+	"net"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+)
+
+const (
+	defaultCampaignWindow              = 30 * time.Second
+	defaultCampaignRetention           = 2 * time.Minute
+	defaultCampaignMinSignals          = 20
+	defaultCampaignMinDestIPs          = 16
+	defaultCampaignMinDestSubnets      = 4
+	defaultCampaignMinDestPorts        = 8
+	defaultCampaignMinWeakSourceIPs    = 20
+	defaultCampaignWeakSourceMaxWeight = 5.0
+	defaultCampaignWeakSignalMaxWeight = 2.0
+)
+
+type CampaignConfig struct {
+	Window              time.Duration
+	Retention           time.Duration
+	MinSignals          int
+	MinDestIPs          int
+	MinDestSubnets      int
+	MinDestPorts        int
+	MinWeakSourceIPs    int
+	WeakSourceMaxWeight float64
+	WeakSignalMaxWeight float64
+}
+
+func DefaultCampaignConfig() CampaignConfig {
+	return CampaignConfig{
+		Window:              defaultCampaignWindow,
+		Retention:           defaultCampaignRetention,
+		MinSignals:          defaultCampaignMinSignals,
+		MinDestIPs:          defaultCampaignMinDestIPs,
+		MinDestSubnets:      defaultCampaignMinDestSubnets,
+		MinDestPorts:        defaultCampaignMinDestPorts,
+		MinWeakSourceIPs:    defaultCampaignMinWeakSourceIPs,
+		WeakSourceMaxWeight: defaultCampaignWeakSourceMaxWeight,
+		WeakSignalMaxWeight: defaultCampaignWeakSignalMaxWeight,
+	}
+}
+
+func normalizeCampaignConfig(cfg CampaignConfig) CampaignConfig {
+	def := DefaultCampaignConfig()
+	if cfg.Window == 0 {
+		cfg.Window = def.Window
+	}
+	if cfg.Retention == 0 {
+		cfg.Retention = def.Retention
+	}
+	if cfg.MinSignals == 0 {
+		cfg.MinSignals = def.MinSignals
+	}
+	if cfg.MinDestIPs == 0 {
+		cfg.MinDestIPs = def.MinDestIPs
+	}
+	if cfg.MinDestSubnets == 0 {
+		cfg.MinDestSubnets = def.MinDestSubnets
+	}
+	if cfg.MinDestPorts == 0 {
+		cfg.MinDestPorts = def.MinDestPorts
+	}
+	if cfg.MinWeakSourceIPs == 0 {
+		cfg.MinWeakSourceIPs = def.MinWeakSourceIPs
+	}
+	if cfg.WeakSourceMaxWeight == 0 {
+		cfg.WeakSourceMaxWeight = def.WeakSourceMaxWeight
+	}
+	if cfg.WeakSignalMaxWeight == 0 {
+		cfg.WeakSignalMaxWeight = def.WeakSignalMaxWeight
+	}
+	return cfg
+}
+
+type CampaignDetection struct {
+	ID               string
+	Key              string
+	Vector           SignalType
+	Reason           string
+	FirstSeen        time.Time
+	LastSeen         time.Time
+	SignalCount      int
+	TotalWeight      float64
+	DestinationIPs   int
+	DestSubnets      int
+	DestinationPorts int
+	SourceIPs        int
+	ASNs             int
+	Collectors       int
+	SourceKinds      int
+	SampleIP         net.IP
+	SampleDestIP     string
+	SampleDstPort    uint32
+	SampleASN        string
+	SampleOrg        string
+}
+
+type campaignSignal struct {
+	signal     Signal
+	destIP     string
+	destSubnet string
+	dstPort    uint32
+	collector  string
+}
+
+type attackCampaign struct {
+	key           string
+	vector        SignalType
+	firstSeen     time.Time
+	lastSeen      time.Time
+	events        []campaignSignal
+	lastDetection time.Time
+	lastReason    string
+}
+
+type CampaignAggregator struct {
+	mu        sync.Mutex
+	cfg       CampaignConfig
+	campaigns map[string]*attackCampaign
+}
+
+func NewCampaignAggregator(cfg CampaignConfig) *CampaignAggregator {
+	return &CampaignAggregator{
+		cfg:       normalizeCampaignConfig(cfg),
+		campaigns: make(map[string]*attackCampaign),
+	}
+}
+
+func (a *CampaignAggregator) Record(signal Signal) {
+	if a == nil {
+		return
+	}
+	if signal.Timestamp.IsZero() {
+		signal.Timestamp = time.Now()
+	}
+	destIP, destSubnet := destinationIdentity(signal.Metadata)
+	dstPort := destinationPort(signal.Metadata)
+	collector := metadataString(signal.Metadata, "collector_id", "collector", "source_collector")
+	if collector == "" {
+		collector = "unknown"
+	}
+	key := campaignKey(signal.Type, signal.Source, collector, destSubnet)
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	a.recordLocked(key, signal, destIP, destSubnet, dstPort, collector)
+	if destSubnet != "any" {
+		a.recordLocked(campaignKey(signal.Type, signal.Source, collector, "any"), signal, destIP, destSubnet, dstPort, collector)
+	}
+}
+
+func (a *CampaignAggregator) recordLocked(key string, signal Signal, destIP, destSubnet string, dstPort uint32, collector string) {
+	c := a.campaigns[key]
+	if c == nil {
+		c = &attackCampaign{
+			key:       key,
+			vector:    signal.Type,
+			firstSeen: signal.Timestamp,
+		}
+		a.campaigns[key] = c
+	}
+	if c.firstSeen.IsZero() || signal.Timestamp.Before(c.firstSeen) {
+		c.firstSeen = signal.Timestamp
+	}
+	if signal.Timestamp.After(c.lastSeen) {
+		c.lastSeen = signal.Timestamp
+	}
+	c.events = append(c.events, campaignSignal{
+		signal:     signal,
+		destIP:     destIP,
+		destSubnet: destSubnet,
+		dstPort:    dstPort,
+		collector:  collector,
+	})
+	a.pruneCampaignLocked(c, signal.Timestamp)
+}
+
+func (a *CampaignAggregator) Evaluate(now time.Time) []CampaignDetection {
+	if a == nil {
+		return nil
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	detections := make([]CampaignDetection, 0)
+	for key, c := range a.campaigns {
+		a.pruneCampaignLocked(c, now)
+		if len(c.events) == 0 || now.Sub(c.lastSeen) > a.cfg.Retention {
+			delete(a.campaigns, key)
+			continue
+		}
+
+		detection, ok := a.evaluateCampaignLocked(c)
+		if !ok {
+			continue
+		}
+		if c.lastReason == detection.Reason && !c.lastDetection.IsZero() && now.Sub(c.lastDetection) < a.cfg.Window {
+			continue
+		}
+		c.lastReason = detection.Reason
+		c.lastDetection = now
+		detections = append(detections, detection)
+	}
+	return detections
+}
+
+func (a *CampaignAggregator) ActiveCampaigns(now time.Time) int {
+	if a == nil {
+		return 0
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	active := 0
+	for key, c := range a.campaigns {
+		a.pruneCampaignLocked(c, now)
+		if len(c.events) == 0 || now.Sub(c.lastSeen) > a.cfg.Retention {
+			delete(a.campaigns, key)
+			continue
+		}
+		active++
+	}
+	return active
+}
+
+func (a *CampaignAggregator) pruneCampaignLocked(c *attackCampaign, now time.Time) {
+	cutoff := now.Add(-a.cfg.Window)
+	kept := c.events[:0]
+	for _, ev := range c.events {
+		if !ev.signal.Timestamp.Before(cutoff) {
+			kept = append(kept, ev)
+		}
+	}
+	c.events = kept
+	if len(c.events) == 0 {
+		return
+	}
+	c.firstSeen = c.events[0].signal.Timestamp
+	c.lastSeen = c.events[0].signal.Timestamp
+	for _, ev := range c.events[1:] {
+		if ev.signal.Timestamp.Before(c.firstSeen) {
+			c.firstSeen = ev.signal.Timestamp
+		}
+		if ev.signal.Timestamp.After(c.lastSeen) {
+			c.lastSeen = ev.signal.Timestamp
+		}
+	}
+}
+
+func (a *CampaignAggregator) evaluateCampaignLocked(c *attackCampaign) (CampaignDetection, bool) {
+	if len(c.events) < a.cfg.MinSignals {
+		return CampaignDetection{}, false
+	}
+
+	destIPs := make(map[string]struct{})
+	destSubnets := make(map[string]struct{})
+	destPorts := make(map[uint32]struct{})
+	sourceIPs := make(map[string]struct{})
+	sourceWeights := make(map[string]float64)
+	asns := make(map[string]struct{})
+	collectors := make(map[string]struct{})
+	sourceKinds := make(map[SignalSource]struct{})
+	totalWeight := 0.0
+
+	var sampleIP net.IP
+	var sampleDestIP string
+	var sampleDstPort uint32
+	var sampleASN, sampleOrg string
+
+	for _, ev := range c.events {
+		sig := ev.signal
+		w := sig.Weight
+		if w == 0 {
+			w = 1
+		}
+		totalWeight += w
+		if ev.destIP != "" {
+			destIPs[ev.destIP] = struct{}{}
+			if sampleDestIP == "" {
+				sampleDestIP = ev.destIP
+			}
+		}
+		if ev.destSubnet != "" && ev.destSubnet != "unknown" {
+			destSubnets[ev.destSubnet] = struct{}{}
+		}
+		if ev.dstPort > 0 {
+			destPorts[ev.dstPort] = struct{}{}
+			if sampleDstPort == 0 {
+				sampleDstPort = ev.dstPort
+			}
+		}
+		if sig.IP != nil {
+			ip := sig.IP.String()
+			sourceIPs[ip] = struct{}{}
+			sourceWeights[ip] += w
+			if sampleIP == nil {
+				sampleIP = sig.IP
+			}
+		}
+		if sig.ASN != "" && sig.ASN != "Unknown" {
+			asns[sig.ASN] = struct{}{}
+			if sampleASN == "" {
+				sampleASN = sig.ASN
+			}
+		}
+		if sig.Org != "" && sampleOrg == "" {
+			sampleOrg = sig.Org
+		}
+		if ev.collector != "" {
+			collectors[ev.collector] = struct{}{}
+		}
+		sourceKinds[sig.Source] = struct{}{}
+	}
+
+	reason := ""
+	aggregateSubnetKey := strings.Contains(c.key, "dest_subnet=any")
+	switch {
+	case len(destSubnets) >= a.cfg.MinDestSubnets:
+		reason = "destination_subnet_breadth"
+	case len(destIPs) >= a.cfg.MinDestIPs && !aggregateSubnetKey:
+		reason = "destination_ip_breadth"
+	case len(destPorts) >= a.cfg.MinDestPorts:
+		if !aggregateSubnetKey {
+			reason = "destination_port_breadth"
+		}
+	case len(sourceIPs) >= a.cfg.MinWeakSourceIPs && weakSourceWeights(sourceWeights, a.cfg.WeakSourceMaxWeight) && averageWeight(totalWeight, len(c.events)) <= a.cfg.WeakSignalMaxWeight:
+		if !aggregateSubnetKey {
+			reason = "weak_source_breadth"
+		}
+	}
+	if reason == "" {
+		return CampaignDetection{}, false
+	}
+
+	return CampaignDetection{
+		ID:               stableCampaignID(c.key, c.firstSeen),
+		Key:              c.key,
+		Vector:           c.vector,
+		Reason:           reason,
+		FirstSeen:        c.firstSeen,
+		LastSeen:         c.lastSeen,
+		SignalCount:      len(c.events),
+		TotalWeight:      totalWeight,
+		DestinationIPs:   len(destIPs),
+		DestSubnets:      len(destSubnets),
+		DestinationPorts: len(destPorts),
+		SourceIPs:        len(sourceIPs),
+		ASNs:             len(asns),
+		Collectors:       len(collectors),
+		SourceKinds:      len(sourceKinds),
+		SampleIP:         sampleIP,
+		SampleDestIP:     sampleDestIP,
+		SampleDstPort:    sampleDstPort,
+		SampleASN:        sampleASN,
+		SampleOrg:        sampleOrg,
+	}, true
+}
+
+func campaignKey(vector SignalType, source SignalSource, collector, destSubnet string) string {
+	if destSubnet == "" {
+		destSubnet = "unknown"
+	}
+	return fmt.Sprintf("vector=%s|source=%s|collector=%s|dest_subnet=%s", vector, source, collector, destSubnet)
+}
+
+func stableCampaignID(key string, firstSeen time.Time) string {
+	return fmt.Sprintf("%x", fnv64(key+"|"+firstSeen.UTC().Format(time.RFC3339Nano)))
+}
+
+func fnv64(s string) uint64 {
+	const (
+		offset64 = 14695981039346656037
+		prime64  = 1099511628211
+	)
+	var h uint64 = offset64
+	for i := 0; i < len(s); i++ {
+		h ^= uint64(s[i])
+		h *= prime64
+	}
+	return h
+}
+
+func weakSourceWeights(weights map[string]float64, maxWeight float64) bool {
+	if len(weights) == 0 {
+		return false
+	}
+	for _, w := range weights {
+		if w > maxWeight {
+			return false
+		}
+	}
+	return true
+}
+
+func averageWeight(total float64, count int) float64 {
+	if count == 0 {
+		return 0
+	}
+	return total / float64(count)
+}
+
+func destinationIdentity(metadata map[string]interface{}) (string, string) {
+	raw := metadataString(metadata, "dest_ip", "dst_ip", "destination_ip")
+	if raw == "" {
+		return "", "unknown"
+	}
+	ip := net.ParseIP(raw)
+	if ip == nil {
+		return "", "unknown"
+	}
+	return ip.String(), subnetForIP(ip)
+}
+
+func subnetForIP(ip net.IP) string {
+	if ip4 := ip.To4(); ip4 != nil {
+		return (&net.IPNet{IP: net.IPv4(ip4[0], ip4[1], ip4[2], 0), Mask: net.CIDRMask(24, 32)}).String()
+	}
+	ip16 := ip.To16()
+	if ip16 == nil {
+		return "unknown"
+	}
+	subnetIP := make(net.IP, len(ip16))
+	copy(subnetIP, ip16)
+	for i := 8; i < len(subnetIP); i++ {
+		subnetIP[i] = 0
+	}
+	return (&net.IPNet{IP: subnetIP, Mask: net.CIDRMask(64, 128)}).String()
+}
+
+func destinationPort(metadata map[string]interface{}) uint32 {
+	if metadata == nil {
+		return 0
+	}
+	for _, key := range []string{"dst_port", "dest_port", "destination_port"} {
+		if v, ok := metadata[key]; ok {
+			if port, ok := uint32FromValue(v); ok {
+				return port
+			}
+		}
+	}
+	return 0
+}
+
+func metadataString(metadata map[string]interface{}, keys ...string) string {
+	if metadata == nil {
+		return ""
+	}
+	for _, key := range keys {
+		if v, ok := metadata[key]; ok {
+			switch typed := v.(type) {
+			case string:
+				return typed
+			case fmt.Stringer:
+				return typed.String()
+			case net.IP:
+				return typed.String()
+			}
+		}
+	}
+	return ""
+}
+
+func uint32FromValue(v interface{}) (uint32, bool) {
+	switch typed := v.(type) {
+	case uint32:
+		return typed, typed > 0
+	case uint16:
+		return uint32(typed), typed > 0
+	case int:
+		return uint32(typed), typed > 0
+	case int64:
+		return uint32(typed), typed > 0
+	case float64:
+		return uint32(typed), typed > 0
+	case string:
+		port, err := strconv.ParseUint(typed, 10, 32)
+		if err == nil && port > 0 {
+			return uint32(port), true
+		}
+	}
+	return 0, false
+}

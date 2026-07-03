@@ -19,7 +19,7 @@ Standard fields:
 - **HTTP**: `packetyeeter_http_requests_per_second_by_*`, `packetyeeter_http_path_signals_total`, `packetyeeter_http_path_entropy_by_ip`
 - **SPOE**: `packetyeeter_spoe_queue_depth`, `_drops_total`, `packetyeeter_spoe_anomaly_total`, `packetyeeter_proxy_lag_max_ms`
 - **ML/Bot**: `packetyeeter_ml_*`, `packetyeeter_bot_detections_by_category_total`, `packetyeeter_bot_verification_*`, `packetyeeter_ja4db_*`
-- **AI Engine**: `packetyeeter_ai_signals_by_*`, `packetyeeter_ai_signal_ewma_by_*`
+- **AI Engine**: `packetyeeter_ai_signals_by_*`, `packetyeeter_ai_signal_ewma_by_*`, `packetyeeter_attack_campaign_detections_total`, `packetyeeter_active_attack_campaigns`, `packetyeeter_carpet_bombing_detections_total`
 - **Entropy**: `packetyeeter_payload_entropy_*`
 - **Pattern**: `packetyeeter_pattern_tracker_profiles`, `packetyeeter_pattern_detections_total`
 - **ASN Baseline**: `packetyeeter_latency_ewma_by_asn_ms`, `packetyeeter_asn_*`
@@ -34,6 +34,7 @@ Standard fields:
 - Counters: use `rate()` (Prom) or `non_negative_derivative(max("counter"),1s)` (Influx).
 - Gauges: use `max()`/instant queries; for top-k (Prom) use `topk`, for Influx use `GROUP BY` and tables.
 - Analyzer flag: `--ai-confidence-threshold` (default `0.7`) controls AI blocking threshold and appears in log reasons.
+- Attack campaign and carpet-bombing detections are analyzer-side aggregate observations. They are emitted as logs/history and low-cardinality metrics by vector/reason, but do not send block commands by themselves.
 - Metrics endpoints and the inspector are unauthenticated. Bind them to loopback
   or trusted management networks, or protect them with firewall/VPN controls.
 - See `../examples/prometheus-scrape.yml` for a minimal Prometheus scrape config.

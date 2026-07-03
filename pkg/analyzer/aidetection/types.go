@@ -62,6 +62,7 @@ const (
 	SignalUDPFlood            SignalType = "udp_flood"
 	SignalSYNFlood            SignalType = "syn_flood"
 	SignalBadFlags            SignalType = "bad_flags"
+	SignalCarpetBombing       SignalType = "carpet_bombing"
 	// Threat Intelligence Signals
 	SignalKnownScanner    SignalType = "known_scanner"     // IP identified as scanner by threat intel
 	SignalHighThreatScore SignalType = "high_threat_score" // IP has high threat score
