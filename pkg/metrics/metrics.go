@@ -284,6 +284,21 @@ var (
 		Help: "AI detections by action taken (block, dry_run, below_threshold)",
 	}, []string{"action"})
 
+	AttackCampaignDetections = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "packetyeeter_attack_campaign_detections_total",
+		Help: "Analyzer-side attack campaign detections by vector and aggregate breadth reason",
+	}, []string{"vector", "reason"})
+
+	ActiveAttackCampaigns = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "packetyeeter_active_attack_campaigns",
+		Help: "Active analyzer-side attack campaigns in the current aggregation window",
+	})
+
+	CarpetBombingDetections = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "packetyeeter_carpet_bombing_detections_total",
+		Help: "Carpet-bombing detections by vector and aggregate breadth reason",
+	}, []string{"vector", "reason"})
+
 	AIBlocksBySignal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "packetyeeter_ai_blocks_by_signal_total",
 		Help: "AI blocks by top contributing signal",

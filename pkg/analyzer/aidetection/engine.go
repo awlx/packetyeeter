@@ -53,6 +53,7 @@ type Engine struct {
 	ddosMinASNFloodPPS       float64
 	suspiciousScoreThreshold float64
 	blockScoreThreshold      float64
+	campaigns                *CampaignAggregator
 
 	// Dependencies
 	geoip           *geoip.Provider
@@ -164,6 +165,9 @@ type Config struct {
 	SuspiciousScoreThreshold float64
 	BlockScoreThreshold      float64
 
+	// Campaign/carpet-bombing aggregation thresholds.
+	Campaign CampaignConfig
+
 	// Feedback loop configuration
 	EnableFeedback bool
 	FeedbackConfig FeedbackConfig
@@ -190,6 +194,7 @@ func DefaultConfig() Config {
 		DDoSMinASNFloodPPS:       200000,
 		SuspiciousScoreThreshold: 5,
 		BlockScoreThreshold:      15,
+		Campaign:                 DefaultCampaignConfig(),
 	}
 }
 
@@ -243,6 +248,7 @@ func New(cfg Config) *Engine {
 	if cfg.BlockScoreThreshold == 0 {
 		cfg.BlockScoreThreshold = DefaultConfig().BlockScoreThreshold
 	}
+	cfg.Campaign = normalizeCampaignConfig(cfg.Campaign)
 	if !cfg.DDoSRequireHighFreq {
 		cfg.DDoSRequireHighFreq = DefaultConfig().DDoSRequireHighFreq
 	}
@@ -273,6 +279,7 @@ func New(cfg Config) *Engine {
 		ddosMinASNFloodPPS:       cfg.DDoSMinASNFloodPPS,
 		suspiciousScoreThreshold: cfg.SuspiciousScoreThreshold,
 		blockScoreThreshold:      cfg.BlockScoreThreshold,
+		campaigns:                NewCampaignAggregator(cfg.Campaign),
 		geoip:                    cfg.GeoIP,
 		reputation:               cfg.Reputation,
 		ja4Verifier:              cfg.JA4Verifier,
@@ -668,6 +675,7 @@ func (e *Engine) worker(id int) {
 			e.processSignal(signal, windowSignals)
 
 		case <-ticker.C:
+			e.evaluateCampaigns()
 			e.evaluateWindow(windowSignals)
 			windowSignals = make(map[string][]Signal)
 		}
@@ -968,6 +976,11 @@ func (e *Engine) processSignal(signal Signal, windowSignals map[string][]Signal)
 		}
 	}
 
+	if e.campaigns != nil {
+		e.campaigns.Record(signal)
+		metrics.ActiveAttackCampaigns.Set(float64(e.campaigns.ActiveCampaigns(time.Now())))
+	}
+
 	// Add signal to event history for advanced feature extraction
 	if signal.IP != nil && e.historyManager != nil {
 		event := SignalEvent{
@@ -1112,6 +1125,102 @@ func (e *Engine) processSignal(signal Signal, windowSignals map[string][]Signal)
 		"asn":    signal.ASN,
 		"weight": signal.Weight,
 	}).Debug("AI Signal Received")
+}
+
+func (e *Engine) evaluateCampaigns() {
+	if e.campaigns == nil {
+		return
+	}
+	detections := e.campaigns.Evaluate(time.Now())
+	metrics.ActiveAttackCampaigns.Set(float64(e.campaigns.ActiveCampaigns(time.Now())))
+	for _, detection := range detections {
+		e.handleCampaignDetection(detection)
+	}
+}
+
+func (e *Engine) handleCampaignDetection(detection CampaignDetection) {
+	vector := string(detection.Vector)
+	reason := detection.Reason
+	if vector == "" {
+		vector = "unknown"
+	}
+	if reason == "" {
+		reason = "unknown"
+	}
+
+	metrics.AttackCampaignDetections.WithLabelValues(vector, reason).Inc()
+	metrics.CarpetBombingDetections.WithLabelValues(vector, reason).Inc()
+
+	metadata := map[string]interface{}{
+		"campaign_id":       detection.ID,
+		"campaign_key":      detection.Key,
+		"campaign_reason":   detection.Reason,
+		"campaign_vector":   string(detection.Vector),
+		"dest_ips":          detection.DestinationIPs,
+		"dest_subnets":      detection.DestSubnets,
+		"dest_ports":        detection.DestinationPorts,
+		"source_ips":        detection.SourceIPs,
+		"asns":              detection.ASNs,
+		"collectors":        detection.Collectors,
+		"source_kinds":      detection.SourceKinds,
+		"total_weight":      detection.TotalWeight,
+		"observe_only":      true,
+		"enforcement_scope": "none",
+	}
+
+	event := DetectionEvent{
+		IP:            detection.SampleIP,
+		DestIP:        detection.SampleDestIP,
+		DstPort:       detection.SampleDstPort,
+		ASN:           detection.SampleASN,
+		Org:           detection.SampleOrg,
+		Signals:       []Signal{{Type: SignalCarpetBombing, Source: SourceTCP, IP: detection.SampleIP, Weight: detection.TotalWeight, Timestamp: detection.LastSeen, Metadata: metadata}},
+		SignalCount:   detection.SignalCount,
+		DetectionTime: detection.LastSeen,
+		Confidence:    0.65,
+		Score:         detection.TotalWeight,
+		BotCategory:   BotCategoryDDoS,
+		BlockReason: fmt.Sprintf(
+			"Attack campaign observed (%s): %d signals across %d destinations, %d ports, %d sources",
+			detection.Reason,
+			detection.SignalCount,
+			detection.DestinationIPs,
+			detection.DestinationPorts,
+			detection.SourceIPs,
+		),
+		WouldBlock:      false,
+		SignalBreakdown: map[SignalType]int{SignalCarpetBombing: detection.SignalCount},
+		SourceBreakdown: map[SignalSource]int{SourceTCP: 1},
+		Reasons:         []string{"campaign:" + detection.Reason},
+		Metadata:        metadata,
+	}
+
+	e.detectionsMu.Lock()
+	e.latestDetections["campaign:"+detection.ID] = &event
+	e.detectionsMu.Unlock()
+
+	e.historyMu.Lock()
+	eventCopy := event
+	e.detectionHistory = append(e.detectionHistory, &eventCopy)
+	if len(e.detectionHistory) > e.historyMaxSize {
+		e.detectionHistory = e.detectionHistory[len(e.detectionHistory)-e.historyMaxSize:]
+	}
+	e.historyMu.Unlock()
+
+	logrus.WithFields(logrus.Fields{
+		"component":    "aidetection_engine",
+		"event":        "attack_campaign_observed",
+		"campaign_id":  detection.ID,
+		"vector":       vector,
+		"reason":       reason,
+		"signal_count": detection.SignalCount,
+		"dest_ips":     detection.DestinationIPs,
+		"dest_subnets": detection.DestSubnets,
+		"dest_ports":   detection.DestinationPorts,
+		"source_ips":   detection.SourceIPs,
+		"total_weight": detection.TotalWeight,
+		"observe_only": true,
+	}).Info("Attack campaign observed")
 }
 
 // evaluateWindow checks if accumulated signals trigger a detection
