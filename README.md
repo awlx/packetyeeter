@@ -299,6 +299,7 @@ PacketYeeter is designed to be monitored via **Prometheus** and **Grafana**.
     *   `packetyeeter_proxy_lag_max_ms`, `packetyeeter_proxy_lag_ewma_by_asn_ms`, `packetyeeter_client_req_time_ms`: SPOE / proxy-lag signals.
     *   `packetyeeter_reputation_score`: current reputation score per entity.
     *   `packetyeeter_ai_signals_total`, `packetyeeter_ai_detections_total` (plus `_by_asn`, `_by_ja4h`, `_by_ip`, `_by_type` variants): AI bot/scraper signals and detections.
+    *   `packetyeeter_attack_campaign_detections_total`, `packetyeeter_active_attack_campaigns`, `packetyeeter_carpet_bombing_detections_total`, `packetyeeter_campaign_baseline_*`: observe-only DDoS campaign and adaptive baseline signals.
     *   `packetyeeter_ml_*`, `packetyeeter_ja4db_*`, `packetyeeter_bot_verification_*`, `packetyeeter_threat_intel_*`, `packetyeeter_rate_limit_*`: ML inference, JA4DB, bot verification, threat-intel, and rate-limiter metrics.
 
     See [`docs/observability.md`](docs/observability.md) for the full metric catalog and dashboard panel mappings.
@@ -313,7 +314,9 @@ PacketYeeter is designed to be monitored via **Prometheus** and **Grafana**.
     into Grafana with a Prometheus data source configured. The default dashboard
     excludes IPs; build a private dashboard if IP visibility is needed. See
     [`examples/prometheus-scrape.yml`](examples/prometheus-scrape.yml) for a
-    minimal Prometheus scrape config.
+    minimal Prometheus scrape config and
+    [`examples/prometheus-alerts.yml`](examples/prometheus-alerts.yml) for
+    example alert rules.
 
 4.  **Logs**:
     Logs are output in structured JSON format, e.g.:

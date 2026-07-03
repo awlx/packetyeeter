@@ -1,0 +1,58 @@
+# Example Prometheus alert rules for PacketYeeter.
+# Tune thresholds against local traffic before enabling paging.
+groups:
+  - name: packetyeeter-modern-ddos
+    rules:
+      - alert: PacketYeeterAttackCampaignObserved
+        expr: sum(rate(packetyeeter_attack_campaign_detections_total[5m])) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "PacketYeeter is observing aggregate attack campaigns"
+          description: "Analyzer-side campaign observations have been present for 10 minutes. Review vector/reason labels and matching attack_campaign_observed logs."
+
+      - alert: PacketYeeterCarpetBombingObserved
+        expr: sum(rate(packetyeeter_carpet_bombing_detections_total[5m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "PacketYeeter is observing possible carpet-bombing"
+          description: "Campaign breadth crossed a carpet-bombing threshold. Check destination subnet, port, source breadth, and whether enforcement remains staged."
+
+      - alert: PacketYeeterCampaignBaselineAnomaly
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le, vector, protocol, dst_port_bucket) (
+              rate(packetyeeter_campaign_baseline_multiplier_bucket{enough_samples="true"}[15m])
+            )
+          ) > 5
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "PacketYeeter campaign rate is elevated versus adaptive baseline"
+          description: "The p95 campaign baseline multiplier is above 5 for a warmed-up service key. Compare with campaign counters before escalating."
+
+      - alert: PacketYeeterActiveCampaignsHigh
+        expr: packetyeeter_active_attack_campaigns > 20
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "PacketYeeter has many active campaign keys"
+          description: "The analyzer is tracking many active aggregate campaigns. Check vector mix, traffic volume, and collector signal queue pressure."
+
+      - alert: PacketYeeterSignalQueueDropping
+        expr: |
+          rate(packetyeeter_collector_signal_queue_drops_total[5m]) > 0
+          or
+          rate(packetyeeter_spoe_queue_drops_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "PacketYeeter signal queues are dropping observations"
+          description: "Collector or SPOE queue drops can make campaign and baseline data incomplete. Reduce input pressure or increase processing capacity before relying on observations."
