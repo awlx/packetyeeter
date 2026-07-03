@@ -20,6 +20,23 @@ type JA4Verifier interface {
 	LookupWithType(fingerprint string, fpType string) (interface{}, bool)
 }
 
+// maxVerificationCacheEntries bounds the crawler verification cache so an
+// attacker cannot exhaust memory by generating a large number of unique
+// (IP, claimed-bot-name) pairs before their entries have a chance to expire
+// via TTL. 20,000 entries comfortably covers verification traffic for a busy
+// site's active crawler population while keeping worst-case memory usage
+// (a few hundred bytes per entry) in the low megabytes.
+const maxVerificationCacheEntries = 20000
+
+// negativeVerificationCacheTTL is the TTL applied to failed/negative DNS
+// verification results (NXDOMAIN, timeout, hostname/forward-DNS mismatch).
+// It is intentionally much shorter than the TTL used for confirmed-good
+// verifications so that a transient DNS failure (or an attacker deliberately
+// poisoning the cache for a victim IP right before a legitimate crawler
+// visits) self-heals quickly instead of denying that IP verified status for
+// the full positive-result TTL.
+const negativeVerificationCacheTTL = 30 * time.Second
+
 // CrawlerVerifier verifies bot identity claims via DNS/PTR lookups
 type CrawlerVerifier struct {
 	// Known crawler domains for verification
@@ -27,11 +44,15 @@ type CrawlerVerifier struct {
 	// JA4 database for fingerprint-based verification
 	ja4DB JA4Verifier
 
-	resolver      crawlerDNSResolver
-	lookupTimeout time.Duration
-	cacheTTL      time.Duration
-	cacheMu       sync.Mutex
-	cache         map[string]crawlerVerificationCacheEntry
+	resolver         crawlerDNSResolver
+	lookupTimeout    time.Duration
+	cacheTTL         time.Duration
+	negativeCacheTTL time.Duration
+	maxCacheEntries  int
+	// now allows tests to inject a fake clock; defaults to time.Now.
+	now     func() time.Time
+	cacheMu sync.Mutex
+	cache   map[string]crawlerVerificationCacheEntry
 }
 
 // NewCrawlerVerifier creates a new crawler verifier
@@ -49,12 +70,21 @@ func newCrawlerVerifier(ja4DB JA4Verifier, resolver crawlerDNSResolver, timeout,
 	if cacheTTL <= 0 {
 		cacheTTL = 10 * time.Minute
 	}
+	negativeTTL := negativeVerificationCacheTTL
+	if cacheTTL < negativeTTL {
+		// Never let the negative TTL exceed the configured positive TTL
+		// (relevant for tests/configs that use a very short cacheTTL).
+		negativeTTL = cacheTTL
+	}
 	return &CrawlerVerifier{
-		ja4DB:         ja4DB,
-		resolver:      resolver,
-		lookupTimeout: timeout,
-		cacheTTL:      cacheTTL,
-		cache:         make(map[string]crawlerVerificationCacheEntry),
+		ja4DB:            ja4DB,
+		resolver:         resolver,
+		lookupTimeout:    timeout,
+		cacheTTL:         cacheTTL,
+		negativeCacheTTL: negativeTTL,
+		maxCacheEntries:  maxVerificationCacheEntries,
+		now:              time.Now,
+		cache:            make(map[string]crawlerVerificationCacheEntry),
 		verifiedDomains: map[string][]string{
 			// Search engines
 			"googlebot":   {".googlebot.com", ".google.com"},
@@ -192,7 +222,7 @@ func (v *CrawlerVerifier) cachedVerification(cacheKey string) (VerificationStatu
 	if !ok {
 		return "", false
 	}
-	if time.Now().After(entry.expiresAt) {
+	if v.now().After(entry.expiresAt) {
 		delete(v.cache, cacheKey)
 		return "", false
 	}
@@ -202,9 +232,50 @@ func (v *CrawlerVerifier) cachedVerification(cacheKey string) (VerificationStatu
 func (v *CrawlerVerifier) storeVerification(cacheKey string, status VerificationStatus) {
 	v.cacheMu.Lock()
 	defer v.cacheMu.Unlock()
+
+	ttl := v.cacheTTL
+	if status == VerificationFailed {
+		// Negative results get a much shorter TTL so transient DNS failures
+		// (or an attacker deliberately poisoning a victim IP's entry) don't
+		// deny verified status to a legitimate crawler for the full TTL.
+		ttl = v.negativeCacheTTL
+	}
+
+	if _, exists := v.cache[cacheKey]; !exists && len(v.cache) >= v.effectiveMaxCacheEntries() {
+		v.evictOneLocked()
+	}
+
 	v.cache[cacheKey] = crawlerVerificationCacheEntry{
 		status:    status,
-		expiresAt: time.Now().Add(v.cacheTTL),
+		expiresAt: v.now().Add(ttl),
+	}
+}
+
+func (v *CrawlerVerifier) effectiveMaxCacheEntries() int {
+	if v.maxCacheEntries <= 0 {
+		return maxVerificationCacheEntries
+	}
+	return v.maxCacheEntries
+}
+
+// evictOneLocked removes a single entry from the cache to make room for a
+// new one once the size cap has been reached. It must be called with
+// cacheMu held. It evicts the entry closest to expiry (oldest-first by
+// remaining TTL) rather than an arbitrary/newest entry, so eviction doesn't
+// cause cache-miss thrashing for entries that were just verified.
+func (v *CrawlerVerifier) evictOneLocked() {
+	var oldestKey string
+	var oldestExpiry time.Time
+	first := true
+	for key, entry := range v.cache {
+		if first || entry.expiresAt.Before(oldestExpiry) {
+			oldestKey = key
+			oldestExpiry = entry.expiresAt
+			first = false
+		}
+	}
+	if !first {
+		delete(v.cache, oldestKey)
 	}
 }
 
