@@ -41,6 +41,12 @@ Thanks for helping improve PacketYeeter. Keep changes focused, operationally saf
 - Do not commit generated binaries, local dashboards, secrets, packet captures with real client data, or private IP intelligence exports.
 - Use `gofmt` on Go changes and keep generated protobuf updates in the same PR as the `.proto` change.
 
+## LLM-assisted contributions
+
+LLM coding agents should read [`CLAUDE.md`](CLAUDE.md) before making changes. It
+contains repository-specific safety rules, validation expectations, and
+architecture guidance for agent-generated contributions.
+
 ## Operational safety
 
 PacketYeeter can drop traffic at XDP/TC. Test new detection and deployment changes in analyzer dry-run mode first, then roll out to a small set of collectors with conservative thresholds and allowlists for control-plane and trusted networks.
