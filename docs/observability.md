@@ -35,6 +35,7 @@ Standard fields:
 - Gauges: use `max()`/instant queries; for top-k (Prom) use `topk`, for Influx use `GROUP BY` and tables.
 - Analyzer flag: `--ai-confidence-threshold` (default `0.7`) controls AI blocking threshold and appears in log reasons.
 - Attack campaign and carpet-bombing detections are analyzer-side aggregate observations. They are emitted as logs/history and low-cardinality metrics by vector/reason, but do not send block commands by themselves.
+- UDP campaign vectors are classified from existing analyzer signal metadata where available. Known low-cardinality vectors include `dns_reflection`, `ntp_reflection`, `ssdp_reflection`, `cldap_reflection`, `memcached_reflection`, `quic_initial_flood`, and the fallback `udp_flood`; classification is limited by the destination/source port and protocol hints present in collector/analyzer signals.
 - Metrics endpoints and the inspector are unauthenticated. Bind them to loopback
   or trusted management networks, or protect them with firewall/VPN controls.
 - See `../examples/prometheus-scrape.yml` for a minimal Prometheus scrape config.
