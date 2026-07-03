@@ -34,3 +34,6 @@ Standard fields:
 - Counters: use `rate()` (Prom) or `non_negative_derivative(max("counter"),1s)` (Influx).
 - Gauges: use `max()`/instant queries; for top-k (Prom) use `topk`, for Influx use `GROUP BY` and tables.
 - Analyzer flag: `--ai-confidence-threshold` (default `0.7`) controls AI blocking threshold and appears in log reasons.
+- Metrics endpoints and the inspector are unauthenticated. Bind them to loopback
+  or trusted management networks, or protect them with firewall/VPN controls.
+- See `../examples/prometheus-scrape.yml` for a minimal Prometheus scrape config.

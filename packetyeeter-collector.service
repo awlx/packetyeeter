@@ -24,6 +24,9 @@ LimitMEMLOCK=infinity
 LimitNOFILE=65535
 
 # Security
+# The collector loads eBPF, attaches XDP/TC programs, and manages kernel maps.
+# Keep these capabilities and memlock unless the full BPF attach path has been
+# validated on the target kernel with stricter hardening.
 NoNewPrivileges=false
 CapabilityBoundingSet=CAP_SYS_ADMIN CAP_NET_ADMIN CAP_BPF CAP_PERFMON CAP_NET_RAW
 AmbientCapabilities=CAP_SYS_ADMIN CAP_NET_ADMIN CAP_BPF CAP_PERFMON CAP_NET_RAW
