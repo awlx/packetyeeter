@@ -146,14 +146,16 @@ func (a *CampaignAggregator) Record(signal Signal) {
 	if collector == "" {
 		collector = "unknown"
 	}
-	key := campaignKey(signal.Type, signal.Source, collector, destSubnet)
+	campaignSignal := signal
+	campaignSignal.Type = classifyUDPAttackVector(signal)
+	key := campaignKey(campaignSignal.Type, campaignSignal.Source, collector, destSubnet)
 
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	a.recordLocked(key, signal, destIP, destSubnet, dstPort, collector)
+	a.recordLocked(key, campaignSignal, destIP, destSubnet, dstPort, collector)
 	if destSubnet != "any" {
-		a.recordLocked(campaignKey(signal.Type, signal.Source, collector, "any"), signal, destIP, destSubnet, dstPort, collector)
+		a.recordLocked(campaignKey(campaignSignal.Type, campaignSignal.Source, collector, "any"), campaignSignal, destIP, destSubnet, dstPort, collector)
 	}
 }
 

@@ -63,6 +63,12 @@ const (
 	SignalSYNFlood            SignalType = "syn_flood"
 	SignalBadFlags            SignalType = "bad_flags"
 	SignalCarpetBombing       SignalType = "carpet_bombing"
+	SignalDNSReflection       SignalType = "dns_reflection"
+	SignalNTPReflection       SignalType = "ntp_reflection"
+	SignalSSDPReflection      SignalType = "ssdp_reflection"
+	SignalCLDAPReflection     SignalType = "cldap_reflection"
+	SignalMemcachedReflection SignalType = "memcached_reflection"
+	SignalQUICInitialFlood    SignalType = "quic_initial_flood"
 	// Threat Intelligence Signals
 	SignalKnownScanner    SignalType = "known_scanner"     // IP identified as scanner by threat intel
 	SignalHighThreatScore SignalType = "high_threat_score" // IP has high threat score

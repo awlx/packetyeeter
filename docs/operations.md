@@ -37,6 +37,7 @@ The collector is intentionally less restricted because it loads eBPF, attaches X
 - Keep `-enable-high-cardinality-metrics=false` during normal operations; turn it on only for short diagnostic windows.
 - Set allowlists for monitoring systems, load balancers, bastion hosts, health checks, and upstream trusted proxies.
 - Watch `packetyeeter_*_blocks_total`, reputation scores, AI detections, SPOE queue depth/drops, and collector/analyzer logs before enabling enforcement.
+- Treat UDP reflection campaign labels as observability metadata. The analyzer can distinguish common vectors such as DNS, NTP, SSDP, CLDAP, Memcached, and QUIC Initial only when existing signal metadata carries useful port or protocol hints; ambiguous UDP campaigns remain labeled `udp_flood`.
 - Roll back by re-enabling dry-run or stopping collectors before changing eBPF-related systemd hardening.
 
 ## Prometheus example
