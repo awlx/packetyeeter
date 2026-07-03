@@ -42,3 +42,31 @@ func TestPenalizeASNNoObservedFallback(t *testing.T) {
 		t.Fatalf("expected score %.4f got %.4f", expected, score)
 	}
 }
+
+func TestDecayExpiresEntriesPastMaxAge(t *testing.T) {
+	e := New(time.Hour, 0.95, 100)
+	e.SetMaxEntryAge(time.Minute)
+	e.Penalize("203.0.113.10", TypeIP, 20, "test")
+
+	entry := e.entries[string(TypeIP)+":203.0.113.10"]
+	entry.LastSeen = time.Now().Add(-2 * time.Minute)
+	e.decay()
+
+	if score := e.GetScore("203.0.113.10", TypeIP); score != 0 {
+		t.Fatalf("expected expired entry to be removed, got score %.2f", score)
+	}
+}
+
+func TestDecayHalfLifeDocumentsConfiguredForgiveness(t *testing.T) {
+	interval := 5 * time.Minute
+	e := New(interval, 0.95, 100)
+
+	halfLife := e.DecayHalfLife(interval)
+	expected := time.Duration(math.Log(0.5) / math.Log(0.95) * float64(interval))
+	if halfLife != expected {
+		t.Fatalf("expected half-life %s got %s", expected, halfLife)
+	}
+	if halfLife <= time.Hour || halfLife >= 75*time.Minute {
+		t.Fatalf("expected 5m/0.95 decay half-life to be around 68 minutes, got %s", halfLife)
+	}
+}

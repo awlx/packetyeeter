@@ -77,6 +77,9 @@ type Engine struct {
 	maxASNHosts int
 }
 
+// New creates a reputation engine. Each decay tick multiplies scores by
+// decayFactor; for example, a 5 minute interval with factor 0.95 has a score
+// half-life of about 67.6 minutes.
 func New(decayInterval time.Duration, decayFactor float64, banThreshold float64) *Engine {
 	return &Engine{
 		entries:      make(map[string]*Entry),
@@ -90,6 +93,16 @@ func New(decayInterval time.Duration, decayFactor float64, banThreshold float64)
 		maxEntryAge:  defaultMaxEntryAge,
 		maxASNHosts:  defaultMaxASNHosts,
 	}
+}
+
+// DecayHalfLife returns the duration for a score to decay by half under the
+// configured interval and factor. A non-positive duration means decay is not
+// configured; a factor outside (0,1) has no finite half-life.
+func (e *Engine) DecayHalfLife(decayInterval time.Duration) time.Duration {
+	if decayInterval <= 0 || e.decayFactor <= 0 || e.decayFactor >= 1 {
+		return 0
+	}
+	return time.Duration(math.Log(0.5) / math.Log(e.decayFactor) * float64(decayInterval))
 }
 
 func (e *Engine) SetASNScoreCap(cap float64) {
