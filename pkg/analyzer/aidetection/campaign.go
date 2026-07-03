@@ -31,6 +31,7 @@ type CampaignConfig struct {
 	MinWeakSourceIPs    int
 	WeakSourceMaxWeight float64
 	WeakSignalMaxWeight float64
+	Baseline            CampaignBaselineConfig
 }
 
 func DefaultCampaignConfig() CampaignConfig {
@@ -44,6 +45,7 @@ func DefaultCampaignConfig() CampaignConfig {
 		MinWeakSourceIPs:    defaultCampaignMinWeakSourceIPs,
 		WeakSourceMaxWeight: defaultCampaignWeakSourceMaxWeight,
 		WeakSignalMaxWeight: defaultCampaignWeakSignalMaxWeight,
+		Baseline:            DefaultCampaignBaselineConfig(),
 	}
 }
 
@@ -76,6 +78,7 @@ func normalizeCampaignConfig(cfg CampaignConfig) CampaignConfig {
 	if cfg.WeakSignalMaxWeight == 0 {
 		cfg.WeakSignalMaxWeight = def.WeakSignalMaxWeight
 	}
+	cfg.Baseline = normalizeCampaignBaselineConfig(cfg.Baseline)
 	return cfg
 }
 
@@ -100,6 +103,7 @@ type CampaignDetection struct {
 	SampleDstPort    uint32
 	SampleASN        string
 	SampleOrg        string
+	Baseline         CampaignBaselineObservation
 }
 
 type campaignSignal struct {
@@ -124,12 +128,15 @@ type CampaignAggregator struct {
 	mu        sync.Mutex
 	cfg       CampaignConfig
 	campaigns map[string]*attackCampaign
+	baseline  *CampaignBaselineTracker
 }
 
 func NewCampaignAggregator(cfg CampaignConfig) *CampaignAggregator {
+	cfg = normalizeCampaignConfig(cfg)
 	return &CampaignAggregator{
-		cfg:       normalizeCampaignConfig(cfg),
+		cfg:       cfg,
 		campaigns: make(map[string]*attackCampaign),
+		baseline:  NewCampaignBaselineTracker(cfg.Baseline),
 	}
 }
 
@@ -204,10 +211,12 @@ func (a *CampaignAggregator) Evaluate(now time.Time) []CampaignDetection {
 			continue
 		}
 
+		baseline := a.observeBaselineLocked(c, now)
 		detection, ok := a.evaluateCampaignLocked(c)
 		if !ok {
 			continue
 		}
+		detection.Baseline = baseline
 		if c.lastReason == detection.Reason && !c.lastDetection.IsZero() && now.Sub(c.lastDetection) < a.cfg.Window {
 			continue
 		}
@@ -216,6 +225,18 @@ func (a *CampaignAggregator) Evaluate(now time.Time) []CampaignDetection {
 		detections = append(detections, detection)
 	}
 	return detections
+}
+
+func (a *CampaignAggregator) observeBaselineLocked(c *attackCampaign, now time.Time) CampaignBaselineObservation {
+	if c == nil || len(c.events) == 0 || a.baseline == nil {
+		return CampaignBaselineObservation{}
+	}
+	windowSeconds := a.cfg.Window.Seconds()
+	if windowSeconds <= 0 {
+		windowSeconds = 1
+	}
+	key := campaignBaselineKey(c.vector, c.events)
+	return a.baseline.Observe(key, float64(len(c.events))/windowSeconds, now)
 }
 
 func (a *CampaignAggregator) ActiveCampaigns(now time.Time) int {

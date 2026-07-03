@@ -299,6 +299,17 @@ var (
 		Help: "Carpet-bombing detections by vector and aggregate breadth reason",
 	}, []string{"vector", "reason"})
 
+	CampaignBaselineMultiplier = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "packetyeeter_campaign_baseline_multiplier",
+		Help:    "Observed campaign signal-rate multiplier over the adaptive service baseline",
+		Buckets: []float64{0.5, 1, 1.5, 2, 3, 5, 10, 20, 50},
+	}, []string{"vector", "protocol", "dst_port_bucket", "enough_samples"})
+
+	CampaignBaselineRate = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "packetyeeter_campaign_baseline_rate",
+		Help: "Adaptive EWMA campaign signal baseline rate by low-cardinality service labels",
+	}, []string{"vector", "protocol", "dst_port_bucket"})
+
 	AIBlocksBySignal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "packetyeeter_ai_blocks_by_signal_total",
 		Help: "AI blocks by top contributing signal",

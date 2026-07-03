@@ -1167,6 +1167,7 @@ func (e *Engine) handleCampaignDetection(detection CampaignDetection) {
 		"observe_only":      true,
 		"enforcement_scope": "none",
 	}
+	addCampaignBaselineMetadata(metadata, detection.Baseline)
 
 	event := DetectionEvent{
 		IP:            detection.SampleIP,
@@ -1221,6 +1222,38 @@ func (e *Engine) handleCampaignDetection(detection CampaignDetection) {
 		"total_weight": detection.TotalWeight,
 		"observe_only": true,
 	}).Info("Attack campaign observed")
+}
+
+func addCampaignBaselineMetadata(metadata map[string]interface{}, baseline CampaignBaselineObservation) {
+	if metadata == nil || baseline.ServiceKey == "" {
+		return
+	}
+	metadata["baseline_service_key"] = baseline.ServiceKey
+	metadata["baseline_protocol"] = baseline.Protocol
+	metadata["baseline_dst_port_bucket"] = baseline.DstPortBucket
+	metadata["baseline_current_rate"] = baseline.CurrentRate
+	metadata["baseline_rate"] = baseline.BaselineRate
+	metadata["baseline_effective_rate"] = baseline.EffectiveBaseline
+	metadata["baseline_multiplier"] = baseline.Multiplier
+	metadata["baseline_samples"] = baseline.Samples
+	metadata["baseline_enough_samples"] = baseline.EnoughSamples
+	metadata["baseline_anomalous"] = baseline.Anomalous
+
+	vector := metadataValueString(metadata["campaign_vector"])
+	if vector == "" {
+		vector = "unknown"
+	}
+	protocol := baseline.Protocol
+	if protocol == "" {
+		protocol = "unknown"
+	}
+	portBucket := baseline.DstPortBucket
+	if portBucket == "" {
+		portBucket = "none"
+	}
+	enoughSamples := strconv.FormatBool(baseline.EnoughSamples)
+	metrics.CampaignBaselineMultiplier.WithLabelValues(vector, protocol, portBucket, enoughSamples).Observe(baseline.Multiplier)
+	metrics.CampaignBaselineRate.WithLabelValues(vector, protocol, portBucket).Set(baseline.BaselineRate)
 }
 
 // evaluateWindow checks if accumulated signals trigger a detection

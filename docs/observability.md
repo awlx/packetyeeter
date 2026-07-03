@@ -19,7 +19,7 @@ Standard fields:
 - **HTTP**: `packetyeeter_http_requests_per_second_by_*`, `packetyeeter_http_path_signals_total`, `packetyeeter_http_path_entropy_by_ip`
 - **SPOE**: `packetyeeter_spoe_queue_depth`, `_drops_total`, `packetyeeter_spoe_anomaly_total`, `packetyeeter_proxy_lag_max_ms`
 - **ML/Bot**: `packetyeeter_ml_*`, `packetyeeter_bot_detections_by_category_total`, `packetyeeter_bot_verification_*`, `packetyeeter_ja4db_*`
-- **AI Engine**: `packetyeeter_ai_signals_by_*`, `packetyeeter_ai_signal_ewma_by_*`, `packetyeeter_attack_campaign_detections_total`, `packetyeeter_active_attack_campaigns`, `packetyeeter_carpet_bombing_detections_total`
+- **AI Engine**: `packetyeeter_ai_signals_by_*`, `packetyeeter_ai_signal_ewma_by_*`, `packetyeeter_attack_campaign_detections_total`, `packetyeeter_active_attack_campaigns`, `packetyeeter_carpet_bombing_detections_total`, `packetyeeter_campaign_baseline_*`
 - **Entropy**: `packetyeeter_payload_entropy_*`
 - **Pattern**: `packetyeeter_pattern_tracker_profiles`, `packetyeeter_pattern_detections_total`
 - **ASN Baseline**: `packetyeeter_latency_ewma_by_asn_ms`, `packetyeeter_asn_*`
@@ -36,6 +36,8 @@ Standard fields:
 - Analyzer flag: `--ai-confidence-threshold` (default `0.7`) controls AI blocking threshold and appears in log reasons.
 - Attack campaign and carpet-bombing detections are analyzer-side aggregate observations. They are emitted as logs/history and low-cardinality metrics by vector/reason, but do not send block commands by themselves.
 - UDP campaign vectors are classified from existing analyzer signal metadata where available. Known low-cardinality vectors include `dns_reflection`, `ntp_reflection`, `ssdp_reflection`, `cldap_reflection`, `memcached_reflection`, `quic_initial_flood`, and the fallback `udp_flood`; classification is limited by the destination/source port and protocol hints present in collector/analyzer signals.
+- Adaptive campaign baselines compare each observed campaign rate with an EWMA keyed by low-cardinality service dimensions: protocol, destination port bucket, and vector. Detection metadata includes `baseline_rate`, `baseline_current_rate`, `baseline_multiplier`, `baseline_samples`, `baseline_enough_samples`, and `baseline_anomalous`; these fields are observe-only and do not make blocking stricter.
+- Baseline metrics intentionally avoid per-IP and per-ASN labels. Use `packetyeeter_campaign_baseline_multiplier` and `packetyeeter_campaign_baseline_rate` to inspect service-level drift, and treat `baseline_enough_samples=false` as warmup rather than evidence of an attack.
 - Metrics endpoints and the inspector are unauthenticated. Bind them to loopback
   or trusted management networks, or protect them with firewall/VPN controls.
 - See `../examples/prometheus-scrape.yml` for a minimal Prometheus scrape config.

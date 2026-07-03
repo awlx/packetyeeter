@@ -38,6 +38,7 @@ The collector is intentionally less restricted because it loads eBPF, attaches X
 - Set allowlists for monitoring systems, load balancers, bastion hosts, health checks, and upstream trusted proxies.
 - Watch `packetyeeter_*_blocks_total`, reputation scores, AI detections, SPOE queue depth/drops, and collector/analyzer logs before enabling enforcement.
 - Treat UDP reflection campaign labels as observability metadata. The analyzer can distinguish common vectors such as DNS, NTP, SSDP, CLDAP, Memcached, and QUIC Initial only when existing signal metadata carries useful port or protocol hints; ambiguous UDP campaigns remain labeled `udp_flood`.
+- Treat adaptive campaign baselines as rollout context, not enforcement. During analyzer startup or a new service/vector mix, `baseline_enough_samples=false` means the EWMA is still warming up; compare `baseline_current_rate`, `baseline_rate`, and `baseline_multiplier` only after enough samples have accumulated for that service key.
 - Roll back by re-enabling dry-run or stopping collectors before changing eBPF-related systemd hardening.
 
 ## Prometheus example
