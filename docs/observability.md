@@ -65,6 +65,47 @@ does not already have (e.g. more than one destination subnet, or more than
 one collector), so the same underlying signals are never double-counted
 across the specific campaign and its aggregates.
 
+Campaign/carpet-bombing detections feed the same reputation system as
+regular (non-campaign) detections: their confidence is computed from the
+campaign's own evidence (signal volume, destination/source breadth relative
+to configured thresholds, source/collector/vector diversity, and adaptive
+baseline anomaly) and blended with the ML model via `blendMLConfidence`
+when one is configured, exactly like the non-campaign detection path -
+there is no hardcoded confidence value. The resulting confidence also drives
+a reputation penalty for the campaign's representative sample IP and ASN,
+scaled by a bounded severity multiplier (how far the campaign exceeds its
+breadth thresholds, capped at 5x). To avoid a per-source-IP hot loop under
+carpet bombing (which can involve thousands of weak sources in a single
+detection cycle), only the representative sample IP/ASN is penalized per
+detection - not every contributing source IP - mirroring the single
+`Penalize`/`PenalizeASN` calls used by the non-campaign path. This does not
+change `WouldBlock` semantics: campaign detections remain observe-only
+(`observe_only=true`, `enforcement_scope="none"`) exactly as before; only the
+confidence/reputation *scoring* is now consistent with regular detections.
+
+### Baseline rate-of-change guardrail
+
+The adaptive per-service EWMA baseline (`CampaignBaselineConfig`) accepts a
+`MaxGrowthPerObservation` cap (default `1.5`, i.e. at most a 50% increase per
+observation) on how fast the learned baseline itself may rise. This mitigates
+slow-ramp "baseline poisoning" attacks that increase traffic gradually
+(e.g. ramping up every window while staying under the anomaly multiplier
+relative to the *previous* baseline) in an attempt to drag the baseline up
+to normalize the attack's own traffic. The cap only limits upward movement of
+the baseline; it does not affect how quickly the baseline can fall back down,
+and it does not change how a sudden spike against an already-established
+baseline is detected (that comparison always uses the pre-update baseline).
+
+**Known limitation**: the cap bounds how fast the baseline can move per
+observation window, not in absolute time - a sustained legitimate traffic
+increase can still take several observation cycles to be reflected in the
+baseline, and a sufficiently slow multi-day ramp that stays within the
+per-observation growth cap could still eventually poison the baseline. This
+is a deliberate, simple mitigation (not a full changepoint/CUSUM detector);
+operators with unusually fast-growing legitimate traffic should tune
+`MaxGrowthPerObservation` (or set it to `1` to restore the pre-fix unbounded
+behavior) alongside `Tau` and `AnomalyMultiplier`.
+
 ### Existing detection and enforcement metrics
 
 - **Blocks and detections**: `packetyeeter_*_blocks_total`,

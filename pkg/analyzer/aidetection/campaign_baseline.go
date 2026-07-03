@@ -10,11 +10,12 @@ import (
 )
 
 const (
-	defaultCampaignBaselineTau               = 5 * time.Minute
-	defaultCampaignBaselineMinSamples        = 5
-	defaultCampaignBaselineMinRate           = 1.0
-	defaultCampaignBaselineAnomalyMultiplier = 3.0
-	defaultCampaignBaselineMaxKeys           = 4096
+	defaultCampaignBaselineTau                     = 5 * time.Minute
+	defaultCampaignBaselineMinSamples              = 5
+	defaultCampaignBaselineMinRate                 = 1.0
+	defaultCampaignBaselineAnomalyMultiplier       = 3.0
+	defaultCampaignBaselineMaxKeys                 = 4096
+	defaultCampaignBaselineMaxGrowthPerObservation = 1.5
 )
 
 type CampaignBaselineConfig struct {
@@ -23,15 +24,27 @@ type CampaignBaselineConfig struct {
 	MinRate           float64
 	AnomalyMultiplier float64
 	MaxKeys           int
+	// MaxGrowthPerObservation caps how much the adaptive EWMA baseline may
+	// grow (multiplicatively) from one observation to the next, e.g. 1.5
+	// allows at most a 50% increase per observation regardless of how far
+	// above the baseline the current rate is. This mitigates slow-ramp
+	// "baseline poisoning" attacks that stay just under the anomaly
+	// multiplier while dragging the baseline itself upward toward the
+	// attack's own traffic. It does not limit how quickly the baseline can
+	// fall back down. Zero uses the default cap; set to exactly 1 to
+	// disable growth capping entirely (unbounded growth, the pre-fix
+	// behavior).
+	MaxGrowthPerObservation float64
 }
 
 func DefaultCampaignBaselineConfig() CampaignBaselineConfig {
 	return CampaignBaselineConfig{
-		Tau:               defaultCampaignBaselineTau,
-		MinSamples:        defaultCampaignBaselineMinSamples,
-		MinRate:           defaultCampaignBaselineMinRate,
-		AnomalyMultiplier: defaultCampaignBaselineAnomalyMultiplier,
-		MaxKeys:           defaultCampaignBaselineMaxKeys,
+		Tau:                     defaultCampaignBaselineTau,
+		MinSamples:              defaultCampaignBaselineMinSamples,
+		MinRate:                 defaultCampaignBaselineMinRate,
+		AnomalyMultiplier:       defaultCampaignBaselineAnomalyMultiplier,
+		MaxKeys:                 defaultCampaignBaselineMaxKeys,
+		MaxGrowthPerObservation: defaultCampaignBaselineMaxGrowthPerObservation,
 	}
 }
 
@@ -51,6 +64,9 @@ func normalizeCampaignBaselineConfig(cfg CampaignBaselineConfig) CampaignBaselin
 	}
 	if cfg.MaxKeys == 0 {
 		cfg.MaxKeys = def.MaxKeys
+	}
+	if cfg.MaxGrowthPerObservation == 0 {
+		cfg.MaxGrowthPerObservation = def.MaxGrowthPerObservation
 	}
 	return cfg
 }
@@ -137,12 +153,38 @@ func (t *CampaignBaselineTracker) Observe(key CampaignBaselineKey, currentRate f
 		st.rate = ewma.State{Value: currentRate, LastTime: now}
 	} else {
 		updated := ewma.Update(st.rate, currentRate, now, t.cfg.Tau)
+		updated.Value = t.capGrowthLocked(st.rate.Value, updated.Value)
 		st.rate = updated
 	}
 	st.samples++
 	st.lastSeen = now
 
 	return obs
+}
+
+// capGrowthLocked bounds how much the EWMA baseline may increase from
+// oldValue to newValue in a single observation, preventing a sustained
+// slow-ramp attack (e.g. traffic doubling every window, always staying just
+// under the anomaly multiplier) from dragging the baseline all the way up to
+// the attack's own rate over the timescale of a few tau periods. Downward
+// movement (traffic dropping back to normal) is never capped. The cap is
+// anchored at MinRate so it can't pin a near-zero baseline to zero forever.
+func (t *CampaignBaselineTracker) capGrowthLocked(oldValue, newValue float64) float64 {
+	if newValue <= oldValue {
+		return newValue
+	}
+	if t.cfg.MaxGrowthPerObservation <= 1 {
+		return newValue
+	}
+	base := oldValue
+	if base < t.cfg.MinRate {
+		base = t.cfg.MinRate
+	}
+	maxAllowed := base * t.cfg.MaxGrowthPerObservation
+	if newValue > maxAllowed {
+		return maxAllowed
+	}
+	return newValue
 }
 
 func (t *CampaignBaselineTracker) pruneLocked(now time.Time) {

@@ -1138,6 +1138,86 @@ func (e *Engine) evaluateCampaigns() {
 	}
 }
 
+// campaignMLFeatures builds a representative ML feature vector for a campaign
+// detection from its aggregate stats (there is no single per-signal event to
+// extract features from at this aggregation level, so we synthesize a
+// feature vector from campaign-level totals plus threat intel/reputation
+// looked up for the campaign's representative sample IP).
+func (e *Engine) campaignMLFeatures(detection CampaignDetection, reputationScore float64) MLFeatures {
+	now := time.Now()
+	timeSpan := detection.LastSeen.Sub(detection.FirstSeen).Seconds()
+	signalRate := 0.0
+	if timeSpan > 0 {
+		signalRate = float64(detection.SignalCount) / (timeSpan / 60.0)
+	} else if detection.SignalCount > 0 {
+		signalRate = float64(detection.SignalCount)
+	}
+
+	var threatScore float64
+	var isKnownScanner, isCloud, isTor, isVPN bool
+	if e.threatIntel != nil && detection.SampleIP != nil {
+		if info := e.threatIntel.GetEnrichedInfo(detection.SampleIP); info != nil {
+			threatScore = info.ThreatScore
+			isKnownScanner = info.IsKnownScanner
+			isCloud = info.IsCloud
+			isTor = info.IsTor
+			isVPN = info.IsVPN
+		}
+	}
+
+	signalDiversity := detection.SourceKinds
+	if signalDiversity == 0 {
+		signalDiversity = 1
+	}
+
+	return MLFeatures{
+		SignalCount:     detection.SignalCount,
+		SignalRate:      signalRate,
+		SignalDiversity: signalDiversity,
+		SourceDiversity: detection.Collectors,
+		TimeSpan:        timeSpan,
+		TimeOfDay:       now.Hour(),
+		DayOfWeek:       int(now.Weekday()),
+		HasASN:          detection.SampleASN != "",
+		GeoCountry:      detection.SampleASN,
+		ReputationScore: reputationScore,
+		ThreatScore:     threatScore,
+		IsKnownScanner:  isKnownScanner,
+		IsCloud:         isCloud,
+		IsTor:           isTor,
+		IsVPN:           isVPN,
+		SignalTypeVector: map[SignalType]int{
+			SignalCarpetBombing: detection.SignalCount,
+			detection.Vector:    detection.SignalCount,
+		},
+		SourceVector: map[SignalSource]int{SourceTCP: detection.SignalCount},
+	}
+}
+
+// campaignConfidence routes campaign detection confidence through the same
+// blendMLConfidence path used by regular (non-campaign) detections, instead
+// of a hardcoded value. There is no single per-signal ML score at this
+// aggregation level, so the rule-side input is a confidence derived from the
+// campaign's own evidence (campaignRuleConfidence) and, when an ML model is
+// configured, it is blended with a prediction computed from a representative
+// feature vector built from the campaign's aggregate stats.
+func (e *Engine) campaignConfidence(detection CampaignDetection) float64 {
+	ruleConfidence := campaignRuleConfidence(detection, e.campaigns.cfg)
+
+	if e.mlModel == nil {
+		return ruleConfidence
+	}
+
+	reputationScore := 0.0
+	if e.reputation != nil && detection.SampleIP != nil {
+		reputationScore = e.reputation.GetScore(detection.SampleIP.String(), reputation.TypeIP)
+	}
+
+	features := e.campaignMLFeatures(detection, reputationScore)
+	prediction := e.mlModel.Predict(features)
+	return blendMLConfidence(ruleConfidence, prediction)
+}
+
 func (e *Engine) handleCampaignDetection(detection CampaignDetection) {
 	vector := string(detection.Vector)
 	reason := detection.Reason
@@ -1150,6 +1230,31 @@ func (e *Engine) handleCampaignDetection(detection CampaignDetection) {
 
 	metrics.AttackCampaignDetections.WithLabelValues(vector, reason).Inc()
 	metrics.CarpetBombingDetections.WithLabelValues(vector, reason).Inc()
+
+	confidence := 0.65
+	if e.campaigns != nil {
+		confidence = e.campaignConfidence(detection)
+	}
+
+	// Penalize reputation for the campaign's contributing source(s)/ASN(s),
+	// proportional to campaign severity. To avoid a per-source-IP hot loop
+	// under carpet bombing (which can involve thousands of weak sources),
+	// this only penalizes the representative sample IP/ASN once per
+	// detection cycle - mirroring the single Penalize/PenalizeASN calls used
+	// by the regular (non-campaign) detection path - scaled by a severity
+	// multiplier so broader/repeated campaigns accumulate proportionally
+	// larger penalties over time.
+	if e.reputation != nil {
+		severity := campaignSeverityMultiplier(detection, e.campaigns.cfg)
+		if detection.SampleIP != nil {
+			e.reputation.Penalize(detection.SampleIP.String(), reputation.TypeIP, 10.0*confidence*severity, "campaign detection")
+		}
+		if detection.SampleASN != "" && detection.SampleASN != "Unknown" {
+			e.markASNAbusive(detection.SampleASN, detection.SampleOrg, detection.SampleIP)
+			scale := e.asnPenaltyScale(detection.SampleASN)
+			e.reputation.PenalizeASN(detection.SampleASN, sampleIPOrEmpty(detection.SampleIP), 2.0*confidence*severity*scale, "campaign detection")
+		}
+	}
 
 	metadata := map[string]interface{}{
 		"campaign_id":       detection.ID,
@@ -1178,7 +1283,7 @@ func (e *Engine) handleCampaignDetection(detection CampaignDetection) {
 		Signals:       []Signal{{Type: SignalCarpetBombing, Source: SourceTCP, IP: detection.SampleIP, Weight: detection.TotalWeight, Timestamp: detection.LastSeen, Metadata: metadata}},
 		SignalCount:   detection.SignalCount,
 		DetectionTime: detection.LastSeen,
-		Confidence:    0.65,
+		Confidence:    confidence,
 		Score:         detection.TotalWeight,
 		BotCategory:   BotCategoryDDoS,
 		BlockReason: fmt.Sprintf(
@@ -1222,6 +1327,16 @@ func (e *Engine) handleCampaignDetection(detection CampaignDetection) {
 		"total_weight": detection.TotalWeight,
 		"observe_only": true,
 	}).Info("Attack campaign observed")
+}
+
+// sampleIPOrEmpty returns the string form of ip, or "" if ip is nil. Used
+// when penalizing an ASN for a campaign that lacks a resolved sample source
+// IP (PenalizeASN uses the IP only for its own active-IP bookkeeping).
+func sampleIPOrEmpty(ip net.IP) string {
+	if ip == nil {
+		return ""
+	}
+	return ip.String()
 }
 
 func addCampaignBaselineMetadata(metadata map[string]interface{}, baseline CampaignBaselineObservation) {
