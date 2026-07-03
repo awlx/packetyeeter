@@ -1,8 +1,10 @@
+//go:build linux
+
 package ebpf
 
 import (
 	"bytes"
-	_ "embed"
+	"embed"
 	"fmt"
 	"net"
 
@@ -12,29 +14,8 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-//go:embed c/protector.bpf.o
-var bpfObj []byte
-
-type Maps struct {
-	BlockedIPs          *ebpf.Map
-	BlockedIPsV6        *ebpf.Map
-	PendingHandshakes   *ebpf.Map
-	PendingHandshakesV6 *ebpf.Map
-	ICMPRates           *ebpf.Map
-	ICMPRatesV6         *ebpf.Map
-	BadFlags            *ebpf.Map
-	BadFlagsV6          *ebpf.Map
-	ConfigMap           *ebpf.Map
-	UDPRates            *ebpf.Map
-	UDPRatesV6          *ebpf.Map
-	OffenderEvents      *ebpf.Map
-	OffenderEventsV6    *ebpf.Map
-	AllowListV4         *ebpf.Map
-	AllowListV6         *ebpf.Map
-	Events              *ebpf.Map    // Perf Event Array
-	AllowedNets         []*net.IPNet // Userspace check
-	DryRun              bool
-}
+//go:embed c/protector.bpf.*
+var bpfFS embed.FS
 
 type Loader struct {
 	coll  *ebpf.Collection
@@ -54,6 +35,11 @@ func NewLoader(iface string) *Loader {
 }
 
 func (l *Loader) Load() error {
+	bpfObj, err := bpfFS.ReadFile("c/protector.bpf.o")
+	if err != nil {
+		return fmt.Errorf("failed to read embedded BPF object: %w", err)
+	}
+
 	spec, err := ebpf.LoadCollectionSpecFromReader(bytes.NewReader(bpfObj))
 	if err != nil {
 		return fmt.Errorf("failed to load BPF spec: %w", err)

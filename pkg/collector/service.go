@@ -92,6 +92,9 @@ type Collector struct {
 	// Metrics server
 	metricsServer *http.Server
 
+	// Management API
+	managementListener net.Listener
+
 	// Lifecycle
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -152,6 +155,12 @@ func (c *Collector) Start(ctx context.Context) error {
 	}
 	c.Maps = c.Loader.GetMaps()
 	c.Logger.Info("eBPF programs loaded and attached")
+
+	if c.Config.SocketPath != "" {
+		if err := c.startManagementSocket(); err != nil {
+			return fmt.Errorf("failed to start management socket: %w", err)
+		}
+	}
 
 	// Start perf event reader for TCP metadata (timestamps, entropy)
 	if err := c.startPerfEventReader(); err != nil {
@@ -331,6 +340,8 @@ func (c *Collector) Stop() {
 	if c.spoeAgent != nil {
 		c.spoeAgent.Stop()
 	}
+
+	c.stopManagementSocket()
 
 	// Stop perf event reader
 	if c.perfReader != nil {

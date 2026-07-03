@@ -75,7 +75,7 @@ test: proto
 
 # Run portable tests that do not require Linux eBPF support.
 portable-test: proto
-	$(GO) test -v ./pkg/analyzer/... ./pkg/ml/... ./pkg/integration_test
+	$(GO) test -v ./pkg/analyzer/... ./pkg/ml/... ./pkg/integration_test ./pkg/collector ./cmd/yeetctl
 
 # Run linter
 lint:

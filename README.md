@@ -311,9 +311,9 @@ PacketYeeter is designed to be monitored via **Prometheus** and **Grafana**.
 
 ## Management CLI (`yeetctl`)
 
-`yeetctl` inspects the **collector**'s state over its UNIX socket. Point `-sock`
-at the collector's socket (its default is `/var/run/packetyeeter-collector.sock`,
-while `yeetctl`'s own default is `/var/run/packetyeeter.sock`).
+`yeetctl` inspects the **collector**'s state over its UNIX socket. Both the
+collector and `yeetctl` default to `/var/run/packetyeeter-collector.sock`; use
+`-socket` on the collector or `-sock` on `yeetctl` to override it.
 
 ```bash
 SOCK=/var/run/packetyeeter-collector.sock
@@ -330,6 +330,10 @@ sudo ./yeetctl -sock $SOCK ai
 # Show verified/unverified bot activity
 sudo ./yeetctl -sock $SOCK bots
 ```
+
+The collector reports blocked IPs directly from its eBPF maps. Reputation, AI,
+and bot summaries currently return empty collector-side state until analyzer
+state is exposed over the management API.
 
 For an interactive live view, run `yeetexplorer` (a terminal UI dashboard).
 
