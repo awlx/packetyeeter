@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
@@ -10,6 +11,7 @@ import (
 	"github.com/sirupsen/logrus"
 
 	"PacketYeeter/pkg/analyzer"
+	"PacketYeeter/pkg/buildinfo"
 )
 
 func main() {
@@ -35,9 +37,14 @@ func main() {
 		aiQueueSize    = flag.Int("ai-queue-size", 10000, "AI engine signal queue size")
 		mlModelPath    = flag.String("ml-model", "", "Path to ONNX ML model file (optional, enables ML-based confidence adjustment)")
 		dryRun         = flag.Bool("dry-run", false, "Monitor mode - log detections but don't send BLOCK commands")
+		showVersion    = flag.Bool("version", false, "Print build version and exit")
 		verbose        = flag.Bool("v", false, "Verbose logging")
 	)
 	flag.Parse()
+	if *showVersion {
+		fmt.Println(buildinfo.String())
+		return
+	}
 
 	if *verbose {
 		logrus.SetLevel(logrus.DebugLevel)
