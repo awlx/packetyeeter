@@ -417,14 +417,31 @@ func (pt *PatternTracker) detectWindowAnomaly(windows []uint16) bool {
 		}
 	}
 
-	// All same AND unusual value (not common 65535, 29200, 14600, etc.)
-	if allSame && firstWindow != 0 && firstWindow != 65535 &&
-		firstWindow != 29200 && firstWindow != 14600 {
-		return true
+	if !allSame {
+		return false
 	}
 
-	return false
+	// A single source presenting the exact same advertised window size
+	// across every connection is normal, expected TCP behavior, not a bot
+	// signal: the value is derived from that client's OS/socket-buffer
+	// configuration (and, with window scaling in play, essentially any
+	// nonzero value is possible) and simply won't change unless the
+	// client's receive buffer usage does. Real production traffic showed
+	// this firing on ordinary VPS/hosting-provider clients whose stack
+	// consistently advertised one plausible, if uncommon, window value -
+	// a false positive, since a stable window is exactly what a single
+	// real TCP stack looks like. The only "all same" cases worth flagging
+	// are a window of zero (a stalled/malformed connection) or a window
+	// so small it's characteristic of bare raw-socket scanning tools that
+	// never configure a real TCP stack at all.
+	return firstWindow == 0 || firstWindow < minPlausibleWindowSize
 }
+
+// minPlausibleWindowSize is the smallest advertised TCP window size we'd
+// expect from any real OS network stack (browsers, servers, mobile
+// devices). Values below this are typical of minimal raw-socket tooling
+// (scanners, crude bots) rather than legitimate clients.
+const minPlausibleWindowSize = 200
 
 func (pt *PatternTracker) calculateUniformity(sizes []uint16) float64 {
 	if len(sizes) < 2 {
