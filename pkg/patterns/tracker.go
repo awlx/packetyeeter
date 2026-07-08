@@ -399,6 +399,28 @@ const ttlAnomalyHopThreshold = 20
 // otherwise perfectly consistent window.
 const minTTLOutliersToFlag = 2
 
+// commonInitialTTLs are the near-universal OS/network-gear default initial
+// TTL values in the wild. Real hop count is derived as (initial - observed).
+var commonInitialTTLs = [3]int{64, 128, 255}
+
+// ttlFamilyHopTolerance is how many hops of slack we allow when comparing
+// two samples' implied hop counts under the commonInitialTTLs assumption.
+const ttlFamilyHopTolerance = 3
+
+// impliedHops returns the hop count implied by a TTL value, assuming it
+// started at the smallest common initial TTL that is >= the observed value.
+func impliedHops(ttl uint8) int {
+	t := int(ttl)
+	for _, base := range commonInitialTTLs {
+		if t <= base {
+			return base - t
+		}
+	}
+	// Above the largest common default (shouldn't normally happen); treat
+	// the value itself as the "hop count" so it still compares sanely.
+	return t
+}
+
 func (pt *PatternTracker) detectTTLAnomaly(ttls []uint8) bool {
 	if len(ttls) < 10 {
 		return false
@@ -419,6 +441,7 @@ func (pt *PatternTracker) detectTTLAnomaly(ttls []uint8) bool {
 			mode = ttl
 		}
 	}
+	modeHops := impliedHops(mode)
 
 	outliers := 0
 	for _, ttl := range ttls {
@@ -426,12 +449,37 @@ func (pt *PatternTracker) detectTTLAnomaly(ttls []uint8) bool {
 		if diff < 0 {
 			diff = -diff
 		}
-		if diff > ttlAnomalyHopThreshold {
-			outliers++
+		if diff <= ttlAnomalyHopThreshold {
+			continue
 		}
+
+		// A large raw TTL delta can still be completely benign if it's
+		// fully explained by the sample using a different OS/network-gear
+		// default initial TTL (64, 128, 255) over the *same real hop
+		// distance*. This is a known artifact of large ISPs' CGNAT/NAT64
+		// boundaries and dual-stack gateways, where traffic sharing one
+		// external IP can be re-originated by network equipment with a
+		// different default TTL. Production data confirmed this at scale:
+		// dozens of unrelated Vodafone Germany customers all showed a
+		// TTL pair differing by exactly 191 (255-64) with matching implied
+		// hop counts, none of it correlated with any other malicious
+		// signal - a real spoofing/proxy-rotation source wouldn't produce
+		// this exact, ISP-wide, hop-matched signature.
+		if outlierHops := impliedHops(ttl); abs(outlierHops-modeHops) <= ttlFamilyHopTolerance {
+			continue
+		}
+
+		outliers++
 	}
 
 	return outliers >= minTTLOutliersToFlag
+}
+
+func abs(v int) int {
+	if v < 0 {
+		return -v
+	}
+	return v
 }
 
 func (pt *PatternTracker) detectWindowAnomaly(windows []uint16) bool {
