@@ -26,6 +26,12 @@
       --text-muted: #8891a5;
       --shadow: 0 1px 2px rgba(0, 0, 0, 0.2), 0 4px 10px rgba(0, 0, 0, 0.15);
       --shadow-lg: 0 4px 6px rgba(0, 0, 0, 0.15), 0 10px 20px rgba(0, 0, 0, 0.2);
+      /* Theme-aware surfaces for dynamically-generated (inline-styled) content blocks */
+      --surface-alt: rgba(255, 255, 255, 0.04);
+      --surface-alt-strong: rgba(255, 255, 255, 0.08);
+      --danger-soft-bg: rgba(220, 38, 38, 0.12);
+      --danger-soft-text: #f87171;
+      --danger-soft-border: rgba(220, 38, 38, 0.35);
     }
     
     body { 
@@ -331,6 +337,9 @@
         .badge-scanner { background: rgba(217, 119, 6, 0.1); color: #d99a41; border-color: rgba(217, 119, 6, 0.3); }
         .badge-script { background: rgba(190, 24, 190, 0.1); color: #cc7bcc; border-color: rgba(190, 24, 190, 0.3); }
         .badge-browser { background: rgba(37, 99, 235, 0.1); color: #7ba3e8; border-color: rgba(37, 99, 235, 0.3); }
+        .badge-verified { background: rgba(5, 150, 105, 0.1); color: #4cad8f; border-color: rgba(5, 150, 105, 0.3); }
+        .badge-failed { background: rgba(220, 38, 38, 0.1); color: #e77c7c; border-color: rgba(220, 38, 38, 0.3); }
+        .badge-skipped { background: rgba(148, 163, 184, 0.1); color: #b0b9c7; border-color: rgba(148, 163, 184, 0.3); }
     
         /* Details section */
         .detail-section {
@@ -774,6 +783,11 @@
       --text-muted: #475569;
       --shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
       --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+      --surface-alt: #f8fafc;
+      --surface-alt-strong: #e5e7eb;
+      --danger-soft-bg: #fef2f2;
+      --danger-soft-text: #991b1b;
+      --danger-soft-border: #ef4444;
     }
 
     body.light-theme {
@@ -1122,6 +1136,19 @@
         </div>
       </div>
     </div>
+
+    <div class="panel" style="margin-top: 1.5rem;">
+      <div class="panel-header">
+        <div class="panel-title">ASN Risk Rollup</div>
+        <span style="color: var(--text-muted); font-size: 0.8125rem;">Aggregated from currently loaded detections - spot systemic false-positive/block patterns per network</span>
+      </div>
+      <div class="panel-body" id="asnRiskRollup" style="padding: 0;">
+        <div class="empty-state">
+          <div class="empty-state-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8l1.4-4.3A2 2 0 0 1 6.3 2h11.4a2 2 0 0 1 1.9 1.7L21 8M3 8v10a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V8M3 8h18M8 12h8"/></svg></div>
+          <div>Loading analytics...</div>
+        </div>
+      </div>
+    </div>
   </div>
 
   <!-- History Tab -->
@@ -1140,6 +1167,7 @@
               <th>ASN</th>
               <th>Organization</th>
               <th>Category</th>
+              <th>Verification</th>
               <th>Confidence</th>
               <th>Signals</th>
             </tr>
@@ -1216,11 +1244,11 @@
         <div>
           <button class="btn btn-success btn-sm" onclick="exportSessionRecordings()">Export Sessions</button>
           <button class="btn btn-primary btn-sm" onclick="refreshSessionsList()">Refresh</button>
-          <span id="sessionCount" style="margin-left: 0.5rem; color: #6b7280; font-size: 0.875rem;"></span>
+          <span id="sessionCount" style="margin-left: 0.5rem; color: var(--text-muted); font-size: 0.875rem;"></span>
         </div>
       </div>
       <div class="panel-body">
-        <p style="color: #6b7280; margin-bottom: 1rem;">
+        <p style="color: var(--text-muted); margin-bottom: 1rem;">
           System records complete event sequences (5min) after detections for ML training.
           Saved to <code>/var/cache/packetyeeter/sessions/recording-{ip}-{timestamp}.jsonl</code>
         </p>
@@ -1255,7 +1283,7 @@
         <div class="panel-title">Manual Recording</div>
       </div>
       <div class="panel-body">
-        <p style="color: #6b7280; margin-bottom: 1rem;">Start recording traffic for a specific IP address (5 minutes)</p>
+        <p style="color: var(--text-muted); margin-bottom: 1rem;">Start recording traffic for a specific IP address (5 minutes)</p>
         <div style="display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
           <input type="text" id="manualRecordIP" placeholder="Enter IP address" style="flex: 1; min-width: 200px; padding: 0.5rem; border: 1px solid #d1d5db; border-radius: 4px;" />
           <select id="manualRecordLabel" style="padding: 0.5rem; border: 1px solid #d1d5db; border-radius: 4px;">
@@ -1627,7 +1655,7 @@
         html += `
           <div class="detail-section">
             <div class="detail-title">HTTP Request</div>
-            <div style="font-family: monospace; font-size: 0.875rem; background: #f8fafc; padding: 0.75rem; border-radius: 0.375rem; border: 1px solid #e2e8f0;">
+            <div style="font-family: monospace; font-size: 0.875rem; background: var(--surface-alt); padding: 0.75rem; border-radius: 0.375rem; border: 1px solid var(--border);">
               ${det.method ? '<strong>' + escapeHtml(det.method) + '</strong> ' : ''}${det.hostname ? escapeHtml(det.hostname) : ''}${det.path ? escapeHtml(det.path) : ''}
             </div>
           </div>
@@ -1639,7 +1667,7 @@
         html += `
           <div class="detail-section">
             <div class="detail-title">User-Agent</div>
-            <div style="font-family: monospace; font-size: 0.875rem; word-break: break-all; background: #f8fafc; padding: 0.75rem; border-radius: 0.375rem; border: 1px solid #e2e8f0;">
+            <div style="font-family: monospace; font-size: 0.875rem; word-break: break-all; background: var(--surface-alt); padding: 0.75rem; border-radius: 0.375rem; border: 1px solid var(--border);">
               ${escapeHtml(det.user_agent)}
             </div>
           </div>
@@ -1662,7 +1690,7 @@
               ${det.ml_model_tier === 'pattern' ? '<span style="color: #10b981; font-weight: 600;">PATTERN</span>' : 
                 det.ml_model_tier === 'onnx' ? '<span style="color: #3b82f6; font-weight: 600;">ONNX</span>' : 
                 det.ml_model_tier === 'statistical' ? '<span style="color: #f59e0b; font-weight: 600;">STATISTICAL</span>' : 
-                '<span style="color: #6b7280;">N/A</span>'}
+                '<span style="color: var(--text-muted);">N/A</span>'}
             </div>
           </div>
           <div class="metric-card">
@@ -1695,6 +1723,7 @@
         <div class="detail-section">
           <div class="detail-title">Category</div>
           <span class="badge badge-${det.bot_category}">${det.bot_category}</span>
+          <span class="badge badge-${det.verification_status || 'unknown'}" style="margin-left: 0.5rem;" title="Identity verification result (e.g. DNS/PTR or trusted-ASN check for claimed crawlers)">verification: ${det.verification_status || 'unknown'}</span>
         </div>
         
         <div class="detail-section">
@@ -2702,36 +2731,6 @@
       }
     }
 
-    function renderHistory(detections) {
-      const tbody = document.getElementById('historyTable');
-      tbody.innerHTML = '';
-      
-      if (!detections || detections.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; color: var(--text-muted); padding: 2rem;">No detections in the last 6 hours</td></tr>';
-        return;
-      }
-      
-      detections.forEach(det => {
-        const tr = document.createElement('tr');
-        const time = det.detection_time ? new Date(det.detection_time) : null;
-        const org = det.org || 'Unknown';
-        const orgShort = org.length > 30 ? org.substring(0, 27) + '...' : org;
-        const category = det.bot_category || 'unknown';
-        const statusBadge = det.would_block ? '<span class="badge badge-malicious" style="margin-left: 0.5rem;">BLOCKED</span>' : '';
-        
-        tr.innerHTML = `
-          <td style="font-family: monospace; font-weight: 600;">${det.ip || ''}</td>
-          <td>${det.asn || ''}</td>
-          <td title="${org}">${orgShort}</td>
-          <td><span class="badge badge-${category}">${category}</span>${statusBadge}</td>
-          <td>${det.confidence != null ? (det.confidence * 100).toFixed(0) + '%' : ''}</td>
-          <td>${det.signal_count || 0}</td>
-          <td><small>${time ? time.toLocaleString() : ''}</small></td>
-        `;
-        tbody.appendChild(tr);
-      });
-    }
-
     // Analytics functions
     async function fetchAnalytics() {
       try {
@@ -2741,6 +2740,91 @@
       } catch (e) {
         console.error('Failed to fetch analytics:', e);
       }
+      renderAsnRiskRollup();
+    }
+
+    // Aggregates currently-loaded detections (allDetections) by ASN/org to surface
+    // systemic false-positive or block-rate patterns without manually sampling
+    // individual detections. Purely client-side - no new backend endpoint required.
+    function renderAsnRiskRollup() {
+      const el = document.getElementById('asnRiskRollup');
+      if (!el) return;
+
+      const escapeHtml = (text) => {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+      };
+
+      if (!allDetections || allDetections.length === 0) {
+        el.innerHTML = '<div class="empty-state"><div>No detections loaded yet</div></div>';
+        return;
+      }
+
+      const byAsn = {};
+      allDetections.forEach(det => {
+        const key = det.asn || 'Unknown';
+        if (!byAsn[key]) {
+          byAsn[key] = {
+            asn: key,
+            org: det.org || 'Unknown',
+            count: 0,
+            blocked: 0,
+            verified: 0,
+            confidenceSum: 0,
+            categories: {},
+          };
+        }
+        const bucket = byAsn[key];
+        bucket.count++;
+        if (det.would_block) bucket.blocked++;
+        if (det.verification_status === 'verified') bucket.verified++;
+        bucket.confidenceSum += (det.confidence || 0);
+        const cat = det.bot_category || 'unknown';
+        bucket.categories[cat] = (bucket.categories[cat] || 0) + 1;
+      });
+
+      const rows = Object.values(byAsn).sort((a, b) => (b.blocked / b.count) - (a.blocked / a.count));
+
+      let html = `
+        <table>
+          <thead>
+            <tr>
+              <th>ASN</th>
+              <th>Organization</th>
+              <th style="text-align: right;">Detections</th>
+              <th style="text-align: right;">Block Rate</th>
+              <th style="text-align: right;">Verified %</th>
+              <th style="text-align: right;">Avg Confidence</th>
+              <th>Top Category</th>
+            </tr>
+          </thead>
+          <tbody>
+      `;
+
+      rows.forEach(r => {
+        const blockRate = (r.blocked / r.count * 100).toFixed(0);
+        const verifiedRate = (r.verified / r.count * 100).toFixed(0);
+        const avgConfidence = (r.confidenceSum / r.count * 100).toFixed(0);
+        const topCategory = Object.entries(r.categories).sort((a, b) => b[1] - a[1])[0][0];
+        const blockColor = blockRate >= 50 ? 'var(--danger)' : (blockRate >= 10 ? 'var(--warning)' : 'var(--text-muted)');
+        const org = escapeHtml(r.org);
+        const orgShort = org.length > 35 ? org.substring(0, 32) + '...' : org;
+        html += `
+          <tr>
+            <td style="font-family: monospace;">${escapeHtml(r.asn)}</td>
+            <td title="${org}">${orgShort}</td>
+            <td style="text-align: right; font-weight: 700;">${r.count}</td>
+            <td style="text-align: right; font-weight: 700; color: ${blockColor};">${blockRate}%</td>
+            <td style="text-align: right;">${verifiedRate}%</td>
+            <td style="text-align: right;">${avgConfidence}%</td>
+            <td><span class="badge badge-${topCategory}">${topCategory}</span></td>
+          </tr>
+        `;
+      });
+
+      html += '</tbody></table>';
+      el.innerHTML = html;
     }
 
     function renderAnalytics(data) {
@@ -2864,7 +2948,7 @@
       tbody.innerHTML = '';
       
       if (!detections || detections.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; color: var(--text-muted); padding: 2rem;">No detections in the last 6 hours</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="8" style="text-align: center; color: var(--text-muted); padding: 2rem;">No detections in the last 6 hours</td></tr>';
         return;
       }
       
@@ -2872,11 +2956,12 @@
         const tr = document.createElement('tr');
         const time = det.detection_time ? new Date(det.detection_time) : null;
         const category = det.bot_category || 'unknown';
+        const verification = det.verification_status || 'unknown';
         const org = det.org || 'Unknown';
         const orgShort = org.length > 30 ? org.substring(0, 27) + '...' : org;
         
         const statusBadge = det.would_block 
-          ? '<span class="badge" style="background: #fee2e2; color: #991b1b; margin-left: 0.5rem;">BLOCK</span>'
+          ? '<span class="badge" style="background: var(--danger-soft-bg); color: var(--danger-soft-text); margin-left: 0.5rem;">BLOCK</span>'
           : '';
         
         tr.innerHTML = `
@@ -2885,6 +2970,7 @@
           <td>${det.asn || ''}</td>
           <td title="${org}">${orgShort}</td>
           <td><span class="badge badge-${category}">${category}</span>${statusBadge}</td>
+          <td><span class="badge badge-${verification}">${verification}</span></td>
           <td>${det.confidence != null ? (det.confidence * 100).toFixed(0) + '%' : ''}</td>
           <td>${det.signal_count || 0}</td>
         `;
@@ -3061,16 +3147,16 @@
         
         let html = '';
         if (sortedIPs.length === 0) {
-          html = '<p style="color: #6b7280; text-align: center; padding: 2rem;">No session recordings yet</p>';
+          html = '<p style="color: var(--text-muted); text-align: center; padding: 2rem;">No session recordings yet</p>';
         } else {
           html = '<div style="max-height: 600px; overflow-y: auto;">';
           sortedIPs.forEach(ip => {
             const ipSessions = sessionsByIP[ip];
             html += `
-              <div style="border: 1px solid #e5e7eb; border-radius: 4px; margin-bottom: 1rem; padding: 1rem;">
+              <div style="border: 1px solid var(--border); border-radius: 4px; margin-bottom: 1rem; padding: 1rem;">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
                   <strong style="font-size: 1.1rem;">${ip}</strong>
-                  <span style="color: #6b7280; font-size: 0.875rem;">${ipSessions.length} sessions</span>
+                  <span style="color: var(--text-muted); font-size: 0.875rem;">${ipSessions.length} sessions</span>
                 </div>
                 <div style="display: grid; gap: 0.5rem;">`;
             
@@ -3086,11 +3172,11 @@
               }[outcome] || '#6b7280';
               
               html += `
-                <div style="display: flex; justify-content: space-between; align-items: center; padding: 0.5rem; background: #f9fafb; border-radius: 4px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; padding: 0.5rem; background: var(--surface-alt); border-radius: 4px;">
                   <div style="flex: 1;">
-                    <span style="color: #374151; font-size: 0.875rem;">${startTime.toLocaleString()}</span>
+                    <span style="color: var(--text); font-size: 0.875rem;">${startTime.toLocaleString()}</span>
                     <span style="margin-left: 1rem; color: ${outcomeColor}; font-weight: 500;">${outcome}</span>
-                    <span style="margin-left: 1rem; color: #6b7280; font-size: 0.875rem;">${session.TotalEvents || 0} events</span>
+                    <span style="margin-left: 1rem; color: var(--text-muted); font-size: 0.875rem;">${session.TotalEvents || 0} events</span>
                   </div>
                   <button class="btn btn-sm" style="background: #ef4444; color: white; border: none; padding: 0.25rem 0.75rem; border-radius: 4px; cursor: pointer;" onclick="deleteSession('${session.SessionID}')">Delete</button>
                 </div>`;
@@ -3122,7 +3208,7 @@
         
         let html = '';
         if (!activeRecordings || activeRecordings.length === 0) {
-          html = '<p style="color: #6b7280; font-style: italic; padding: 1rem;">No active recordings</p>';
+          html = '<p style="color: var(--text-muted); font-style: italic; padding: 1rem;">No active recordings</p>';
         } else {
           html = '<div style="display: grid; gap: 0.75rem;">';
           activeRecordings.forEach(rec => {
@@ -3157,7 +3243,7 @@
             }
             
             html += `
-              <div style="border: 2px solid #ef4444; border-radius: 6px; padding: 1rem; background: #fef2f2;">
+              <div style="border: 2px solid var(--danger-soft-border); border-radius: 6px; padding: 1rem; background: var(--danger-soft-bg);">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
                   <div>
                     <strong style="font-size: 1rem; color: #dc2626;">${rec.ip}</strong>
@@ -3165,10 +3251,10 @@
                   </div>
                   <span style="font-size: 1.25rem; font-weight: 600; color: #dc2626;">${timeStr}</span>
                 </div>
-                <div style="background: #e5e7eb; height: 8px; border-radius: 4px; overflow: hidden; margin-bottom: 0.5rem;">
+                <div style="background: var(--surface-alt-strong); height: 8px; border-radius: 4px; overflow: hidden; margin-bottom: 0.5rem;">
                   <div style="background: linear-gradient(90deg, #dc2626, #f97316); height: 100%; width: ${progress}%; transition: width 1s linear;"></div>
                 </div>
-                <div style="display: flex; justify-content: space-between; font-size: 0.75rem; color: #6b7280;">
+                <div style="display: flex; justify-content: space-between; font-size: 0.75rem; color: var(--text-muted);">
                   <span>${rec.event_count || 0} events captured</span>
                   <span>Session: ${rec.session_id}</span>
                 </div>
