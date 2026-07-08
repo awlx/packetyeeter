@@ -233,6 +233,34 @@ The `AnalyzerService` gRPC contract (`api/proto/v1/packetyeeter.proto`) exposes 
     Options: `--install-deps`, `--install-service`, `--regen-proto`,
     `-i/--interface`, `--analyzer-addr`, `--listen-addr`, `--metrics-addr`.
 
+4.  **Pre-built binaries, packages, and Docker images**: every push to `main`
+    and every `vX.Y.Z` tag builds and publishes release artifacts via CI:
+    - Standalone binaries and checksums (`SHA256SUMS`) for
+      `packetyeeter-collector`/`packetyeeter-analyzer` (linux/amd64) and
+      `yeetctl`/`yeetexplorer`/`labeler` (linux/amd64 + linux/arm64) — attached
+      to the [GitHub Release](https://github.com/awlx/packetyeeter/releases)
+      for tags, or downloadable as a CI build artifact for `main`.
+    - `.deb` packages (linux/amd64) built with [nfpm](https://nfpm.goreleaser.com/)
+      from `packaging/nfpm/{collector,analyzer}.yaml`, installing binaries to
+      `/opt/packetyeeter/{collector,analyzer}/`, systemd units to
+      `/etc/systemd/system/`, and config to `/etc/default/`. Installing the
+      package does **not** enable or start the service — review the config
+      first, then `sudo systemctl enable --now packetyeeter-<collector|analyzer>`.
+      Build locally with `make install-nfpm packages`.
+    - Docker images at `ghcr.io/awlx/packetyeeter-analyzer` and
+      `ghcr.io/awlx/packetyeeter-collector`, tagged `main`/commit SHA from
+      `main` pushes, and `<tag>`/`latest`/commit SHA from version tags. Build
+      locally with `docker build --target analyzer .` or
+      `docker build --target collector .`. The collector image needs to run
+      with the same capabilities as the systemd unit below (`NET_ADMIN`,
+      `BPF`, `PERFMON`, `NET_RAW`, `SYS_ADMIN`, unlimited memlock) to load
+      eBPF/XDP — it is not meant to run as an unprivileged container.
+
+    The collector and analyzer binaries/images/packages are linux/amd64 only:
+    the collector's eBPF object is compiled for the host architecture, and the
+    analyzer links against onnxruntime via cgo, so neither cross-compiles
+    cleanly without a matching cross toolchain.
+
 ## Usage
 
 Start the **analyzer** first (anywhere; no root needed), then the **collector**

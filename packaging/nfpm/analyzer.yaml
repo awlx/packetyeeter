@@ -1,0 +1,47 @@
+# nfpm package definition for packetyeeter-analyzer.
+# Build with: nfpm package --config packaging/nfpm/analyzer.yaml --packager deb --target dist/
+#
+# Requires the packetyeeter-analyzer binary to already be built at the
+# repo root (see `make analyzer`) and the following env vars set:
+#   VERSION - package version (e.g. 1.2.3, no leading "v")
+#   ARCH    - target arch (amd64 or arm64)
+name: packetyeeter-analyzer
+arch: ${ARCH}
+platform: linux
+version: ${VERSION}
+section: net
+priority: optional
+maintainer: PacketYeeter maintainers
+homepage: https://github.com/awlx/packetyeeter
+license: MIT
+description: |
+  PacketYeeter Analyzer - userspace-only "brain" that receives signals
+  from one or more collectors, runs the reputation engine, AI/ML bot
+  detection, JA4+ fingerprint lookups, GeoIP/ASN enrichment, and threat
+  intelligence, then returns block commands. Needs no special
+  privileges and can run on a separate host.
+
+depends:
+  - libc6
+
+contents:
+  - src: ./packetyeeter-analyzer
+    dst: /opt/packetyeeter/analyzer/packetyeeter-analyzer
+    file_info:
+      mode: 0755
+
+  - src: ./packetyeeter-analyzer.service
+    dst: /etc/systemd/system/packetyeeter-analyzer.service
+    file_info:
+      mode: 0644
+
+  - src: ./packetyeeter-analyzer.default
+    dst: /etc/default/packetyeeter-analyzer
+    type: config|noreplace
+    file_info:
+      mode: 0644
+
+scripts:
+  postinstall: packaging/nfpm/scripts/analyzer-postinstall.sh
+  preremove: packaging/nfpm/scripts/analyzer-preremove.sh
+  postremove: packaging/nfpm/scripts/analyzer-postremove.sh
