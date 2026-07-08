@@ -15,6 +15,7 @@ import (
 
 	"github.com/sirupsen/logrus"
 
+	"PacketYeeter/pkg/analyzer/baseline"
 	"PacketYeeter/pkg/analyzer/reputation"
 	"PacketYeeter/pkg/analyzer/threatintel"
 	"PacketYeeter/pkg/geoip"
@@ -66,6 +67,7 @@ type Engine struct {
 	// Dependencies
 	geoip           *geoip.Provider
 	reputation      *reputation.Engine
+	asnBaseline     *baseline.BaselineCalibrator
 	ja4Verifier     JA4Verifier
 	crawlerVerifier *CrawlerVerifier
 	mlModel         MLModel // Machine learning model for bot detection
@@ -157,9 +159,18 @@ type Config struct {
 	SessionRecordingsPath string        // Directory to store session recordings (default: /var/cache/packetyeeter/sessions)
 	GeoIP                 *geoip.Provider
 	Reputation            *reputation.Engine
-	JA4Verifier           JA4Verifier
-	MLModel               MLModel // Machine learning model
-	ThreatIntel           *threatintel.ThreatIntelligence
+	// ASNBaseline is optional. When set, ASN-level reputation weight for a
+	// signal is dampened when the signal's TCP fingerprint matches the
+	// ASN's own established historical baseline (see processSignal). This
+	// targets false positives where an entire legitimate, high-volume ISP
+	// gets penalized just for having lots of traffic. It deliberately does
+	// NOT affect per-IP or per-JA4H reputation, since those are trivially
+	// spoofable and must stay fully sensitive to genuine bad actors within
+	// an otherwise-legitimate ASN.
+	ASNBaseline *baseline.BaselineCalibrator
+	JA4Verifier JA4Verifier
+	MLModel     MLModel // Machine learning model
+	ThreatIntel *threatintel.ThreatIntelligence
 
 	// DDoS classification thresholds (per IP/JA4H per 10s window)
 	DDoSIncompleteThreshold  int
@@ -290,6 +301,7 @@ func New(cfg Config) *Engine {
 		campaigns:                NewCampaignAggregator(cfg.Campaign),
 		geoip:                    cfg.GeoIP,
 		reputation:               cfg.Reputation,
+		asnBaseline:              cfg.ASNBaseline,
 		ja4Verifier:              cfg.JA4Verifier,
 		crawlerVerifier:          NewCrawlerVerifier(cfg.JA4Verifier),
 		mlModel:                  cfg.MLModel,
@@ -1073,6 +1085,83 @@ var lowSeverityASNSignals = map[SignalType]bool{
 	SignalMissingSecCH:        true,
 }
 
+// asnBaselineTrustMultiplier is the multiplier applied to a signal's
+// ASN-level reputation weight when the ASN has an established traffic
+// baseline (see pkg/analyzer/baseline) and the current signal's TCP
+// fingerprint falls within that baseline (not a statistical anomaly). This
+// is deliberately a dampening, not a skip: an ASN matching its own history
+// still accrues some reputation, it just accrues it more slowly than an ASN
+// with no baseline or one that's behaving anomalously.
+const asnBaselineTrustMultiplier = 0.4
+
+// asnBaselineTrustFactor computes the ASN reputation weight multiplier for a
+// signal based on how well it matches the ASN's established traffic
+// baseline. Returns 1.0 (no dampening) whenever a baseline can't be
+// evaluated: no calibrator configured, no ASN, or not enough historical
+// observations yet for that ASN, or the signal doesn't carry the TCP
+// fingerprint data (TTL/window size) the baseline is built from.
+//
+// This only ever reduces ASN-level weight - IP and JA4H fingerprint
+// reputation are untouched. TTL/window size are trivially spoofable, so a
+// bad actor could otherwise get a "trusted ASN" discount just by copying a
+// legitimate fingerprint; keeping per-IP/per-fingerprint detection at full
+// strength means that discount can only ever affect how fast an entire ASN
+// accumulates reputation, never whether an individual bad actor is caught.
+func (e *Engine) asnBaselineTrustFactor(asn string, signal Signal) float64 {
+	if e.asnBaseline == nil || asn == "" {
+		return 1.0
+	}
+
+	obs, ok := baselineObservationFromMetadata(signal.Metadata)
+	if !ok {
+		return 1.0
+	}
+
+	anomaly := e.asnBaseline.CalculateAnomaly(asn, obs)
+	if !anomaly.IsBaselineValid || anomaly.IsAnomalous() {
+		return 1.0
+	}
+
+	return asnBaselineTrustMultiplier
+}
+
+// baselineObservationFromMetadata extracts the TCP fingerprint fields the
+// ASN baseline is calibrated on (TTL, window size) from a signal's metadata
+// map. Returns ok=false if neither field is present, since CalculateAnomaly
+// can't produce a meaningful z-score with nothing to compare.
+func baselineObservationFromMetadata(metadata map[string]interface{}) (baseline.ObservationData, bool) {
+	var obs baseline.ObservationData
+	found := false
+
+	if ttl, ok := toUint32(metadata["ttl"]); ok && ttl > 0 {
+		obs.TTL = uint8(ttl)
+		found = true
+	}
+	if windowSize, ok := toUint32(metadata["window_size"]); ok && windowSize > 0 {
+		obs.WindowSize = uint16(windowSize)
+		found = true
+	}
+
+	return obs, found
+}
+
+// toUint32 handles the numeric types metadata values are commonly stored as
+// (proto fields decode to uint32; tests/other callers may use int or float64).
+func toUint32(v interface{}) (uint32, bool) {
+	switch n := v.(type) {
+	case uint32:
+		return n, true
+	case int:
+		return uint32(n), true
+	case int64:
+		return uint32(n), true
+	case float64:
+		return uint32(n), true
+	default:
+		return 0, false
+	}
+}
+
 func (e *Engine) processSignal(signal Signal, windowSignals map[string][]Signal) {
 	start := time.Now()
 	defer func() {
@@ -1173,6 +1262,7 @@ func (e *Engine) processSignal(signal Signal, windowSignals map[string][]Signal)
 			if lowSeverityASNSignals[signal.Type] {
 				asnWeight = weight * 0.1
 			}
+			asnWeight *= e.asnBaselineTrustFactor(asn, signal)
 		}
 
 		ja4Weight := 0.0

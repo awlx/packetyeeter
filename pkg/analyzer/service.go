@@ -327,6 +327,11 @@ func (a *Analyzer) Start() error {
 		logrus.Info("JA4 Database initialized and downloading")
 	}
 
+	// Initialize baseline calibrator (before the AI engine, so it can be
+	// wired into aiCfg.ASNBaseline for ASN-level reputation dampening)
+	a.Baseline = baseline.NewBaselineCalibrator(baseline.DefaultConfig())
+	logrus.Info("Baseline Calibrator initialized")
+
 	// Initialize AI Detection Engine with all components
 	aiCfg := aidetection.DefaultConfig()
 	if a.Config.AIWorkers > 0 {
@@ -337,6 +342,7 @@ func (a *Analyzer) Start() error {
 	}
 	aiCfg.GeoIP = a.GeoIP
 	aiCfg.Reputation = a.Reputation
+	aiCfg.ASNBaseline = a.Baseline
 	aiCfg.JA4Verifier = a.JA4DB
 	aiCfg.ThreatIntel = a.ThreatIntel
 	aiCfg.ConfidenceThreshold = a.Config.AIConfidenceThreshold
@@ -396,10 +402,6 @@ func (a *Analyzer) Start() error {
 
 	// Start AIEngine workers
 	a.AIEngine.Start()
-
-	// Initialize baseline calibrator
-	a.Baseline = baseline.NewBaselineCalibrator(baseline.DefaultConfig())
-	logrus.Info("Baseline Calibrator initialized")
 
 	// Initialize clock skew and entropy analyzers
 	a.ClockSkew = clockskew.NewAnalyzer(a.AIEngine)
