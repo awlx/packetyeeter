@@ -23,14 +23,18 @@ SOCKET_PATH=/var/run/packetyeeter-collector.sock
 # GeoIP ASN database path
 GEOIP_ASN_PATH=/var/lib/GeoIP/GeoLite2-ASN.mmdb
 
-# Allowlist CIDRs (comma-separated, e.g., 10.0.0.0/8,192.168.1.0/24)
-# ALLOWLIST=10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
-
 # Block duration for IPs (e.g., 300s, 5m, 1h)
 BLOCK_DURATION=300s
 
+# All optional/conditional collector flags go through EXTRA_ARGS. The unit
+# file's ExecStart uses plain systemd variable substitution only (no bash
+# ${VAR:+...} conditionals - systemd does not run ExecStart through a shell
+# and does not support that syntax), so any flag that isn't always present
+# must be composed here as a single string, e.g.:
+#   EXTRA_ARGS=-poll-interval 1s -allowlist 10.0.0.0/8,192.168.0.0/16
+#
+# Allowlist CIDRs (comma-separated):
+# EXTRA_ARGS=-allowlist 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+#
 # Additional collector flags, e.g. -poll-interval 1s or -signal-queue-size 20000
 # EXTRA_ARGS=-poll-interval 1s
-
-# Allowlist example (comma-separated CIDRs)
-# EXTRA_ARGS=-allowlist 10.0.0.0/8,192.168.0.0/16

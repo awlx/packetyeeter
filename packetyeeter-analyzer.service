@@ -5,11 +5,16 @@ After=network.target
 
 [Service]
 Type=simple
-EnvironmentFile=-/etc/default/packetyeeter-analyzer
+# Required (not "-/etc/default/..."): native systemd does not run ExecStart
+# through a shell, so it cannot fall back to inline defaults like bash's
+# ${VAR:-default}. All values below must come from this file, which is
+# shipped with real defaults by the package. If the file is missing, refuse
+# to start rather than silently launching with empty/garbage arguments.
+EnvironmentFile=/etc/default/packetyeeter-analyzer
 ExecStart=/opt/packetyeeter/analyzer/packetyeeter-analyzer \
-    -listen-addr ${LISTEN_ADDR:-0.0.0.0:9090} \
-    -metrics-addr ${METRICS_ADDR:-:9091} \
-    -geoip-asn ${GEOIP_ASN_PATH:-/var/lib/GeoIP/GeoLite2-ASN.mmdb} \
+    -listen-addr ${LISTEN_ADDR} \
+    -metrics-addr ${METRICS_ADDR} \
+    -geoip-asn ${GEOIP_ASN_PATH} \
     ${EXTRA_ARGS}
 Restart=on-failure
 RestartSec=5
