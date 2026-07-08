@@ -668,11 +668,7 @@ func (c *Collector) processPerfEvent(data []byte) {
 			Ttl:          uint32(meta.TTL),
 			WindowSize:   uint32(meta.Window),
 			Mss:          uint32(meta.Mss),
-		},
-		Metadata: map[string]string{
-			"has_timestamp": fmt.Sprintf("%d", meta.HasTimestamp),
-			"tcp_flags":     fmt.Sprintf("0x%02x", meta.TcpFlags),
-			"event_type":    fmt.Sprintf("%d", meta.Type),
+			TcpFlags:     uint32(meta.TcpFlags),
 		},
 	}
 

@@ -717,6 +717,7 @@ type TCPContext struct {
 	HandshakeRttNs int64                  `protobuf:"varint,8,opt,name=handshake_rtt_ns,json=handshakeRttNs,proto3" json:"handshake_rtt_ns,omitempty"`
 	TcpTimestamp   uint32                 `protobuf:"varint,9,opt,name=tcp_timestamp,json=tcpTimestamp,proto3" json:"tcp_timestamp,omitempty"`  // TCP timestamp value (TSval) for clock skew analysis
 	EntropyScore   uint32                 `protobuf:"varint,10,opt,name=entropy_score,json=entropyScore,proto3" json:"entropy_score,omitempty"` // Payload entropy estimate (0-100)
+	TcpFlags       uint32                 `protobuf:"varint,11,opt,name=tcp_flags,json=tcpFlags,proto3" json:"tcp_flags,omitempty"`             // Raw TCP flags byte (SYN=0x02, ACK=0x10, etc.)
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -817,6 +818,13 @@ func (x *TCPContext) GetTcpTimestamp() uint32 {
 func (x *TCPContext) GetEntropyScore() uint32 {
 	if x != nil {
 		return x.EntropyScore
+	}
+	return 0
+}
+
+func (x *TCPContext) GetTcpFlags() uint32 {
+	if x != nil {
+		return x.TcpFlags
 	}
 	return 0
 }
@@ -2156,7 +2164,7 @@ const file_v1_packetyeeter_proto_rawDesc = "" +
 	"\bdst_port\x18\v \x01(\rR\adstPort\x12\x15\n" +
 	"\x06dst_ip\x18\f \x01(\tR\x05dstIp\x12\x1f\n" +
 	"\vstatus_code\x18\r \x01(\rR\n" +
-	"statusCode\"\xbd\x02\n" +
+	"statusCode\"\xda\x02\n" +
 	"\n" +
 	"TCPContext\x12\x1b\n" +
 	"\tsyn_count\x18\x01 \x01(\rR\bsynCount\x12\x1b\n" +
@@ -2171,7 +2179,8 @@ const file_v1_packetyeeter_proto_rawDesc = "" +
 	"\x10handshake_rtt_ns\x18\b \x01(\x03R\x0ehandshakeRttNs\x12#\n" +
 	"\rtcp_timestamp\x18\t \x01(\rR\ftcpTimestamp\x12#\n" +
 	"\rentropy_score\x18\n" +
-	" \x01(\rR\fentropyScore\"\xa0\x02\n" +
+	" \x01(\rR\fentropyScore\x12\x1b\n" +
+	"\ttcp_flags\x18\v \x01(\rR\btcpFlags\"\xa0\x02\n" +
 	"\aCommand\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x128\n" +
 	"\ttimestamp\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\ttimestamp\x120\n" +

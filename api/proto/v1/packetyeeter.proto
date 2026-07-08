@@ -163,6 +163,7 @@ message TCPContext {
   int64 handshake_rtt_ns = 8;
   uint32 tcp_timestamp = 9;  // TCP timestamp value (TSval) for clock skew analysis
   uint32 entropy_score = 10; // Payload entropy estimate (0-100)
+  uint32 tcp_flags = 11;     // Raw TCP flags byte (SYN=0x02, ACK=0x10, etc.)
 }
 
 // Command represents an action for the collector to execute
