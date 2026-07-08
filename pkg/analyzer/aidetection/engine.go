@@ -1228,14 +1228,20 @@ func (e *Engine) processSignal(signal Signal, windowSignals map[string][]Signal)
 	}
 	e.updateBehavioralProfile(key, signal, signalTypes, sources)
 
-	logrus.WithFields(logrus.Fields{
-		"type":   signal.Type,
-		"source": signal.Source,
-		"ip":     signal.IP,
-		"ja4h":   signal.JA4H,
-		"asn":    signal.ASN,
-		"weight": signal.Weight,
-	}).Debug("AI Signal Received")
+	// logrus.WithFields builds and allocates a Fields map/Entry unconditionally
+	// even when Debug-level logging is disabled (the level check only happens
+	// inside Debug()). At production signal rates this line ran on every
+	// single signal regardless of log level, so guard it explicitly.
+	if logrus.IsLevelEnabled(logrus.DebugLevel) {
+		logrus.WithFields(logrus.Fields{
+			"type":   signal.Type,
+			"source": signal.Source,
+			"ip":     signal.IP,
+			"ja4h":   signal.JA4H,
+			"asn":    signal.ASN,
+			"weight": signal.Weight,
+		}).Debug("AI Signal Received")
+	}
 }
 
 func (e *Engine) evaluateCampaigns() {
