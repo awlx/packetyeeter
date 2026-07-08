@@ -58,3 +58,56 @@ jobs:
 
       - name: Build Docker image
         run: docker build .
+
+  e2e-haproxy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install haproxy
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends haproxy
+
+      - name: Install protobuf tools
+        run: make install-buf
+
+      - name: Run HAProxy peer/SPOE protocol e2e tests
+        run: make e2e-test
+
+  e2e-ebpf:
+    runs-on: ubuntu-latest
+    # Validated on a real Linux host with root + BPF support as part of
+    # this change. Kept as a separate, best-effort job (continue-on-error)
+    # since GitHub-hosted runner kernels/permissions can vary; a failure
+    # here should not block the rest of CI, but should be investigated.
+    continue-on-error: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang llvm libbpf-dev linux-libc-dev iproute2
+
+      - name: Install protobuf tools
+        run: make install-buf
+
+      - name: Run kernel eBPF/XDP block-enforcement e2e test
+        run: make e2e-ebpf-test

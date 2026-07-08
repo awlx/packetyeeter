@@ -7,22 +7,28 @@ import (
 
 	"github.com/sirupsen/logrus"
 
-	"PacketYeeter/pkg/collector/ebpf"
 	"PacketYeeter/pkg/metrics"
 
 	"github.com/dropmorepackets/haproxy-go/peers"
 	"github.com/dropmorepackets/haproxy-go/peers/sticktable"
 )
 
-type Server struct {
-	port int
-	maps *ebpf.Maps
+// Blocker is the subset of *ebpf.Maps this package depends on. It exists so
+// the peer listener can be exercised in tests (including real-haproxy e2e
+// tests) without a loaded eBPF program/kernel maps.
+type Blocker interface {
+	BlockIP(ip net.IP, reason string, meta logrus.Fields) error
 }
 
-func NewServer(port int, maps *ebpf.Maps) *Server {
+type Server struct {
+	port    int
+	blocker Blocker
+}
+
+func NewServer(port int, blocker Blocker) *Server {
 	return &Server{
-		port: port,
-		maps: maps,
+		port:    port,
+		blocker: blocker,
 	}
 }
 
@@ -33,7 +39,7 @@ func (s *Server) Start() {
 	peer := peers.Peer{
 		Addr: addr,
 		HandlerSource: func() peers.Handler {
-			return &handler{maps: s.maps}
+			return &handler{blocker: s.blocker}
 		},
 	}
 
@@ -43,7 +49,7 @@ func (s *Server) Start() {
 }
 
 type handler struct {
-	maps *ebpf.Maps
+	blocker Blocker
 }
 
 func (h *handler) HandleHandshake(ctx context.Context, handshake *peers.Handshake) {
@@ -54,7 +60,7 @@ func (h *handler) HandleUpdate(ctx context.Context, update *sticktable.EntryUpda
 	ipStr := update.Key.String()
 	ip := net.ParseIP(ipStr)
 	if ip != nil {
-		h.maps.BlockIP(ip, "HAProxy Peer Update", logrus.Fields{
+		h.blocker.BlockIP(ip, "HAProxy Peer Update", logrus.Fields{
 			"source": "haproxy",
 		})
 		metrics.HAProxyBlocks.Inc()

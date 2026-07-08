@@ -195,6 +195,11 @@ The `AnalyzerService` gRPC contract (`api/proto/v1/packetyeeter.proto`) exposes 
     > NOTE: `make test` / `go test ./...` needs the compiled `protector.bpf.o`
     > present (run the `clang` step or `deploy.sh` first).
 
+    **Testing tiers**:
+    - `make portable-test` — unit/integration tests that don't need Linux/eBPF; runs anywhere.
+    - `make e2e-test` — spins up a real `haproxy` binary (must be on `PATH`) and drives it against the collector's HAProxy peer-protocol listener and SPOE agent to validate wire compatibility. Portable to any OS with `haproxy` installed; no kernel/eBPF required.
+    - `make e2e-ebpf-test` — loads and attaches the real eBPF/XDP program to a scratch dummy interface and verifies that a block command from the analyzer is written to and readable from the real kernel map. Requires Linux, root, and the compiled BPF object (`make bpf`); not portable.
+
 3.  **Remote deployment** with `deploy.sh`:
     ```bash
     # Usage: ./deploy.sh <host> [collector|analyzer|both] [options]
