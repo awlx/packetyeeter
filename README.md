@@ -5,9 +5,9 @@ PacketYeeter is a high-performance, eBPF-based DDoS protection and traffic filte
 ## Key Features
 
 1.  **SYN Flood Detection & Mitigation (Layer 4)**
-    *   **Detection**: Uses eBPF TC (Ingress/Egress) to track TCP handshake states. It identifies source IPs that initiate connections (SYN) but fail to complete the handshake (ACK) within a configured timeout.
-    *   **Mitigation**: Automatically adds malicious IPs to a kernel-space blocklist map.
-    *   **Enforcement**: Use XDP to drop packets from blocked IPs instantly, before they reach the OS network stack.
+    *   **Detection**: Uses eBPF TC (Ingress/Egress) to track TCP handshake states. It identifies source IPs that initiate connections (SYN) but never complete the handshake (ACK); pending entries are cleared once a matching ACK arrives.
+    *   **Mitigation**: Incomplete-handshake signals are streamed to the analyzer, which applies the `-ddos-min-incomplete` threshold and returns a block decision over gRPC — blocking is analyzer-driven, not an automatic kernel-space decision.
+    *   **Enforcement**: XDP drops packets from IPs the collector has been told to block, before they reach the OS network stack.
 
 2.  **TCP Flag Sanitization**
     *   Detects and blocks invalid TCP flag combinations commonly used in reconnaissance scans and attacks:
@@ -17,8 +17,8 @@ PacketYeeter is a high-performance, eBPF-based DDoS protection and traffic filte
     *   Violating IPs are immediately banned.
 
 3.  **IP Allowlist (CIDR Support)**
-    *   Protect specific IPs or ranges (CIDR notation) from ever being blocked or rate-limited.
-    *   Traffic from allowlisted sources bypasses all filters (XDP & TC) immediately.
+    *   Protect specific IPs or ranges (CIDR notation) from ever being blocked.
+    *   Enforced today in the collector's userspace block-decision path (`-allowlist` flag, plus dynamic entries pushed by the analyzer); an allowlisted IP is simply never written to the kernel blocklist map.
     *   Supports both IPv4 and IPv6 CIDRs.
 
 4.  **Volumetric Rate Limiting (ICMP & UDP)**
@@ -30,22 +30,19 @@ PacketYeeter is a high-performance, eBPF-based DDoS protection and traffic filte
     *   **Concept**: Assigns a numerical "Reputation Score" to every IP, JA4 fingerprint, and ASN interacting with the system.
     *   **Scoring**:
         *   Scores start at 0.
-        *   Points are added for suspicious behaviors (e.g., +10 for JA4 abuse, +20 for High Latency, +15 for Proxy Lag).
-        *   Scores degrade over time (decay factor 0.9 every 10m) to forgive transient issues.
+        *   Points are added per detected signal using a per-signal weight (default `5.0`, capped at `20` for incomplete-handshake signals). The associated ASN is penalized at a fraction of that weight (`0.1`–`0.25`×), and the associated JA4H fingerprint at `0.6`×.
+        *   Scores degrade over time (decay factor `0.95` every 30 minutes) to forgive transient issues.
     *   **Enforcement**: If a score exceeds the configured threshold (analyzer default: `75.0`, via `-reputation-threshold`), the entity is marked as a "Bad Actor" and subsequent traffic is dropped (or logged only in Dry-Run Mode).
     *   **Metrics**: `packetyeeter_reputation_score` (Gauge) tracks the current score of all tracked entities.
 
 5.  **JA4T SSL/TCP Fingerprinting (Layer 4)**
-    *   **Detection**: Passive TCP fingerprinting based on window size, TCP options, and ordering (JA4T format).
-    *   **Behavior Analysis**: Tracks the frequency of unique fingerprints in real-time.
-    *   **Abuse Detection**: Flags suspicious activity when a single fingerprint exceeds the configurable threshold within a 10s window.
-    *   **Metrics**: Prometheus counters track unique abuse events.
+    *   **Detection**: Passive TCP fingerprinting based on window size, TCP options, and ordering (JA4T format), passed through from HAProxy SPOE.
+    *   **Abuse Detection**: JA4T abuse signals feed into the same generic AI signal-aggregation/confidence scoring as other behavioral signals (no JA4T-specific frequency window).
+    *   **Metrics**: `packetyeeter_ja4t_suspicious_total` (Counter) tracks abuse events.
 
 6.  **JA4L / Latency Monitoring**
     *   **Detection**: Measures the RTT (Round Trip Time) of the TCP handshake (SYN-ACK -> ACK) passively via eBPF.
-    *   **JA4L_C Format**: Logs latency fingerprints in `(RTT/2)_TTL` format (e.g., `11_128`), allowing easy identification of OS and physical distance.
     *   **Adaptive Baseline**: Maintains an EWMA per ASN to avoid penalizing inherently high-latency networks; flags spikes relative to each ASN.
-    *   **Proxy Detection**: Extremely high latency on a handshake (>400ms) often indicates slow proxies, VPN chaining, or "Slowloris" attempts.
     *   **Alerting**: 
         *   Logs warnings for high latency events.
         *   Metrics: `packetyeeter_high_latency_handshakes_total` (Counter), `packetyeeter_high_latency_max_ms` (Gauge), `packetyeeter_latency_ewma_by_asn_ms` (GaugeVec).
@@ -65,12 +62,12 @@ PacketYeeter is a high-performance, eBPF-based DDoS protection and traffic filte
     *   **Goal**: Detect proxies/bots via protocol latency, JA4H fingerprinting, and behavioral signals.
     *   **Mechanism**: HAProxy SPOE sends timestamps + HTTP features (JA4H via Lua, host, UA, headers, cookies) to PacketYeeter.
     *   **Logic**:
-        *   Compare `Protocol Latency` vs network RTT (>200ms + RTT → anomaly).
+        *   Compare proxy lag (`client_req_ms` minus network RTT) against an adaptive per-ASN threshold.
         *   **JA4H** fingerprinting via upstream lua (`fingerprint_ja4h`).
         *   **Heuristics**: suspicious UA, missing headers, host-aware cookie expectations, honeypot paths, sequential path enumeration (alpha/numeric), low asset ratio (HTML >> assets).
         *   **Detection**:
             *   Static: `len(signals) >= 2` OR severe signals (`honeypot`, `numeric_seq`, `alpha_seq`).
-            *   Adaptive (EWMA): per `host|ja4h` (fallback `host|ip`), detect when `ewma >= 1` and `current > ewma*3 + 2`.
+            *   Adaptive (EWMA): per-ASN proxy-lag baseline in milliseconds, with a 1000ms floor; flags when `proxy_lag_ms > max(1000, ewma_lag_ms*3 + 200)` (and, when RTT is known, also requires `proxy_lag_ms > rtt_ms*2`).
     *   **Metrics**:
         *   `packetyeeter_client_req_time_ms` (Histogram)
         *   `packetyeeter_proxy_lag_max_ms` (Gauge)
