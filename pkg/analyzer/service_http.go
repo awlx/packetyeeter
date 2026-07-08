@@ -25,36 +25,104 @@ var (
 	reCrawlee = regexp.MustCompile(`(?i)(crawlee|apify|apify_client|python-httpx|httpx|aiohttp|python-requests)`)
 )
 
+// honestCrawlerMarkers lists self-identifying crawler tokens that aren't
+// already covered by ja4db.BotKeywordsExtended's generic "bot"/"crawler"/
+// "spider"/"scraper" substrings (e.g. "facebookexternalhit" contains none
+// of those words). Matched case-insensitively against the user agent.
+var honestCrawlerMarkers = []string{"facebookexternalhit", "ia_archiver"}
+
+// isKnownHonestUA reports whether the user agent honestly self-identifies as
+// an automated client/crawler (e.g. "Mozilla/5.0 ... Chrome/W.X.Y.Z Mobile
+// Safari/537.36 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)").
+// Google's and Facebook's crawlers legitimately embed a Chrome/Chromium
+// version string for rendering compatibility while still honestly declaring
+// themselves via a "bot"/"crawler" token or well-known product name
+// elsewhere in the same string - they are not impersonating a real browser.
+func isKnownHonestUA(userAgent string) bool {
+	lowerUA := strings.ToLower(userAgent)
+	for _, keyword := range ja4db.BotKeywordsExtended {
+		if strings.Contains(lowerUA, keyword) {
+			return true
+		}
+	}
+	for _, marker := range honestCrawlerMarkers {
+		if strings.Contains(lowerUA, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 // isChromeFamilyUA reports whether the user agent claims to be a
 // Chromium-family browser (Chrome, Chrome-on-iOS, or Edge). Used to gate
 // several conservative header/TLS heuristics below to browsers that
 // deterministically send certain headers/negotiate certain TLS versions,
 // keeping false-positive risk low for less common but legitimate clients.
+// Honest, self-identifying crawlers (Googlebot, facebookexternalhit, etc.)
+// are excluded even though their UA embeds a Chrome/Chromium version string,
+// since they aren't impersonating a real browser and don't reliably send
+// the same headers a real Chrome/Edge session would.
 func isChromeFamilyUA(userAgent string) bool {
+	if isKnownHonestUA(userAgent) {
+		return false
+	}
 	return strings.Contains(userAgent, "Chrome") || strings.Contains(userAgent, "CriOS") || strings.Contains(userAgent, "Edg/")
 }
 
-// isMissingSecCH reports whether a claimed Chrome-family UA's header order
-// doesn't include sec-ch-ua, which real Chrome/Edge browsers always send.
-func isMissingSecCH(chromeUA bool, headerOrderLower string) bool {
-	return chromeUA && headerOrderLower != "" && !strings.Contains(headerOrderLower, "sec-ch-ua")
+// isBlinkEngineUA reports whether the user agent claims to be a
+// Chromium/Blink-engine browser (desktop or Android Chrome, or Edge) - the
+// subset of isChromeFamilyUA that actually implements Client Hints
+// (sec-ch-ua) and Fetch Metadata (Sec-Fetch-*) request headers. Chrome for
+// iOS (CriOS) is deliberately excluded: Apple requires every iOS browser to
+// use the WebKit rendering engine, and WebKit doesn't implement either
+// header family (as of 2024) - a real CriOS session behaves like Safari for
+// both, not like desktop/Android Chrome, so gating on isChromeFamilyUA alone
+// would falsely flag every genuine Chrome-for-iOS user.
+func isBlinkEngineUA(userAgent string) bool {
+	if isKnownHonestUA(userAgent) || strings.Contains(userAgent, "CriOS") {
+		return false
+	}
+	return strings.Contains(userAgent, "Chrome") || strings.Contains(userAgent, "Edg/")
 }
 
-// isMissingSecFetch reports whether a claimed Chrome-family UA is missing
-// all three of Sec-Fetch-Site/Mode/Dest. Real browsers (Chrome 76+, Firefox
-// 90+, Safari 16.4+) auto-generate these on every request; they cannot be
-// suppressed by client-side JS, making their total absence a strong signal
-// that the request didn't actually come from the browser the UA claims.
-func isMissingSecFetch(chromeUA bool, secFetchSite, secFetchMode, secFetchDest string) bool {
-	return chromeUA && secFetchSite == "" && secFetchMode == "" && secFetchDest == ""
+// isMissingSecCH reports whether a claimed Blink-engine UA's header order
+// doesn't include sec-ch-ua, which real desktop/Android Chrome/Edge browsers
+// always send. Use blinkUA (isBlinkEngineUA), not chromeUA, since Chrome for
+// iOS never sends this header despite otherwise being Chrome-family.
+func isMissingSecCH(blinkUA bool, headerOrderLower string) bool {
+	return blinkUA && headerOrderLower != "" && !strings.Contains(headerOrderLower, "sec-ch-ua")
+}
+
+// isMissingSecFetch reports whether a claimed Blink-engine UA is missing all
+// three of Sec-Fetch-Site/Mode/Dest. Real Chromium-based browsers (Chrome
+// 76+, Edge) auto-generate these on every request; they cannot be suppressed
+// by client-side JS, making their total absence a strong indicator that the
+// request didn't actually come from the browser the UA claims. Use blinkUA
+// (isBlinkEngineUA), not chromeUA: Chrome for iOS is WebKit-based and never
+// sends these headers, same as Safari.
+func isMissingSecFetch(blinkUA bool, secFetchSite, secFetchMode, secFetchDest string) bool {
+	return blinkUA && secFetchSite == "" && secFetchMode == "" && secFetchDest == ""
 }
 
 // isAcceptMismatch reports whether a claimed browser UA sent an empty or
-// bare wildcard-only Accept header. Real browsers always send a detailed,
-// specific Accept header (e.g. "text/html,application/xhtml+xml,...");
-// scripted HTTP clients frequently leave it empty or default to "*/*".
-func isAcceptMismatch(chromeUA bool, accept string) bool {
-	return chromeUA && (accept == "" || strings.TrimSpace(accept) == "*/*")
+// bare wildcard-only Accept header for what looks like a top-level page
+// navigation. Real browsers always send a detailed, specific Accept header
+// for navigations (e.g. "text/html,application/xhtml+xml,..."); scripted
+// HTTP clients frequently leave it empty or default to "*/*". However, real
+// browsers' fetch()/XHR calls for subresources (JSON, WASM, scripts,
+// images, etc.) legitimately default to "Accept: */*" too, so this only
+// fires when Sec-Fetch-Dest is absent (not sent at all - the pre-existing
+// behavior, kept for clients that don't send Fetch Metadata headers) or is
+// explicitly "document" (a real navigation). Any other Sec-Fetch-Dest value
+// indicates a legitimate non-navigation subresource fetch and is excluded.
+func isAcceptMismatch(chromeUA bool, accept, secFetchDest string) bool {
+	if !chromeUA {
+		return false
+	}
+	if secFetchDest != "" && secFetchDest != "document" {
+		return false
+	}
+	return accept == "" || strings.TrimSpace(accept) == "*/*"
 }
 
 // isTLSVersionMismatch reports whether a claimed Chrome/Edge UA negotiated
@@ -197,6 +265,25 @@ func (a *Analyzer) processHTTPRequest(sig *apiv1.Signal, ip net.IP, asn string, 
 		}
 	}
 
+	// Bot verification using unified handler. Run this before the UA/header
+	// impersonation heuristics below (crawlee regex, sec-ch, Sec-Fetch-*,
+	// Accept, TLS-version mismatch): those heuristics infer impersonation
+	// from a claimed browser identity, so a request already verified as a
+	// known-good bot (e.g. Googlebot's Chrome-embedded rendering UA, which
+	// legitimately omits Sec-Fetch-*/sends "Accept: */*") must be excluded
+	// from them, not just from the JA4 fingerprint analysis further down.
+	// The verifier caches per-IP results, so calling it this early adds no
+	// meaningful cost on the hot path.
+	if a.BotHandler != nil && userAgent != "" {
+		result := a.BotHandler.VerifyBot(ip, userAgent, asn, org)
+		if result.IsVerified {
+			// Create observation for verified bot (for training data)
+			a.recordVerifiedBot(ip, userAgent, asn, org, result, sig)
+			return // Don't penalize verified bots/crawlers
+		}
+		// Impersonation is already handled and penalized by BotHandler
+	}
+
 	// UA heuristics
 	if userAgent != "" && reCrawlee.MatchString(userAgent) {
 		if a.SignalBuilder != nil {
@@ -213,6 +300,7 @@ func (a *Analyzer) processHTTPRequest(sig *apiv1.Signal, ip net.IP, asn string, 
 		headerOrder = h
 	}
 	chromeUA := isChromeFamilyUA(userAgent)
+	blinkUA := isBlinkEngineUA(userAgent)
 	if headerOrder != "" {
 		parts := strings.Split(headerOrder, ",")
 		if len(parts) < 5 && a.SignalBuilder != nil {
@@ -221,26 +309,30 @@ func (a *Analyzer) processHTTPRequest(sig *apiv1.Signal, ip net.IP, asn string, 
 				"count":        len(parts),
 			}))
 		}
-		if isMissingSecCH(chromeUA, strings.ToLower(headerOrder)) && a.SignalBuilder != nil {
+		if isMissingSecCH(blinkUA, strings.ToLower(headerOrder)) && a.SignalBuilder != nil {
 			a.SignalBuilder.EmitHeaderAnomaly(ip, asn, org, aidetection.SignalMissingSecCH, sig.Ja4H, sig.Ja4H, sig.Ja4T, createHTTPMetadata(nil))
 		}
 	}
 
-	// Sec-Fetch-* heuristics: real browsers (Chrome 76+, Firefox 90+, Safari 16.4+)
+	// Sec-Fetch-* heuristics: real Chromium/Blink browsers (Chrome 76+, Edge)
 	// auto-generate Sec-Fetch-Site/Mode/Dest/User on every request; these are
-	// stripped from JS/HTTP client control, so a claimed browser UA missing them
-	// entirely is a strong indicator of a scripted client presenting a spoofed UA.
-	// Gated on chromeUA (like the sec-ch check above) to keep this conservative
-	// and avoid false positives on older/less common but legitimate browsers
-	// that may not yet send these headers.
-	if isMissingSecFetch(chromeUA, ctx.SecFetchSite, ctx.SecFetchMode, ctx.SecFetchDest) && a.SignalBuilder != nil {
+	// stripped from JS/HTTP client control, so a claimed Blink-engine UA missing
+	// them entirely is a strong indicator of a scripted client presenting a
+	// spoofed UA. Gated on blinkUA, not chromeUA: Chrome for iOS (CriOS) is
+	// WebKit-based and never sends these headers, same as Safari/Firefox, so
+	// gating on the broader Chrome-family check would flag every real
+	// Chrome-for-iOS user.
+	if isMissingSecFetch(blinkUA, ctx.SecFetchSite, ctx.SecFetchMode, ctx.SecFetchDest) && a.SignalBuilder != nil {
 		a.SignalBuilder.EmitHeaderAnomaly(ip, asn, org, aidetection.SignalMissingSecFetch, sig.Ja4H, sig.Ja4H, sig.Ja4T, createHTTPMetadata(nil))
 	}
 
 	// Accept header heuristics: real browsers send a specific, detailed Accept
 	// header (e.g. "text/html,application/xhtml+xml,..."); scripted HTTP
 	// clients frequently leave it empty or send the default wildcard "*/*".
-	if isAcceptMismatch(chromeUA, ctx.Accept) && a.SignalBuilder != nil {
+	// Excluded for legitimate non-navigation subresource fetches (fetch()/XHR
+	// for JSON, WASM, scripts, etc.), which real browsers legitimately send
+	// with "Accept: */*" - see isAcceptMismatch's doc comment.
+	if isAcceptMismatch(chromeUA, ctx.Accept, ctx.SecFetchDest) && a.SignalBuilder != nil {
 		a.SignalBuilder.EmitHeaderAnomaly(ip, asn, org, aidetection.SignalAcceptMismatch, sig.Ja4H, sig.Ja4H, sig.Ja4T, createHTTPMetadata(map[string]interface{}{
 			"accept": ctx.Accept,
 		}))
@@ -341,17 +433,6 @@ func (a *Analyzer) processHTTPRequest(sig *apiv1.Signal, ip net.IP, asn string, 
 				}
 			}
 		}
-	}
-
-	// Bot verification using unified handler
-	if a.BotHandler != nil && userAgent != "" {
-		result := a.BotHandler.VerifyBot(ip, userAgent, asn, org)
-		if result.IsVerified {
-			// Create observation for verified bot (for training data)
-			a.recordVerifiedBot(ip, userAgent, asn, org, result, sig)
-			return // Don't penalize verified bots/crawlers
-		}
-		// Impersonation is already handled and penalized by BotHandler
 	}
 
 	// JA4/JA4H/JA4T fingerprint analysis (prefer JA4 TLS, then JA4H HTTP, then JA4T transport)

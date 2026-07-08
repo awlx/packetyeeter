@@ -21,6 +21,9 @@ func TestIsChromeFamilyUA(t *testing.T) {
 		{"safari", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15", false},
 		{"curl", "curl/8.4.0", false},
 		{"empty", "", false},
+		{"googlebot smartphone crawler", "Mozilla/5.0 (Linux; Android 6.0.1; Nexus 5X Build/MMB29P) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.6367.60 Mobile Safari/537.36 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)", false},
+		{"facebook external hit", "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)", false},
+		{"bingbot chrome-embedded", "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; bingbot/2.0; +http://www.bing.com/bingbot.htm) Chrome/116.0.5845.187 Safari/537.36", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -31,22 +34,68 @@ func TestIsChromeFamilyUA(t *testing.T) {
 	}
 }
 
+func TestIsKnownHonestUA(t *testing.T) {
+	cases := []struct {
+		name string
+		ua   string
+		want bool
+	}{
+		{"googlebot", "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)", true},
+		{"facebook external hit", "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)", true},
+		{"ia_archiver", "ia_archiver (+http://www.alexa.com/site/help/webmasters)", true},
+		{"generic crawler keyword", "SomeCustomCrawler/1.0", true},
+		{"real chrome", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36", false},
+		{"empty", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isKnownHonestUA(tc.ua); got != tc.want {
+				t.Errorf("isKnownHonestUA(%q) = %v, want %v", tc.ua, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestIsBlinkEngineUA(t *testing.T) {
+	cases := []struct {
+		name string
+		ua   string
+		want bool
+	}{
+		{"chrome desktop", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36", true},
+		{"chrome android", "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.6367.82 Mobile Safari/537.36", true},
+		{"edge", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.2478.67", true},
+		{"chrome ios (WebKit-based, not Blink)", "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/124.0.6367.114 Mobile/15E148 Safari/604.1", false},
+		{"firefox", "Mozilla/5.0 (X11; Linux x86_64; rv:125.0) Gecko/20100101 Firefox/125.0", false},
+		{"safari", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15", false},
+		{"googlebot smartphone crawler", "Mozilla/5.0 (Linux; Android 6.0.1; Nexus 5X Build/MMB29P) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.6367.60 Mobile Safari/537.36 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)", false},
+		{"empty", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isBlinkEngineUA(tc.ua); got != tc.want {
+				t.Errorf("isBlinkEngineUA(%q) = %v, want %v", tc.ua, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestIsMissingSecCH(t *testing.T) {
 	cases := []struct {
 		name             string
-		chromeUA         bool
+		blinkUA          bool
 		headerOrderLower string
 		want             bool
 	}{
 		{"chrome with sec-ch-ua", true, "host,sec-ch-ua,accept,user-agent", false},
 		{"chrome without sec-ch-ua", true, "host,accept,user-agent", true},
-		{"non-chrome without sec-ch-ua", false, "host,accept,user-agent", false},
+		{"non-blink without sec-ch-ua", false, "host,accept,user-agent", false},
 		{"chrome with empty header order", true, "", false}, // no header order captured at all; don't guess
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := isMissingSecCH(tc.chromeUA, tc.headerOrderLower); got != tc.want {
-				t.Errorf("isMissingSecCH(%v, %q) = %v, want %v", tc.chromeUA, tc.headerOrderLower, got, tc.want)
+			if got := isMissingSecCH(tc.blinkUA, tc.headerOrderLower); got != tc.want {
+				t.Errorf("isMissingSecCH(%v, %q) = %v, want %v", tc.blinkUA, tc.headerOrderLower, got, tc.want)
 			}
 		})
 	}
@@ -55,22 +104,22 @@ func TestIsMissingSecCH(t *testing.T) {
 func TestIsMissingSecFetch(t *testing.T) {
 	cases := []struct {
 		name                                     string
-		chromeUA                                 bool
+		blinkUA                                  bool
 		secFetchSite, secFetchMode, secFetchDest string
 		want                                     bool
 	}{
 		{"chrome with full sec-fetch set", true, "same-origin", "navigate", "document", false},
 		{"chrome with only site set", true, "same-origin", "", "", false},
 		{"chrome missing all sec-fetch", true, "", "", "", true},
-		{"non-chrome missing all sec-fetch", false, "", "", "", false},
-		{"firefox-claiming missing all (not gated, no flag)", false, "", "", "", false},
+		{"non-blink missing all sec-fetch", false, "", "", "", false},
+		{"chrome-ios missing all (not gated, WebKit never sends these)", false, "", "", "", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := isMissingSecFetch(tc.chromeUA, tc.secFetchSite, tc.secFetchMode, tc.secFetchDest)
+			got := isMissingSecFetch(tc.blinkUA, tc.secFetchSite, tc.secFetchMode, tc.secFetchDest)
 			if got != tc.want {
 				t.Errorf("isMissingSecFetch(%v, %q, %q, %q) = %v, want %v",
-					tc.chromeUA, tc.secFetchSite, tc.secFetchMode, tc.secFetchDest, got, tc.want)
+					tc.blinkUA, tc.secFetchSite, tc.secFetchMode, tc.secFetchDest, got, tc.want)
 			}
 		})
 	}
@@ -78,22 +127,27 @@ func TestIsMissingSecFetch(t *testing.T) {
 
 func TestIsAcceptMismatch(t *testing.T) {
 	cases := []struct {
-		name     string
-		chromeUA bool
-		accept   string
-		want     bool
+		name         string
+		chromeUA     bool
+		accept       string
+		secFetchDest string
+		want         bool
 	}{
-		{"chrome with real accept header", true, "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8", false},
-		{"chrome with empty accept", true, "", true},
-		{"chrome with bare wildcard", true, "*/*", true},
-		{"chrome with whitespace-padded wildcard", true, "  */*  ", true},
-		{"non-chrome with empty accept (not gated)", false, "", false},
-		{"non-chrome with wildcard (not gated)", false, "*/*", false},
+		{"chrome with real accept header, navigation", true, "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8", "document", false},
+		{"chrome with empty accept, no sec-fetch-dest", true, "", "", true},
+		{"chrome with bare wildcard, no sec-fetch-dest", true, "*/*", "", true},
+		{"chrome with whitespace-padded wildcard, no sec-fetch-dest", true, "  */*  ", "", true},
+		{"chrome with bare wildcard on navigation", true, "*/*", "document", true},
+		{"chrome fetch()/XHR subresource with wildcard (not gated)", true, "*/*", "empty", false},
+		{"chrome script subresource with wildcard (not gated)", true, "*/*", "script", false},
+		{"chrome image subresource with wildcard (not gated)", true, "*/*", "image", false},
+		{"non-chrome with empty accept (not gated)", false, "", "", false},
+		{"non-chrome with wildcard (not gated)", false, "*/*", "", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := isAcceptMismatch(tc.chromeUA, tc.accept); got != tc.want {
-				t.Errorf("isAcceptMismatch(%v, %q) = %v, want %v", tc.chromeUA, tc.accept, got, tc.want)
+			if got := isAcceptMismatch(tc.chromeUA, tc.accept, tc.secFetchDest); got != tc.want {
+				t.Errorf("isAcceptMismatch(%v, %q, %q) = %v, want %v", tc.chromeUA, tc.accept, tc.secFetchDest, got, tc.want)
 			}
 		})
 	}
