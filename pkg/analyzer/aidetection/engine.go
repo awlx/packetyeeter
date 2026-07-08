@@ -1708,6 +1708,23 @@ func (e *Engine) evaluateWindow(windowSignals map[string][]Signal) {
 		case ddos:
 			detected = true
 			confidence = 0.9
+		case uniqueTypeCount >= 2 && lowOnly:
+			// Low-severity-only combinations (e.g. "missing Accept-Language"
+			// repeated dozens of times plus one generic tcp_metadata event)
+			// are common for legitimate non-browser clients that just make
+			// a lot of requests: DoH resolvers, API clients, mobile apps,
+			// health checks. Volume alone must not fast-path these to the
+			// same 0.8 confidence used for combinations involving at least
+			// one genuinely suspicious signal type below - require the
+			// adaptive check (which compares against this key's own
+			// historical rate rather than a flat static threshold) and cap
+			// confidence below the default 0.7 block threshold, so a chatty
+			// but otherwise unremarkable client doesn't cross it on rule
+			// confidence alone.
+			detected, ewmaBaseline = e.checkAdaptiveDetection(key, len(signals))
+			if detected {
+				confidence = 0.55
+			}
 		case uniqueTypeCount >= 2 && (len(signals) >= e.staticThreshold || totalWeight >= float64(e.staticThreshold)):
 			detected = true
 			confidence = 0.8

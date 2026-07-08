@@ -13,6 +13,11 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+// maxPlausibleSkewPPM bounds the magnitude of a computed skew value we treat
+// as real clock drift. See ProcessTimestamp for why values beyond this are
+// rejected rather than reported.
+const maxPlausibleSkewPPM = 50000.0
+
 // Profile tracks TCP timestamp behavior for clock skew detection
 type Profile struct {
 	IP              string
@@ -178,6 +183,30 @@ func (a *Analyzer) ProcessTimestamp(srcIP net.IP, timestamp uint32) {
 	// Calculate skew in PPM
 	skewPPM := ((tsDelta - expectedTsDelta) / expectedTsDelta) * 1000000.0
 
+	// Reject implausible skew values before storing/emitting them. Real
+	// oscillator drift is a few to a few hundred PPM even on poor-quality
+	// hardware; values in the tens of thousands of PPM or beyond aren't a
+	// "very bad clock" - they're almost always this profile actually
+	// representing multiple different hosts/connections sharing one IP
+	// under CGNAT (extremely common on large consumer/mobile ISPs), where
+	// the tracked TSval sequence jumps between unrelated devices and
+	// produces a skew computation that's mathematically valid but
+	// physically meaningless. Left unfiltered, one such measurement also
+	// poisons every subsequent skew-change comparison (since it's stored
+	// as profile.SkewPPM and compared against on the next update), which
+	// is why these values were previously seen recurring rather than
+	// appearing once - so we reset the reference point instead of storing
+	// it, the same way an observed TSval decrease is handled above.
+	if math.Abs(skewPPM) > maxPlausibleSkewPPM {
+		profile.FirstTimestamp = timestamp
+		profile.FirstObservedAt = now
+		profile.Observations = 1
+		profile.SkewPPM = 0
+		profile.LastSkewPPM = 0
+		metrics.ClockSkewResets.Inc()
+		return
+	}
+
 	// Update profile
 	previousSkewPPM := profile.SkewPPM
 	profile.LastSkewPPM = previousSkewPPM
@@ -220,9 +249,8 @@ func (a *Analyzer) ProcessTimestamp(srcIP net.IP, timestamp uint32) {
 
 	// Detect anomalous skew (> 10000 PPM absolute)
 	// Require minimum observations/time to avoid false positives from initialization
-	// Filter out extreme values that indicate timestamp wraparound or calculation errors
 	absSkew := math.Abs(skewPPM)
-	if absSkew > 10000.0 && profile.Observations >= 20 && timeDelta >= 60 && absSkew < 1000000.0 {
+	if absSkew > 10000.0 && profile.Observations >= 20 && timeDelta >= 60 {
 		metrics.ClockSkewAnomalies.Inc()
 
 		if a.shouldLog(ipStr, 5*time.Minute) {
