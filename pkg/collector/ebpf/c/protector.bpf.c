@@ -57,12 +57,6 @@ struct rate_limit {
     __u64 count;
 };
 
-struct offender_data {
-    __u64 alert_code;
-    __u64 pps;
-    __u64 limit;
-};
-
 // Bad TCP flag scan classification, stored alongside the last-seen
 // timestamp so userspace can emit a structured SIGNAL_BAD_FLAGS signal
 // (with a human-readable reason) instead of just knowing "something bad
@@ -186,22 +180,6 @@ struct {
     __type(value, struct rate_limit);
 } udp_rates_v6 SEC(".maps");
 
-// OFFENDER ALERTS (For userspace logging)
-// We write IP to this map when rate limit is exceeded. Userspace polls, logs, and clears.
-struct {
-    __uint(type, BPF_MAP_TYPE_LRU_HASH);
-    __uint(max_entries, 1024);
-    __type(key, __u32);
-    __type(value, struct offender_data);
-} offendoor_events SEC(".maps");
-
-struct {
-    __uint(type, BPF_MAP_TYPE_LRU_HASH);
-    __uint(max_entries, 1024);
-    __type(key, struct in6_addr);
-    __type(value, struct offender_data);
-} offendoor_events_v6 SEC(".maps");
-
 // AllowList Maps (LPM Trie)
 // Used to prevent blocking of trusted IPs/Subnets
 struct {
@@ -321,8 +299,7 @@ struct event_metadata {
 // --- Helpers ---
 
 // Check rate limit. Returns 1 if limit exceeded (block), 0 if OK.
-// Also populates offender map if provided and limit exceeded.
-static __always_inline int check_rate_limit(void *map, void *key, void *offender_map, __u32 limit, __u64 now, __u64 alert_code) {
+static __always_inline int check_rate_limit(void *map, void *key, __u32 limit, __u64 now) {
     struct rate_limit *rate = bpf_map_lookup_elem(map, key);
     if (rate) {
         if (now - rate->last_time > 1000000000) { 
@@ -332,10 +309,6 @@ static __always_inline int check_rate_limit(void *map, void *key, void *offender
         } else {
             rate->count++;
             if (rate->count > limit) {
-                if (offender_map) {
-                     struct offender_data data = { .alert_code = alert_code, .pps = rate->count, .limit = limit };
-                     bpf_map_update_elem(offender_map, key, &data, BPF_ANY);
-                }
                 return 1;
             }
             return 0;
@@ -665,7 +638,7 @@ int xdp_filter(struct xdp_md *ctx) {
              if (icmp_thresh && *icmp_thresh > 0) limit = *icmp_thresh;
              
              // Alert Code 1 = ICMP
-             if (check_rate_limit(&icmp_rates, &saddr, &offendoor_events, limit, now, 1)) {
+             if (check_rate_limit(&icmp_rates, &saddr, limit, now)) {
                  emit_incident_v4(ctx, saddr, INCIDENT_ICMP_RATE, now);
                  if (!is_monitor) return XDP_DROP;
              }
@@ -686,7 +659,7 @@ int xdp_filter(struct xdp_md *ctx) {
              if (udp_thresh && *udp_thresh > 0) limit = *udp_thresh;
 
              // Alert Code 2 = UDP
-             if (check_rate_limit(&udp_rates, &saddr, &offendoor_events, limit, now, 2)) {
+             if (check_rate_limit(&udp_rates, &saddr, limit, now)) {
                  emit_incident_v4(ctx, saddr, INCIDENT_UDP_RATE, now);
                  if (!is_monitor) return XDP_DROP;
              }
@@ -757,7 +730,7 @@ int xdp_filter(struct xdp_md *ctx) {
              if (icmp_thresh && *icmp_thresh > 0) limit = *icmp_thresh;
 
              // Alert Code 1 = ICMP
-             if (check_rate_limit(&icmp_rates_v6, &saddr, &offendoor_events_v6, limit, now, 1)) {
+             if (check_rate_limit(&icmp_rates_v6, &saddr, limit, now)) {
                  emit_incident_v6(ctx, &saddr, INCIDENT_ICMP_RATE, now);
                  if (!is_monitor) return XDP_DROP;
              }
@@ -773,7 +746,7 @@ int xdp_filter(struct xdp_md *ctx) {
              if (udp_thresh && *udp_thresh > 0) limit = *udp_thresh;
 
              // Alert Code 2 = UDP
-             if (check_rate_limit(&udp_rates_v6, &saddr, &offendoor_events_v6, limit, now, 2)) {
+             if (check_rate_limit(&udp_rates_v6, &saddr, limit, now)) {
                  emit_incident_v6(ctx, &saddr, INCIDENT_UDP_RATE, now);
                  if (!is_monitor) return XDP_DROP;
              }
