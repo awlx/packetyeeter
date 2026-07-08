@@ -1055,6 +1055,24 @@ func (e *Engine) stateSaveLoop() {
 	}
 }
 
+// lowSeverityASNSignals lists signal types that get a reduced ASN-level
+// reputation weight (0.1x instead of 0.25x) since they're common on
+// legitimate traffic and shouldn't rapidly escalate an entire ASN's
+// score. Declared once at package scope instead of allocated fresh on
+// every processSignal call.
+var lowSeverityASNSignals = map[SignalType]bool{
+	SignalMissingAcceptLang:   true,
+	SignalMissingAcceptEnc:    true,
+	SignalNoCookies:           true,
+	SignalNoReferer:           true,
+	SignalProxyLag:            true,
+	SignalHighLatency:         true,
+	SignalLatencyMismatch:     true,
+	SignalIncompleteHandshake: true,
+	SignalHeaderOrderAnomaly:  true,
+	SignalMissingSecCH:        true,
+}
+
 func (e *Engine) processSignal(signal Signal, windowSignals map[string][]Signal) {
 	start := time.Now()
 	defer func() {
@@ -1146,33 +1164,29 @@ func (e *Engine) processSignal(signal Signal, windowSignals map[string][]Signal)
 		if signal.Type == SignalIncompleteHandshake && weight > 20 {
 			weight = 20
 		}
-		e.reputation.Penalize(signal.IP.String(), reputation.TypeIP, weight, string(signal.Type))
 
-		lowSeverityASN := map[SignalType]bool{
-			SignalMissingAcceptLang:   true,
-			SignalMissingAcceptEnc:    true,
-			SignalNoCookies:           true,
-			SignalNoReferer:           true,
-			SignalProxyLag:            true,
-			SignalHighLatency:         true,
-			SignalLatencyMismatch:     true,
-			SignalIncompleteHandshake: true,
-			SignalHeaderOrderAnomaly:  true,
-			SignalMissingSecCH:        true,
-		}
-
+		asn := ""
+		asnWeight := 0.0
 		if signal.ASN != "" && signal.ASN != "Unknown" {
-			e.reputation.ObserveIP(signal.ASN, signal.IP.String())
-			asnWeight := weight * 0.25
-			if lowSeverityASN[signal.Type] {
+			asn = signal.ASN
+			asnWeight = weight * 0.25
+			if lowSeverityASNSignals[signal.Type] {
 				asnWeight = weight * 0.1
 			}
-			e.reputation.PenalizeASN(signal.ASN, signal.IP.String(), asnWeight, string(signal.Type))
 		}
 
+		ja4Weight := 0.0
 		if signal.JA4H != "" {
-			e.reputation.Penalize(signal.JA4H, reputation.TypeJA4, weight*0.6, string(signal.Type))
+			ja4Weight = weight * 0.6
 		}
+
+		// A single combined call takes the reputation engine's lock once
+		// instead of up to three separate Penalize/ObserveIP/PenalizeASN
+		// calls, each independently acquiring/releasing it. With 16
+		// AI-engine workers all calling into the same reputation.Engine
+		// per signal, cutting per-signal lock acquisitions reduces
+		// contention that otherwise serializes the workers.
+		e.reputation.RecordSignal(signal.IP.String(), weight, asn, asnWeight, signal.JA4H, ja4Weight, string(signal.Type))
 	}
 
 	e.metricsMu.Lock()

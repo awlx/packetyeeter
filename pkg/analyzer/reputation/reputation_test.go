@@ -70,3 +70,70 @@ func TestDecayHalfLifeDocumentsConfiguredForgiveness(t *testing.T) {
 		t.Fatalf("expected 5m/0.95 decay half-life to be around 68 minutes, got %s", halfLife)
 	}
 }
+
+// TestRecordSignalMatchesIndividualCalls verifies that the single-lock
+// RecordSignal batch method produces the exact same scores and ASN
+// seen/offender bookkeeping as the equivalent sequence of
+// Penalize/ObserveIP/PenalizeASN/Penalize calls it replaces in the
+// AI-engine hot path.
+func TestRecordSignalMatchesIndividualCalls(t *testing.T) {
+	newEngines := func() (individual, combined *Engine) {
+		return New(time.Hour, 1.0, 100), New(time.Hour, 1.0, 100)
+	}
+
+	asn := "AS64500"
+	ja4h := "t13d1516h2_abcd"
+	ips := []string{"198.51.100.1", "198.51.100.2", "198.51.100.3"}
+
+	individual, combined := newEngines()
+
+	var wantIPScore, wantASNScore float64
+	for _, ip := range ips {
+		wantIPScore = individual.Penalize(ip, TypeIP, 5.0, "test")
+		individual.ObserveIP(asn, ip)
+		wantASNScore = individual.PenalizeASN(asn, ip, 1.25, "test")
+		individual.Penalize(ja4h, TypeJA4, 3.0, "test")
+	}
+
+	var gotIPScore, gotASNScore float64
+	for _, ip := range ips {
+		gotIPScore, gotASNScore = combined.RecordSignal(ip, 5.0, asn, 1.25, ja4h, 3.0, "test")
+	}
+
+	if gotIPScore != wantIPScore {
+		t.Fatalf("IP score mismatch: RecordSignal=%.4f individual calls=%.4f", gotIPScore, wantIPScore)
+	}
+	if gotASNScore != wantASNScore {
+		t.Fatalf("ASN score mismatch: RecordSignal=%.4f individual calls=%.4f", gotASNScore, wantASNScore)
+	}
+
+	wantTotal, wantOffenders := individual.GetASNStats(asn)
+	gotTotal, gotOffenders := combined.GetASNStats(asn)
+	if wantTotal != gotTotal || wantOffenders != gotOffenders {
+		t.Fatalf("ASN stats mismatch: RecordSignal total=%d offenders=%d, individual calls total=%d offenders=%d",
+			gotTotal, gotOffenders, wantTotal, wantOffenders)
+	}
+
+	for _, ip := range ips {
+		if got, want := combined.GetScore(ip, TypeIP), individual.GetScore(ip, TypeIP); got != want {
+			t.Fatalf("IP %s score mismatch: got %.4f want %.4f", ip, got, want)
+		}
+	}
+	if got, want := combined.GetScore(ja4h, TypeJA4), individual.GetScore(ja4h, TypeJA4); got != want {
+		t.Fatalf("JA4H score mismatch: got %.4f want %.4f", got, want)
+	}
+}
+
+// TestRecordSignalSkipsEmptyKeys verifies RecordSignal is a no-op for any
+// key that's empty, matching the guards in Penalize/ObserveIP/PenalizeASN.
+func TestRecordSignalSkipsEmptyKeys(t *testing.T) {
+	e := New(time.Hour, 1.0, 100)
+
+	ipScore, asnScore := e.RecordSignal("", 5.0, "", 1.25, "", 3.0, "test")
+	if ipScore != 0 || asnScore != 0 {
+		t.Fatalf("expected zero scores for empty keys, got ip=%.4f asn=%.4f", ipScore, asnScore)
+	}
+	if len(e.entries) != 0 {
+		t.Fatalf("expected no entries recorded for empty keys, got %d", len(e.entries))
+	}
+}
