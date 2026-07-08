@@ -27,6 +27,12 @@ PacketYeeter is a high-performance, eBPF-based DDoS protection and traffic filte
     *   `monitor` forces monitor-mode for matching sources only — useful for staging a CIDR's blast radius, or for a range that shouldn't be dropped by any detection but isn't fully allowlisted either.
     *   Policy rules are kernel-space LPM trie maps (`policy_v4`/`policy_v6`), populated once at startup from `-policy`; they are not currently mutated at runtime by the analyzer (unlike the allowlist).
 
+3.6. **Structured Incident Logging**
+    *   Every kernel-space drop decision (policy block, blocked-IP enforcement, ICMP/UDP rate-limit drop, IPv6 fragment drop, bad-flags drop) emits a compact structured record — source address, kernel timestamp, and a reason code — over a dedicated eBPF perf event array, in addition to whatever counters/signals that detection already produces.
+    *   The collector decodes these records and logs a single structured `logrus` entry per incident (fields: `ip`, `reason`, `kernel_timestamp`), giving operators a unified, per-packet-drop audit trail instead of having to correlate several counters.
+    *   Each incident also increments `packetyeeter_kernel_incidents_total{reason=...}`, a low-cardinality Prometheus counter (six known reason values) for dashboards/alerting.
+    *   This is purely an observability feature — it does not change enforcement behavior or generate new analyzer signals for reasons that already have one (bad flags, ICMP/UDP floods already stream `SIGNAL_*` events to the analyzer).
+
 4.  **Volumetric Rate Limiting (ICMP & UDP)**
     *   **ICMP**: Limits the rate of ICMP packets from a single source to prevent ping floods.
     *   **UDP**: Strict rate limiting for UDP traffic to mitigate amplification/flood attacks.
@@ -305,6 +311,7 @@ PacketYeeter is designed to be monitored via **Prometheus** and **Grafana**.
     *   `packetyeeter_tcp_blocks_total`, `packetyeeter_udp_blocks_total`, `packetyeeter_icmp_blocks_total`, `packetyeeter_haproxy_blocks_total`: blocks by protocol/source.
     *   `packetyeeter_tcp_syn_flood_blocks_total`: SYN flood blocks.
     *   `packetyeeter_tcp_bad_flags_blocks_total`: invalid TCP flag blocks.
+    *   `packetyeeter_kernel_incidents_total{reason}`: structured kernel-space incident records (collector endpoint), broken down by reason (`blocked_ip`, `policy_block`, `icmp_rate`, `udp_rate`, `udp_frag`, `bad_flags`). See "Structured Incident Logging" above.
     *   `packetyeeter_udp_max_rate_pps`, `packetyeeter_icmp_max_rate_pps`: peak UDP/ICMP PPS.
     *   `packetyeeter_ja4t_suspicious_total`: suspicious JA4T abuse events.
     *   `packetyeeter_high_latency_handshakes_total`, `packetyeeter_high_latency_max_ms`, `packetyeeter_latency_ewma_by_asn_ms`: JA4L latency signals.

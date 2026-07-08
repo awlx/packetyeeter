@@ -60,13 +60,14 @@ type Collector struct {
 	Config Config
 
 	// Components
-	Loader      *ebpf.Loader
-	Maps        *ebpf.Maps
-	GeoIP       *geoip.Provider
-	Logger      *logrus.Logger
-	allowedNets []*net.IPNet
-	policyRules []ebpf.PolicyRule
-	perfReader  *perf.Reader
+	Loader         *ebpf.Loader
+	Maps           *ebpf.Maps
+	GeoIP          *geoip.Provider
+	Logger         *logrus.Logger
+	allowedNets    []*net.IPNet
+	policyRules    []ebpf.PolicyRule
+	perfReader     *perf.Reader
+	incidentReader *perf.Reader
 
 	// gRPC connection to analyzer
 	analyzerConn   *grpc.ClientConn
@@ -217,6 +218,12 @@ func (c *Collector) Start(ctx context.Context) error {
 	// Start perf event reader for TCP metadata (timestamps, entropy)
 	if err := c.startPerfEventReader(); err != nil {
 		c.Logger.WithError(err).Warn("Failed to start perf event reader, clock skew and entropy analysis will be unavailable")
+	}
+
+	// Start perf event reader for structured kernel-space incident logging
+	// (policy blocks, rate-limit drops, bad-flags drops, etc.)
+	if err := c.startIncidentReader(); err != nil {
+		c.Logger.WithError(err).Warn("Failed to start incident event reader, structured incident logging will be unavailable")
 	}
 
 	// Start analyzer connection manager (handles reconnection)
@@ -398,6 +405,11 @@ func (c *Collector) Stop() {
 	// Stop perf event reader
 	if c.perfReader != nil {
 		c.perfReader.Close()
+	}
+
+	// Stop incident event reader
+	if c.incidentReader != nil {
+		c.incidentReader.Close()
 	}
 
 	// Shutdown metrics server
@@ -655,7 +667,82 @@ func (c *Collector) processPerfEvent(data []byte) {
 	c.sendSignal(signal)
 }
 
-// storeSynTimestamp stores the timestamp when a SYN packet is seen
+// startIncidentReader initializes and starts the perf event reader for
+// structured kernel-space incident logging (policy blocks, blocked-IP
+// drops, rate-limit drops, bad-flags drops, fragment drops).
+func (c *Collector) startIncidentReader() error {
+	if c.Maps == nil || c.Maps.Incidents == nil {
+		return fmt.Errorf("incidents map not available")
+	}
+
+	reader, err := perf.NewReader(c.Maps.Incidents, 4096*16) // 64KB buffer
+	if err != nil {
+		return fmt.Errorf("failed to create incident perf reader: %w", err)
+	}
+
+	c.incidentReader = reader
+	c.wg.Add(1)
+	go c.readIncidentEvents()
+
+	c.Logger.Info("Started perf event reader for structured incident logging")
+	return nil
+}
+
+// readIncidentEvents reads and processes incident events from eBPF
+func (c *Collector) readIncidentEvents() {
+	defer c.wg.Done()
+
+	for {
+		select {
+		case <-c.ctx.Done():
+			return
+		default:
+		}
+
+		record, err := c.incidentReader.Read()
+		if err != nil {
+			if c.ctx.Err() != nil {
+				return // Shutting down
+			}
+			c.Logger.WithError(err).Debug("Error reading incident event")
+			continue
+		}
+
+		c.processIncidentEvent(record.RawSample)
+	}
+}
+
+// processIncidentEvent decodes a single structured incident event and logs
+// it. This is purely a local audit-trail/metrics feature: it does not
+// generate an analyzer signal, since the underlying drop conditions
+// (bad flags, ICMP/UDP rate limits) already have dedicated signal types.
+func (c *Collector) processIncidentEvent(data []byte) {
+	var inc ebpf.IncidentEvent
+	reader := bytes.NewReader(data)
+	if err := binary.Read(reader, binary.LittleEndian, &inc); err != nil {
+		c.Logger.WithError(err).Debug("Failed to parse incident event")
+		return
+	}
+
+	var ip net.IP
+	if inc.IsV6 == 1 {
+		ip = net.IP(inc.SaddrV6[:])
+	} else {
+		ipBytes := make([]byte, 4)
+		binary.LittleEndian.PutUint32(ipBytes, inc.SaddrV4)
+		ip = net.IP(ipBytes)
+	}
+
+	reason := ebpf.IncidentReasonName(inc.Reason)
+	metrics.KernelIncidents.WithLabelValues(reason).Inc()
+
+	c.Logger.WithFields(logrus.Fields{
+		"ip":               ip.String(),
+		"reason":           reason,
+		"kernel_timestamp": inc.Timestamp,
+	}).Warn("Kernel-space enforcement incident")
+}
+
 func (c *Collector) storeSynTimestamp(ip net.IP) {
 	c.synCache.Store(ip.String(), time.Now())
 }
@@ -1245,6 +1332,7 @@ func (c *Collector) startCollectorMetricsServer() *http.Server {
 	registry.MustRegister(metrics.SPOEQueueDepth)
 	registry.MustRegister(metrics.SPOEQueueDrops)
 	registry.MustRegister(metrics.SPOEProcessingLatency)
+	registry.MustRegister(metrics.KernelIncidents)
 
 	// Create HTTP handler with custom registry
 	mux := http.NewServeMux()
