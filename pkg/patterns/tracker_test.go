@@ -81,3 +81,46 @@ func TestDetectWindowAnomaly_TooFewSamplesNotFlagged(t *testing.T) {
 		t.Fatalf("expected fewer than 10 samples to never be flagged")
 	}
 }
+
+// TestDetectTTLAnomaly_TightAnycastJitterNotFlagged verifies natural TTL
+// jitter from anycast/ECMP path diversity (production traffic from Meta's
+// crawler infrastructure showed TTLs clustered in the low-to-mid 40s,
+// varying by only a handful of hops) is not flagged as spoofing/proxying.
+func TestDetectTTLAnomaly_TightAnycastJitterNotFlagged(t *testing.T) {
+	pt := &PatternTracker{}
+	ttls := []uint8{45, 45, 45, 47, 45, 45, 45, 45, 41, 47}
+	if pt.detectTTLAnomaly(ttls) {
+		t.Fatalf("expected tight anycast-style TTL jitter to not be flagged as anomalous")
+	}
+}
+
+// TestDetectTTLAnomaly_SingleGlitchNotFlagged verifies a single malformed
+// or glitched packet does not condemn an otherwise consistent window.
+func TestDetectTTLAnomaly_SingleGlitchNotFlagged(t *testing.T) {
+	pt := &PatternTracker{}
+	ttls := []uint8{45, 45, 45, 47, 45, 45, 45, 45, 41, 236}
+	if pt.detectTTLAnomaly(ttls) {
+		t.Fatalf("expected a single outlier sample to not be flagged as anomalous")
+	}
+}
+
+// TestDetectTTLAnomaly_RepeatedLargeJumpsFlagged verifies genuine, repeated
+// large TTL swings (crossing OS-default TTL boundaries, characteristic of
+// spoofing or a rotating proxy pool) are still caught.
+func TestDetectTTLAnomaly_RepeatedLargeJumpsFlagged(t *testing.T) {
+	pt := &PatternTracker{}
+	ttls := []uint8{64, 64, 64, 128, 64, 64, 128, 64, 64, 64}
+	if !pt.detectTTLAnomaly(ttls) {
+		t.Fatalf("expected repeated large TTL jumps to be flagged as anomalous")
+	}
+}
+
+// TestDetectTTLAnomaly_TooFewSamplesNotFlagged verifies the function
+// requires at least 10 samples before making a determination.
+func TestDetectTTLAnomaly_TooFewSamplesNotFlagged(t *testing.T) {
+	pt := &PatternTracker{}
+	ttls := []uint8{64, 64, 64, 128, 128}
+	if pt.detectTTLAnomaly(ttls) {
+		t.Fatalf("expected fewer than 10 samples to never be flagged")
+	}
+}

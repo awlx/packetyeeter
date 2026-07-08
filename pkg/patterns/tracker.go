@@ -382,23 +382,56 @@ func (pt *PatternTracker) analyzePattern(pattern *ConnectionPattern) {
 
 // Helper functions for pattern analysis
 
+// ttlAnomalyHopThreshold is how many hops a sample must deviate from the
+// window's dominant TTL before it counts as an outlier. Real IP spoofing or
+// proxy-pool rotation tends to cross OS-default TTL boundaries (Linux 64,
+// Windows 128, some network gear 255), producing jumps of dozens of hops.
+// Natural path diversity - anycast edge routing, ECMP load balancing,
+// occasional BGP reconvergence - can easily shift a single source's observed
+// TTL by a handful of hops with no spoofing involved at all; production
+// traffic from Meta's globally distributed crawler infrastructure showed
+// exactly this, with TTLs clustered tightly (e.g. 41-47) but occasionally
+// spanning just over the old 5-hop threshold.
+const ttlAnomalyHopThreshold = 20
+
+// minTTLOutliersToFlag requires more than one deviating sample before
+// flagging. A single malformed/glitched packet shouldn't condemn an
+// otherwise perfectly consistent window.
+const minTTLOutliersToFlag = 2
+
 func (pt *PatternTracker) detectTTLAnomaly(ttls []uint8) bool {
 	if len(ttls) < 10 {
 		return false
 	}
 
-	// Check for significant TTL variations (>5 hops difference)
-	min, max := ttls[0], ttls[0]
+	// Find the dominant (most common) TTL in the window, then count how
+	// many samples deviate meaningfully from it. This avoids the old
+	// min/max approach, where a single outlier sample could blow out the
+	// whole window's range even though the rest of the traffic was
+	// perfectly consistent.
+	counts := make(map[uint8]int, len(ttls))
+	var mode uint8
+	modeCount := 0
 	for _, ttl := range ttls {
-		if ttl < min {
-			min = ttl
-		}
-		if ttl > max {
-			max = ttl
+		counts[ttl]++
+		if counts[ttl] > modeCount {
+			modeCount = counts[ttl]
+			mode = ttl
 		}
 	}
 
-	return (max - min) > 5
+	outliers := 0
+	for _, ttl := range ttls {
+		diff := int(ttl) - int(mode)
+		if diff < 0 {
+			diff = -diff
+		}
+		if diff > ttlAnomalyHopThreshold {
+			outliers++
+		}
+	}
+
+	return outliers >= minTTLOutliersToFlag
 }
 
 func (pt *PatternTracker) detectWindowAnomaly(windows []uint16) bool {
