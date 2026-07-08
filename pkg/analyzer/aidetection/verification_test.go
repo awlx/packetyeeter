@@ -187,3 +187,22 @@ func TestVerifyCrawlerPTRMismatchIsFailed(t *testing.T) {
 		t.Fatalf("expected a PTR record resolving to an unrelated domain to be a verification failure, got %s", status)
 	}
 }
+
+// TestVerifyCrawlerSEMrushBotIsVerifiable ensures SEMrushBot - a widely used,
+// well-documented SEO crawler that publishes reverse-DNS verification just
+// like the major search engines - is recognized and can be positively
+// verified via PTR lookup, instead of being silently skipped (no dampening)
+// as it was in production before this fix.
+func TestVerifyCrawlerSEMrushBotIsVerifiable(t *testing.T) {
+	ip := net.ParseIP("194.35.188.225")
+	resolver := &fakeCrawlerResolver{
+		names: []string{"crawl.semrush.com."},
+		ips:   []net.IPAddr{{IP: ip}},
+	}
+	v := newCrawlerVerifier(nil, resolver, time.Second, time.Minute)
+
+	status := v.VerifyCrawler(ip, "Mozilla/5.0 (compatible; SemrushBot/7~bl; +http://www.semrush.com/bot.html)")
+	if status != VerificationVerified {
+		t.Fatalf("expected SEMrushBot to be verifiable via PTR, got %s", status)
+	}
+}

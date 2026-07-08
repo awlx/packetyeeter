@@ -105,13 +105,34 @@ func TestDetectTTLAnomaly_SingleGlitchNotFlagged(t *testing.T) {
 }
 
 // TestDetectTTLAnomaly_RepeatedLargeJumpsFlagged verifies genuine, repeated
-// large TTL swings (crossing OS-default TTL boundaries, characteristic of
-// spoofing or a rotating proxy pool) are still caught.
+// large TTL swings with mismatched implied hop counts (i.e. not explained by
+// two OS/network-gear default initial TTLs reaching the same real hop
+// distance) are still caught as anomalous.
 func TestDetectTTLAnomaly_RepeatedLargeJumpsFlagged(t *testing.T) {
 	pt := &PatternTracker{}
-	ttls := []uint8{64, 64, 64, 128, 64, 64, 128, 64, 64, 64}
+	// mode=40 implies ~24 hops (base 64); 190 implies ~65 hops (base 255) -
+	// wildly different real hop counts, not explainable by a shared path.
+	ttls := []uint8{40, 40, 40, 190, 40, 40, 190, 40, 40, 40}
 	if !pt.detectTTLAnomaly(ttls) {
-		t.Fatalf("expected repeated large TTL jumps to be flagged as anomalous")
+		t.Fatalf("expected repeated large TTL jumps with mismatched hop counts to be flagged as anomalous")
+	}
+}
+
+// TestDetectTTLAnomaly_OSFamilyPairNotFlagged verifies a TTL pair that is
+// fully explained by two different OS/network-gear default initial TTLs
+// (64, 128, 255) reaching the same real hop distance is not flagged. This
+// matches a real production pattern seen at scale on Vodafone Germany's
+// network: dozens of unrelated customer IPs each showed a TTL pair
+// differing by exactly 191 (255-64) with matching implied hop counts,
+// consistent with a CGNAT/NAT64 boundary or dual-stack gateway
+// re-originating some packets - not spoofing.
+func TestDetectTTLAnomaly_OSFamilyPairNotFlagged(t *testing.T) {
+	pt := &PatternTracker{}
+	// mode=50 implies 14 hops (base 64); 241 implies 14 hops (base 255) -
+	// same real hop distance under a different OS TTL family.
+	ttls := []uint8{50, 50, 241, 50, 241, 241, 50, 241, 50, 50}
+	if pt.detectTTLAnomaly(ttls) {
+		t.Fatalf("expected an OS-family-matched TTL pair to not be flagged as anomalous")
 	}
 }
 

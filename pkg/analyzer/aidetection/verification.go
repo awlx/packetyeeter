@@ -111,6 +111,15 @@ func newCrawlerVerifier(ja4DB JA4Verifier, resolver crawlerDNSResolver, timeout,
 			// Monitoring
 			"pingdom":     {".pingdom.com"},
 			"uptimerobot": {".uptimerobot.com"},
+
+			// SEO/marketing crawlers - widely used, well-documented,
+			// respect robots.txt, and publish reverse-DNS verification
+			// like the search engines above. Live production data showed
+			// SEMrushBot traffic being blocked purely because it wasn't in
+			// this list at all (VerificationSkipped, no dampening),
+			// combined with the always-true bot_ua/missing_accept_language
+			// signals every crawler naturally trips.
+			"semrushbot": {".semrush.com"},
 		},
 	}
 }
