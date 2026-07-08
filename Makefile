@@ -19,7 +19,7 @@ LDFLAGS := -s -w \
 	-X PacketYeeter/pkg/buildinfo.Commit=$(COMMIT) \
 	-X PacketYeeter/pkg/buildinfo.BuildDate=$(BUILD_DATE)
 
-.PHONY: all proto bpf collector analyzer yeetctl clean install-buf deps lint test portable-test linux install-services run-collector run-analyzer
+.PHONY: all proto bpf collector analyzer yeetctl clean install-buf deps lint test portable-test e2e-test linux install-services run-collector run-analyzer
 
 # Default target
 all: proto collector analyzer
@@ -71,6 +71,21 @@ test: proto
 # Run portable tests that do not require Linux eBPF support.
 portable-test: proto
 	$(GO) test -v ./pkg/analyzer/... ./pkg/ml/... ./pkg/integration_test ./pkg/collector ./cmd/yeetctl
+
+# Run end-to-end tests that spawn a real haproxy binary to validate the
+# collector's HAProxy peer-protocol listener and SPOE agent against actual
+# haproxy wire behavior. Requires `haproxy` on PATH. Does not require Linux
+# eBPF support since these tests exercise the HAProxy integration layer
+# behind a test double instead of the real kernel maps.
+e2e-test: proto
+	$(GO) test -tags e2e -v ./pkg/collector/haproxy/...
+
+# Run the Linux/eBPF kernel-enforcement e2e test. Requires root (to
+# load/attach the real XDP program) and a Linux kernel with BPF support;
+# not runnable on macOS/portable environments. See pkg/collector/ebpf_e2e_test.go
+# for exactly what this does and does not verify.
+e2e-ebpf-test: proto bpf
+	sudo -E $(GO) test -tags e2e_ebpf -run TestKernelBlockEnforcement -v ./pkg/collector/...
 
 # Run linter
 lint:

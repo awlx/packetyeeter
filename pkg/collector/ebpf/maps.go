@@ -22,6 +22,10 @@ type Maps struct {
 	OffenderEventsV6    *ebpf.Map
 	AllowListV4         *ebpf.Map
 	AllowListV6         *ebpf.Map
+	PolicyV4            *ebpf.Map
+	PolicyV6            *ebpf.Map
+	PolicyBlocks        *ebpf.Map
+	PolicyBlocksV6      *ebpf.Map
 	Events              *ebpf.Map    // Perf Event Array
 	AllowedNets         []*net.IPNet // Userspace check
 	DryRun              bool

@@ -63,6 +63,36 @@ struct offender_data {
     __u64 limit;
 };
 
+// Bad TCP flag scan classification, stored alongside the last-seen
+// timestamp so userspace can emit a structured SIGNAL_BAD_FLAGS signal
+// (with a human-readable reason) instead of just knowing "something bad
+// happened from this IP at some point".
+#define BAD_FLAGS_NONE     0
+#define BAD_FLAGS_SYN_FIN  1
+#define BAD_FLAGS_XMAS     2
+#define BAD_FLAGS_NULL     3
+
+struct bad_flags_info {
+    __u64 last_seen;
+    __u32 scan_type;  // one of BAD_FLAGS_*
+    __u32 flags_raw;  // raw TCP flag bits (fin,syn,rst,psh,ack,urg,ece,cwr from bit 0)
+};
+
+// Per-CIDR policy engine: lets an operator force a BLOCK or MONITOR
+// decision for a whole network range, independent of (and checked before)
+// the rest of the detection pipeline. MONITOR forces monitor-mode
+// (log-only, never drop) for matching sources even when the collector is
+// otherwise enforcing; BLOCK always drops matching sources outright
+// (subject to the same global dry-run/monitor override as everything
+// else, so operators can dry-run a new policy before it takes effect).
+#define POLICY_NONE    0
+#define POLICY_BLOCK   1
+#define POLICY_MONITOR 2
+
+struct policy_entry {
+    __u32 action; // one of POLICY_*
+};
+
 struct lpm_key_v4 {
     __u32 prefixlen;
     __u32 data;
@@ -167,20 +197,55 @@ struct {
     __type(value, __u64);
 } allowlist_v6 SEC(".maps");
 
+// Per-CIDR policy engine maps (see struct policy_entry above).
+struct {
+    __uint(type, BPF_MAP_TYPE_LPM_TRIE);
+    __uint(max_entries, 1024);
+    __uint(map_flags, BPF_F_NO_PREALLOC);
+    __type(key, struct lpm_key_v4);
+    __type(value, struct policy_entry);
+} policy_v4 SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_LPM_TRIE);
+    __uint(max_entries, 1024);
+    __uint(map_flags, BPF_F_NO_PREALLOC);
+    __type(key, struct lpm_key_v6);
+    __type(value, struct policy_entry);
+} policy_v6 SEC(".maps");
+
+// Counts packets dropped by an explicit POLICY_BLOCK CIDR rule, keyed by
+// source IP, so the collector can surface policy-engine activity even
+// though (unlike blocked_ips) these blocks are never reported back from
+// the analyzer.
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 4096);
+    __type(key, __u32);
+    __type(value, __u64);
+} policy_blocks SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 4096);
+    __type(key, struct in6_addr);
+    __type(value, __u64);
+} policy_blocks_v6 SEC(".maps");
+
 // Bad Flags (TCP) - separate because handled by existing logic, but could unify?
 // Keeping existing logical to minimize drift for now.
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, 1000);
     __type(key, __u32);
-    __type(value, __u64);
+    __type(value, struct bad_flags_info);
 } bad_flags SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, 1000);
     __type(key, struct in6_addr);
-    __type(value, __u64);
+    __type(value, struct bad_flags_info);
 } bad_flags_v6 SEC(".maps");
 
 struct {
@@ -250,13 +315,24 @@ static __always_inline int check_rate_limit(void *map, void *key, void *offender
 }
 
 static __always_inline int check_tcp_flags(struct tcphdr *tcp) {
-    if (tcp->syn && tcp->fin) return 1; 
-    if (tcp->fin && tcp->urg && tcp->psh) return 1; 
-    // NULL scan check: all 0. 
+    if (tcp->syn && tcp->fin) return BAD_FLAGS_SYN_FIN;
+    if (tcp->fin && tcp->urg && tcp->psh) return BAD_FLAGS_XMAS;
+    // NULL scan check: all 0.
     // Note: res1, doff, res2 are not flags. We just check the flag bits.
     // Standard flags: fin,syn,rst,psh,ack,urg,ece,cwr
-    if (!tcp->syn && !tcp->ack && !tcp->rst && !tcp->fin && !tcp->urg && !tcp->psh) return 1; 
-    return 0;
+    if (!tcp->syn && !tcp->ack && !tcp->rst && !tcp->fin && !tcp->urg && !tcp->psh) return BAD_FLAGS_NULL;
+    return BAD_FLAGS_NONE;
+}
+
+static __always_inline __u32 tcp_flags_raw(struct tcphdr *tcp) {
+    return (__u32)tcp->fin
+        | ((__u32)tcp->syn << 1)
+        | ((__u32)tcp->rst << 2)
+        | ((__u32)tcp->psh << 3)
+        | ((__u32)tcp->ack << 4)
+        | ((__u32)tcp->urg << 5)
+        | ((__u32)tcp->ece << 6)
+        | ((__u32)tcp->cwr << 7);
 }
 
 // Parse TCP timestamp option
@@ -496,6 +572,24 @@ int xdp_filter(struct xdp_md *ctx) {
             return XDP_PASS;
         }
 
+        // 0.5 Policy Engine Check (per-CIDR operator override)
+        struct policy_entry *policy = bpf_map_lookup_elem(&policy_v4, &key_allowed);
+        if (policy) {
+            if (policy->action == POLICY_MONITOR) {
+                is_monitor = 1;
+            } else if (policy->action == POLICY_BLOCK) {
+                __u32 saddr_policy = ip->saddr;
+                __u64 *cnt = bpf_map_lookup_elem(&policy_blocks, &saddr_policy);
+                if (cnt) {
+                    __sync_fetch_and_add(cnt, 1);
+                } else {
+                    __u64 one = 1;
+                    bpf_map_update_elem(&policy_blocks, &saddr_policy, &one, BPF_ANY);
+                }
+                if (!is_monitor) return XDP_DROP;
+            }
+        }
+
         // 1. Blocked IP Check
         // Copy to stack to ensure alignment and safety
         __u32 saddr = ip->saddr;
@@ -543,8 +637,13 @@ int xdp_filter(struct xdp_md *ctx) {
              // Standard IP header size for verifier
              struct tcphdr *tcp = (void *)(ip + 1);
              if ((void *)(tcp + 1) > data_end) return XDP_PASS;
-             if (check_tcp_flags(tcp)) {
-                 bpf_map_update_elem(&bad_flags, &saddr, &now, BPF_ANY);
+             int scan_type = check_tcp_flags(tcp);
+             if (scan_type != BAD_FLAGS_NONE) {
+                 struct bad_flags_info info = {};
+                 info.last_seen = now;
+                 info.scan_type = scan_type;
+                 info.flags_raw = tcp_flags_raw(tcp);
+                 bpf_map_update_elem(&bad_flags, &saddr, &info, BPF_ANY);
                  if (!is_monitor) return XDP_DROP;
              }
         }
@@ -562,6 +661,23 @@ int xdp_filter(struct xdp_md *ctx) {
         __builtin_memcpy(key_allowed.data, &saddr, 16);
         if (bpf_map_lookup_elem(&allowlist_v6, &key_allowed)) {
             return XDP_PASS;
+        }
+
+        // 0.5 Policy Engine Check (per-CIDR operator override)
+        struct policy_entry *policy6 = bpf_map_lookup_elem(&policy_v6, &key_allowed);
+        if (policy6) {
+            if (policy6->action == POLICY_MONITOR) {
+                is_monitor = 1;
+            } else if (policy6->action == POLICY_BLOCK) {
+                __u64 *cnt6 = bpf_map_lookup_elem(&policy_blocks_v6, &saddr);
+                if (cnt6) {
+                    __sync_fetch_and_add(cnt6, 1);
+                } else {
+                    __u64 one = 1;
+                    bpf_map_update_elem(&policy_blocks_v6, &saddr, &one, BPF_ANY);
+                }
+                if (!is_monitor) return XDP_DROP;
+            }
         }
 
         __u64 *val = bpf_map_lookup_elem(&blocked_ips_v6, &saddr);
@@ -607,9 +723,13 @@ int xdp_filter(struct xdp_md *ctx) {
         if (ip6->nexthdr == IPPROTO_TCP) {
             struct tcphdr *tcp = (void *)(ip6 + 1);
             if ((void *)(tcp + 1) > data_end) return XDP_PASS;
-            if (check_tcp_flags(tcp)) {
-                __u64 now = bpf_ktime_get_ns();
-                bpf_map_update_elem(&bad_flags_v6, &saddr, &now, BPF_ANY);
+            int scan_type = check_tcp_flags(tcp);
+            if (scan_type != BAD_FLAGS_NONE) {
+                struct bad_flags_info info = {};
+                info.last_seen = bpf_ktime_get_ns();
+                info.scan_type = scan_type;
+                info.flags_raw = tcp_flags_raw(tcp);
+                bpf_map_update_elem(&bad_flags_v6, &saddr, &info, BPF_ANY);
                 if (!is_monitor) return XDP_DROP;
             }
         }

@@ -5,21 +5,27 @@ PacketYeeter is a high-performance, eBPF-based DDoS protection and traffic filte
 ## Key Features
 
 1.  **SYN Flood Detection & Mitigation (Layer 4)**
-    *   **Detection**: Uses eBPF TC (Ingress/Egress) to track TCP handshake states. It identifies source IPs that initiate connections (SYN) but fail to complete the handshake (ACK) within a configured timeout.
-    *   **Mitigation**: Automatically adds malicious IPs to a kernel-space blocklist map.
-    *   **Enforcement**: Use XDP to drop packets from blocked IPs instantly, before they reach the OS network stack.
+    *   **Detection**: Uses eBPF TC (Ingress/Egress) to track TCP handshake states. It identifies source IPs that initiate connections (SYN) but never complete the handshake (ACK); pending entries are cleared once a matching ACK arrives.
+    *   **Mitigation**: Incomplete-handshake signals are streamed to the analyzer, which applies the `-ddos-min-incomplete` threshold and returns a block decision over gRPC — blocking is analyzer-driven, not an automatic kernel-space decision.
+    *   **Enforcement**: XDP drops packets from IPs the collector has been told to block, before they reach the OS network stack.
 
 2.  **TCP Flag Sanitization**
-    *   Detects and blocks invalid TCP flag combinations commonly used in reconnaissance scans and attacks:
+    *   Detects and drops invalid TCP flag combinations commonly used in reconnaissance scans and attacks:
         *   **SYN-FIN** (Impossible state)
         *   **Xmas Tree** (FIN + PSH + URG)
         *   **NULL Scan** (No flags)
-    *   Violating IPs are immediately banned.
+    *   Each detection is classified by scan type and reported to the analyzer as a `SIGNAL_BAD_FLAGS` signal (previously these drops were kernel-only and invisible outside `packetyeeter_tcp_bad_flags_blocks_total`). Repeat offenders accumulate reputation penalties and can be banned via the same feedback loop used for other floods.
 
 3.  **IP Allowlist (CIDR Support)**
-    *   Protect specific IPs or ranges (CIDR notation) from ever being blocked or rate-limited.
-    *   Traffic from allowlisted sources bypasses all filters (XDP & TC) immediately.
+    *   Protect specific IPs or ranges (CIDR notation) from ever being blocked.
+    *   Allowlisted CIDRs are synced into kernel-space LPM trie maps (`allowlist_v4`/`allowlist_v6`) at startup and updated dynamically when the analyzer pushes allowlist commands, so the XDP program bypasses matching traffic directly; the collector's userspace block-decision path also honors the same list as a second layer of defense. (TC-side handshake/latency tracking still observes allowlisted traffic — it only tracks state, it never blocks.)
     *   Supports both IPv4 and IPv6 CIDRs.
+
+3.5. **Per-CIDR Policy Engine**
+    *   Lets an operator force a `block` or `monitor` decision for a whole network range via the `-policy` flag, checked in XDP right after the allowlist and before every other detection.
+    *   `block` drops all matching traffic outright (still subject to the collector's own `-dry-run`/monitor mode, so a new policy can be tested log-only before it takes effect).
+    *   `monitor` forces monitor-mode for matching sources only — useful for staging a CIDR's blast radius, or for a range that shouldn't be dropped by any detection but isn't fully allowlisted either.
+    *   Policy rules are kernel-space LPM trie maps (`policy_v4`/`policy_v6`), populated once at startup from `-policy`; they are not currently mutated at runtime by the analyzer (unlike the allowlist).
 
 4.  **Volumetric Rate Limiting (ICMP & UDP)**
     *   **ICMP**: Limits the rate of ICMP packets from a single source to prevent ping floods.
@@ -30,22 +36,19 @@ PacketYeeter is a high-performance, eBPF-based DDoS protection and traffic filte
     *   **Concept**: Assigns a numerical "Reputation Score" to every IP, JA4 fingerprint, and ASN interacting with the system.
     *   **Scoring**:
         *   Scores start at 0.
-        *   Points are added for suspicious behaviors (e.g., +10 for JA4 abuse, +20 for High Latency, +15 for Proxy Lag).
-        *   Scores degrade over time (decay factor 0.9 every 10m) to forgive transient issues.
+        *   Points are added per detected signal using a per-signal weight (default `5.0`, capped at `20` for incomplete-handshake signals). The associated ASN is penalized at a fraction of that weight (`0.1`–`0.25`×), and the associated JA4H fingerprint at `0.6`×.
+        *   Scores degrade over time (decay factor `0.95` every 30 minutes) to forgive transient issues.
     *   **Enforcement**: If a score exceeds the configured threshold (analyzer default: `75.0`, via `-reputation-threshold`), the entity is marked as a "Bad Actor" and subsequent traffic is dropped (or logged only in Dry-Run Mode).
     *   **Metrics**: `packetyeeter_reputation_score` (Gauge) tracks the current score of all tracked entities.
 
 5.  **JA4T SSL/TCP Fingerprinting (Layer 4)**
-    *   **Detection**: Passive TCP fingerprinting based on window size, TCP options, and ordering (JA4T format).
-    *   **Behavior Analysis**: Tracks the frequency of unique fingerprints in real-time.
-    *   **Abuse Detection**: Flags suspicious activity when a single fingerprint exceeds the configurable threshold within a 10s window.
-    *   **Metrics**: Prometheus counters track unique abuse events.
+    *   **Detection**: Passive TCP fingerprinting based on window size, TCP options, and ordering (JA4T format), passed through from HAProxy SPOE.
+    *   **Abuse Detection**: JA4T abuse signals feed into the same generic AI signal-aggregation/confidence scoring as other behavioral signals (no JA4T-specific frequency window).
+    *   **Metrics**: `packetyeeter_ja4t_suspicious_total` (Counter) tracks abuse events.
 
 6.  **JA4L / Latency Monitoring**
     *   **Detection**: Measures the RTT (Round Trip Time) of the TCP handshake (SYN-ACK -> ACK) passively via eBPF.
-    *   **JA4L_C Format**: Logs latency fingerprints in `(RTT/2)_TTL` format (e.g., `11_128`), allowing easy identification of OS and physical distance.
     *   **Adaptive Baseline**: Maintains an EWMA per ASN to avoid penalizing inherently high-latency networks; flags spikes relative to each ASN.
-    *   **Proxy Detection**: Extremely high latency on a handshake (>400ms) often indicates slow proxies, VPN chaining, or "Slowloris" attempts.
     *   **Alerting**: 
         *   Logs warnings for high latency events.
         *   Metrics: `packetyeeter_high_latency_handshakes_total` (Counter), `packetyeeter_high_latency_max_ms` (Gauge), `packetyeeter_latency_ewma_by_asn_ms` (GaugeVec).
@@ -65,12 +68,12 @@ PacketYeeter is a high-performance, eBPF-based DDoS protection and traffic filte
     *   **Goal**: Detect proxies/bots via protocol latency, JA4H fingerprinting, and behavioral signals.
     *   **Mechanism**: HAProxy SPOE sends timestamps + HTTP features (JA4H via Lua, host, UA, headers, cookies) to PacketYeeter.
     *   **Logic**:
-        *   Compare `Protocol Latency` vs network RTT (>200ms + RTT → anomaly).
+        *   Compare proxy lag (`client_req_ms` minus network RTT) against an adaptive per-ASN threshold.
         *   **JA4H** fingerprinting via upstream lua (`fingerprint_ja4h`).
         *   **Heuristics**: suspicious UA, missing headers, host-aware cookie expectations, honeypot paths, sequential path enumeration (alpha/numeric), low asset ratio (HTML >> assets).
         *   **Detection**:
             *   Static: `len(signals) >= 2` OR severe signals (`honeypot`, `numeric_seq`, `alpha_seq`).
-            *   Adaptive (EWMA): per `host|ja4h` (fallback `host|ip`), detect when `ewma >= 1` and `current > ewma*3 + 2`.
+            *   Adaptive (EWMA): per-ASN proxy-lag baseline in milliseconds, with a 1000ms floor; flags when `proxy_lag_ms > max(1000, ewma_lag_ms*3 + 200)` (and, when RTT is known, also requires `proxy_lag_ms > rtt_ms*2`).
     *   **Metrics**:
         *   `packetyeeter_client_req_time_ms` (Histogram)
         *   `packetyeeter_proxy_lag_max_ms` (Gauge)
@@ -97,7 +100,9 @@ PacketYeeter is a high-performance, eBPF-based DDoS protection and traffic filte
 > **Dashboards**: Prom/Influx dashboards map panels to metrics; see `docs/observability.md`.
 
 11. **Monitor / Dry-Run Mode**
-    *   Run the analyzer with `-dry-run` to log detections and update metrics **without** sending BLOCK commands to the collector. Useful for tuning thresholds without dropping traffic.
+    *   Run the analyzer with `-dry-run` to log detections and update metrics **without** sending BLOCK commands to the collector.
+    *   Run the collector with `-dry-run` to put its own kernel-space detections (bad flags, SYN-flood blocklist, ICMP/UDP rate limits) into log-only mode **without** dropping matching traffic.
+    *   The two flags are independent; for a full dry-run rollout, enable both.
 
 12. **Observability & Metrics**
     *   **Prometheus Exporters**: Each daemon exposes its own metrics endpoint (collector default `:2112`, analyzer default `:9091`) covering block counts, pps rates, reputation, and attack types.
@@ -196,6 +201,11 @@ The `AnalyzerService` gRPC contract (`api/proto/v1/packetyeeter.proto`) exposes 
     > NOTE: `make test` / `go test ./...` needs the compiled `protector.bpf.o`
     > present (run the `clang` step or `deploy.sh` first).
 
+    **Testing tiers**:
+    - `make portable-test` — unit/integration tests that don't need Linux/eBPF; runs anywhere.
+    - `make e2e-test` — spins up a real `haproxy` binary (must be on `PATH`) and drives it against the collector's HAProxy peer-protocol listener and SPOE agent to validate wire compatibility. Portable to any OS with `haproxy` installed; no kernel/eBPF required.
+    - `make e2e-ebpf-test` — loads and attaches the real eBPF/XDP program to a scratch dummy interface and verifies that a block command from the analyzer is written to and readable from the real kernel map. Requires Linux, root, and the compiled BPF object (`make bpf`); not portable.
+
 3.  **Remote deployment** with `deploy.sh`:
     ```bash
     # Usage: ./deploy.sh <host> [collector|analyzer|both] [options]
@@ -220,8 +230,10 @@ The `AnalyzerService` gRPC contract (`api/proto/v1/packetyeeter.proto`) exposes 
 
 Start the **analyzer** first (anywhere; no root needed), then the **collector**
 on each protected host pointing at the analyzer's gRPC address. For new
-deployments, start the analyzer with `-dry-run`, review logs and metrics, then
-roll out enforcement gradually after tuning thresholds and allowlists.
+deployments, start both daemons with `-dry-run` (the analyzer's flag
+suppresses BLOCK commands; the collector's flag suppresses its own
+kernel-space drops), review logs and metrics, then roll out enforcement
+gradually after tuning thresholds and allowlists.
 
 ```bash
 # Analyzer (brain) — listens for collectors on :9090, metrics on :9091
@@ -244,9 +256,11 @@ sudo ./packetyeeter-collector -i eth0 -analyzer-addr 127.0.0.1:9090
 | `-socket` | `/var/run/packetyeeter-collector.sock` | UNIX socket for `yeetctl`. |
 | `-geoip-asn` | `""` | Path to `GeoLite2-ASN.mmdb` for ASN enrichment. |
 | `-allowlist` | `""` | Comma-separated CIDRs to bypass all filtering (IPv4/IPv6). |
+| `-policy` | `""` | Comma-separated per-CIDR policy overrides as `CIDR=action` (`block` or `monitor`), e.g. `203.0.113.0/24=block,198.51.100.0/24=monitor`. |
 | `-block-duration` | `5m` | Default duration to keep an IP blocked. |
 | `-poll-interval` | `1s` | How often to poll the eBPF maps. |
 | `-signal-queue-size` | `10000` | Collector → analyzer signal queue size. |
+| `-dry-run` | `false` | Monitor mode: the collector's own kernel-space detections (bad flags, SYN-flood blocklist, ICMP/UDP rate limits) log/count but never drop traffic. Independent of the analyzer's `-dry-run`, which only suppresses BLOCK commands sent back over gRPC. |
 | `-v` | `false` | Verbose logging. |
 
 ### Analyzer Flags

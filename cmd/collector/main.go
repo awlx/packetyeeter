@@ -25,9 +25,11 @@ func main() {
 		socketPath      = flag.String("socket", "/var/run/packetyeeter-collector.sock", "Unix socket for CLI")
 		geoIPASNPath    = flag.String("geoip-asn", "", "Path to GeoLite2-ASN.mmdb")
 		allowlist       = flag.String("allowlist", "", "Comma-separated CIDRs to allowlist (e.g., 10.0.0.0/8,192.168.1.0/24)")
+		policy          = flag.String("policy", "", "Comma-separated per-CIDR policy overrides as CIDR=action (action = block|monitor), e.g. 203.0.113.0/24=block,198.51.100.0/24=monitor")
 		blockDuration   = flag.Duration("block-duration", 5*time.Minute, "Default block duration")
 		pollInterval    = flag.Duration("poll-interval", 1*time.Second, "How often to poll eBPF maps")
 		signalQueueSize = flag.Int("signal-queue-size", 10000, "Collector signal queue size")
+		dryRun          = flag.Bool("dry-run", false, "Monitor mode: log/count the collector's own kernel-space detections (bad flags, SYN flood, ICMP/UDP rate limits) without dropping traffic")
 		showVersion     = flag.Bool("version", false, "Print build version and exit")
 		verbose         = flag.Bool("v", false, "Verbose logging")
 	)
@@ -52,9 +54,11 @@ func main() {
 		SocketPath:      *socketPath,
 		GeoIPASNPath:    *geoIPASNPath,
 		AllowlistCIDRs:  *allowlist,
+		PolicyRules:     *policy,
 		BlockDuration:   *blockDuration,
 		PollInterval:    *pollInterval,
 		SignalQueueSize: *signalQueueSize,
+		DryRun:          *dryRun,
 	}
 
 	coll, err := collector.New(cfg, logger)

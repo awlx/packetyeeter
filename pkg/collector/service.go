@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -38,9 +39,11 @@ type Config struct {
 	SocketPath      string
 	GeoIPASNPath    string
 	AllowlistCIDRs  string // Comma-separated CIDRs
+	PolicyRules     string // Comma-separated CIDR=action rules (action = block|monitor)
 	BlockDuration   time.Duration
 	PollInterval    time.Duration // How often to poll eBPF maps and send to analyzer
 	SignalQueueSize int           // Collector signal queue size (default 10000)
+	DryRun          bool          // If true, the collector's own kernel-space detections (bad flags, SYN flood, ICMP/UDP rate limits) log/count but never drop traffic
 }
 
 // Collector is a thin relay layer that:
@@ -62,6 +65,7 @@ type Collector struct {
 	GeoIP       *geoip.Provider
 	Logger      *logrus.Logger
 	allowedNets []*net.IPNet
+	policyRules []ebpf.PolicyRule
 	perfReader  *perf.Reader
 
 	// gRPC connection to analyzer
@@ -81,6 +85,11 @@ type Collector struct {
 	// Previous rates to compute pps across windows (monotonic timestamps)
 	prevICMPRates map[uint32]prevRate
 	prevUDPRates  map[uint32]prevRate
+
+	// Last-alerted timestamps for bad TCP flag scans, so repeated polls
+	// don't re-emit a signal for the same kernel-observed event.
+	prevBadFlagsSeen   map[uint32]uint64
+	prevBadFlagsSeenV6 map[[16]byte]uint64
 
 	// SYN timestamp cache for eBPF <-> SPOE correlation
 	synCache    sync.Map // IP string -> time.Time
@@ -112,13 +121,15 @@ func max(a, b int) int {
 
 func New(cfg Config, logger *logrus.Logger) (*Collector, error) {
 	c := &Collector{
-		Config:        cfg,
-		Logger:        logger,
-		reconnectCh:   make(chan struct{}, 1),
-		signalQueue:   make(chan *apiv1.Signal, max(cfg.SignalQueueSize, 10000)), // Ring buffer default 10k
-		synCacheTTL:   60 * time.Second,                                          // TTL for SYN timestamp cache
-		prevICMPRates: make(map[uint32]prevRate),
-		prevUDPRates:  make(map[uint32]prevRate),
+		Config:             cfg,
+		Logger:             logger,
+		reconnectCh:        make(chan struct{}, 1),
+		signalQueue:        make(chan *apiv1.Signal, max(cfg.SignalQueueSize, 10000)), // Ring buffer default 10k
+		synCacheTTL:        60 * time.Second,                                          // TTL for SYN timestamp cache
+		prevICMPRates:      make(map[uint32]prevRate),
+		prevUDPRates:       make(map[uint32]prevRate),
+		prevBadFlagsSeen:   make(map[uint32]uint64),
+		prevBadFlagsSeenV6: make(map[[16]byte]uint64),
 	}
 
 	// Load GeoIP database
@@ -135,6 +146,16 @@ func New(cfg Config, logger *logrus.Logger) (*Collector, error) {
 	if cfg.AllowlistCIDRs != "" {
 		c.allowedNets = parseAllowlist(cfg.AllowlistCIDRs, logger)
 		logger.WithField("count", len(c.allowedNets)).Info("Loaded allowlist CIDRs")
+	}
+
+	// Parse per-CIDR policy engine rules
+	if cfg.PolicyRules != "" {
+		rules, err := parsePolicyRules(cfg.PolicyRules)
+		if err != nil {
+			logger.WithError(err).Warn("Failed to parse -policy rules; ignoring invalid entries")
+		}
+		c.policyRules = rules
+		logger.WithField("count", len(c.policyRules)).Info("Loaded policy engine rules")
 	}
 
 	return c, nil
@@ -155,6 +176,37 @@ func (c *Collector) Start(ctx context.Context) error {
 	}
 	c.Maps = c.Loader.GetMaps()
 	c.Logger.Info("eBPF programs loaded and attached")
+
+	// Enable kernel-space monitor/dry-run mode if requested. This is
+	// independent of the analyzer's own -dry-run flag: it governs whether
+	// the collector's own kernel-level detections (bad flags, SYN-flood
+	// blocklist, ICMP/UDP rate limits) actually drop traffic.
+	if c.Config.DryRun {
+		if err := c.Maps.SetMonitorMode(true); err != nil {
+			c.Logger.WithError(err).Warn("Failed to enable kernel-space monitor mode; enforcement may still drop traffic")
+		} else {
+			c.Logger.Warn("Collector running in DRY-RUN / monitor mode: kernel-space detections will log but not drop traffic")
+		}
+	}
+
+	// Populate the kernel-space allowlist maps so XDP/TC can bypass
+	// allowlisted CIDRs directly, instead of relying solely on the
+	// userspace block-decision path.
+	if len(c.allowedNets) > 0 {
+		if err := c.Maps.SyncAllowlist(c.allowedNets); err != nil {
+			c.Logger.WithError(err).Warn("Failed to fully populate kernel-space allowlist maps")
+		}
+	}
+
+	// Populate the kernel-space per-CIDR policy engine maps (operator
+	// block/monitor overrides configured via -policy).
+	if len(c.policyRules) > 0 {
+		if err := c.Maps.SetPolicies(c.policyRules); err != nil {
+			c.Logger.WithError(err).Warn("Failed to fully populate kernel-space policy engine maps")
+		} else {
+			c.Logger.WithField("count", len(c.policyRules)).Info("Kernel-space policy engine rules active")
+		}
+	}
 
 	if c.Config.SocketPath != "" {
 		if err := c.startManagementSocket(); err != nil {
@@ -435,6 +487,9 @@ func (c *Collector) executeCommand(cmd *apiv1.Command) {
 			ipNet = &net.IPNet{IP: ip, Mask: net.CIDRMask(128, 128)}
 		}
 		c.allowedNets = append(c.allowedNets, ipNet)
+		if err := c.Maps.AddAllowlistEntry(ipNet); err != nil {
+			logger.WithError(err).Warn("Failed to add IP to kernel-space allowlist")
+		}
 		logger.WithField("cidr", ipNet.String()).Info("Added IP to allowlist by analyzer command")
 
 	case apiv1.CommandType_COMMAND_REMOVE_ALLOWLIST_IP:
@@ -443,6 +498,10 @@ func (c *Collector) executeCommand(cmd *apiv1.Command) {
 		for _, n := range c.allowedNets {
 			if !n.IP.Equal(ip) {
 				filtered = append(filtered, n)
+				continue
+			}
+			if err := c.Maps.RemoveAllowlistEntry(n); err != nil {
+				logger.WithError(err).Warn("Failed to remove IP from kernel-space allowlist")
 			}
 		}
 		c.allowedNets = filtered
@@ -476,6 +535,7 @@ func (c *Collector) pollMaps() {
 			c.sendPendingHandshakes()
 			c.sendICMPRates()
 			c.sendUDPRates()
+			c.sendBadFlagsAlerts()
 		}
 	}
 }
@@ -929,7 +989,116 @@ func (c *Collector) sendUDPRates() {
 	}
 }
 
-// computePPS approximates pps using monotonic last_time windows. If the window rolled (lastTime increased and count reset), return previous window peak.
+// sendBadFlagsAlerts polls the kernel bad_flags/bad_flags_v6 maps (populated
+// by the XDP program whenever it detects and drops a SYN+FIN, Xmas, or NULL
+// scan packet) and emits a SIGNAL_BAD_FLAGS signal for each newly observed
+// scan. Without this, these detections were previously invisible outside
+// the kernel: the analyzer already fully supports SIGNAL_BAD_FLAGS, but
+// nothing ever produced it.
+func (c *Collector) sendBadFlagsAlerts() {
+	if c.Maps == nil {
+		return
+	}
+
+	const maxBatchSize = 1000
+	sentCount := 0
+
+	if c.Maps.BadFlags != nil {
+		var ip uint32
+		var info ebpf.BadFlagsInfo
+		iter := c.Maps.BadFlags.Iterate()
+		for iter.Next(&ip, &info) {
+			if sentCount >= maxBatchSize {
+				break
+			}
+			if info.LastSeen == 0 {
+				continue
+			}
+			if prev, ok := c.prevBadFlagsSeen[ip]; ok && info.LastSeen <= prev {
+				continue
+			}
+			c.prevBadFlagsSeen[ip] = info.LastSeen
+
+			ipBytes := make([]byte, 4)
+			binary.LittleEndian.PutUint32(ipBytes, ip)
+			ipAddr := net.IP(ipBytes)
+			if c.checkAllowlist(ipAddr) {
+				continue
+			}
+
+			asn, org := "", ""
+			if c.GeoIP != nil {
+				asn, org = c.GeoIP.Lookup(ipAddr)
+			}
+
+			c.sendSignal(&apiv1.Signal{
+				Id:        fmt.Sprintf("bad-flags-%d-%d", ip, info.LastSeen),
+				Timestamp: timestamppb.Now(),
+				Type:      apiv1.SignalType_SIGNAL_BAD_FLAGS,
+				Source:    apiv1.SignalSource_SOURCE_EBPF,
+				Ip:        ipBytes,
+				Asn:       asn,
+				Org:       org,
+				Weight:    10,
+				Metadata: map[string]string{
+					"scan_type": ebpf.BadFlagsScanName(info.ScanType),
+					"flags_raw": fmt.Sprintf("0x%02x", info.FlagsRaw),
+				},
+			})
+			sentCount++
+		}
+	}
+
+	if c.Maps.BadFlagsV6 != nil {
+		type ipv6Key [16]byte
+		var saddr ipv6Key
+		var info ebpf.BadFlagsInfo
+		iter := c.Maps.BadFlagsV6.Iterate()
+		for iter.Next(&saddr, &info) {
+			if sentCount >= maxBatchSize {
+				break
+			}
+			if info.LastSeen == 0 {
+				continue
+			}
+			if prev, ok := c.prevBadFlagsSeenV6[saddr]; ok && info.LastSeen <= prev {
+				continue
+			}
+			c.prevBadFlagsSeenV6[saddr] = info.LastSeen
+
+			ipAddr := net.IP(saddr[:])
+			if c.checkAllowlist(ipAddr) {
+				continue
+			}
+
+			asn, org := "", ""
+			if c.GeoIP != nil {
+				asn, org = c.GeoIP.Lookup(ipAddr)
+			}
+
+			c.sendSignal(&apiv1.Signal{
+				Id:        fmt.Sprintf("bad-flags-v6-%s-%d", ipAddr.String(), info.LastSeen),
+				Timestamp: timestamppb.Now(),
+				Type:      apiv1.SignalType_SIGNAL_BAD_FLAGS,
+				Source:    apiv1.SignalSource_SOURCE_EBPF,
+				Ip:        ipAddr,
+				Asn:       asn,
+				Org:       org,
+				Weight:    10,
+				Metadata: map[string]string{
+					"scan_type": ebpf.BadFlagsScanName(info.ScanType),
+					"flags_raw": fmt.Sprintf("0x%02x", info.FlagsRaw),
+				},
+			})
+			sentCount++
+		}
+	}
+
+	if sentCount > 0 {
+		c.Logger.WithField("count", sentCount).Debug("Sent bad TCP flags signals")
+	}
+}
+
 func computePPS(prev map[uint32]prevRate, ip uint32, rate ebpf.ICMPRate) float64 {
 	if prev == nil {
 		return float64(rate.Count)
@@ -1119,4 +1288,57 @@ func parseAllowlist(cidrs string, logger *logrus.Logger) []*net.IPNet {
 	}
 
 	return nets
+}
+
+// parsePolicyRules parses -policy flag values of the form
+// "CIDR=action,CIDR=action,..." (action = "block" or "monitor") into
+// ebpf.PolicyRule entries. "=" is used (not ":") because IPv6 addresses
+// contain colons, which would make CIDR:action ambiguous to split.
+// Invalid entries are skipped with an error collected via errors.Join;
+// parsing continues so a single typo doesn't silently disable every rule.
+func parsePolicyRules(spec string) ([]ebpf.PolicyRule, error) {
+	if spec == "" {
+		return nil, nil
+	}
+
+	var rules []ebpf.PolicyRule
+	var errs []error
+	for _, entry := range strings.Split(spec, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+
+		idx := strings.LastIndex(entry, "=")
+		if idx < 0 {
+			errs = append(errs, fmt.Errorf("invalid policy entry %q (want CIDR=action)", entry))
+			continue
+		}
+		cidr := strings.TrimSpace(entry[:idx])
+		actionStr := strings.TrimSpace(entry[idx+1:])
+
+		if !strings.Contains(cidr, "/") {
+			if strings.Contains(cidr, ":") {
+				cidr = cidr + "/128"
+			} else {
+				cidr = cidr + "/32"
+			}
+		}
+
+		_, ipNet, err := net.ParseCIDR(cidr)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("invalid CIDR %q in policy entry %q: %w", entry[:idx], entry, err))
+			continue
+		}
+
+		action, err := ebpf.ParsePolicyAction(actionStr)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("invalid policy entry %q: %w", entry, err))
+			continue
+		}
+
+		rules = append(rules, ebpf.PolicyRule{Net: ipNet, Action: action})
+	}
+
+	return rules, errors.Join(errs...)
 }
