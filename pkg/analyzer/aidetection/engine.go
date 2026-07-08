@@ -24,9 +24,17 @@ import (
 
 // Engine is the central AI detection engine that receives signals from multiple sources
 type Engine struct {
-	mu                sync.RWMutex
-	signalChan        chan Signal
-	stop              chan struct{}
+	mu   sync.RWMutex
+	stop chan struct{}
+	// signalChans is a per-worker shard of the signal queue. Signals are
+	// routed to a shard by hashing their correlation key (IP or JA4H), so a
+	// given key is always handled by the same worker. This is required for
+	// evaluateWindow (see worker()) to see the complete signal history for a
+	// key within a window; a single shared channel drained by all workers
+	// would fragment a key's signals across workers, silently undermining
+	// window-based DDoS thresholds since no single worker would ever see the
+	// full signal count for an attacking IP.
+	signalChans       []chan Signal
 	workers           int
 	detectionHandlers []DetectionHandler
 
@@ -258,7 +266,7 @@ func New(cfg Config) *Engine {
 	}
 
 	e := &Engine{
-		signalChan:               make(chan Signal, cfg.BufferSize),
+		signalChans:              newSignalShards(cfg.Workers, cfg.BufferSize),
 		stop:                     make(chan struct{}),
 		workers:                  cfg.Workers,
 		ewmaMap:                  make(map[string]*ewma.State),
@@ -593,8 +601,9 @@ func (e *Engine) GetFeedbackLoop() *FeedbackLoop {
 // Start begins processing signals
 func (e *Engine) Start() {
 	logrus.WithFields(logrus.Fields{
-		"workers":     e.workers,
-		"buffer_size": cap(e.signalChan),
+		"workers":           e.workers,
+		"total_buffer_size": e.totalQueueCapacity(),
+		"per_worker_buffer": cap(e.signalChans[0]),
 	}).Info("Starting AI Detection Engine")
 
 	metrics.AIEngineWarmup.Set(1)
@@ -602,17 +611,108 @@ func (e *Engine) Start() {
 		go e.worker(i)
 	}
 
+	// Campaign evaluation aggregates state that is shared across all workers
+	// (CampaignAggregator has its own internal locking), so it must run on a
+	// single ticker rather than once per worker; otherwise it would run up
+	// to len(workers) times redundantly every interval.
+	go e.campaignEvaluationLoop()
+
 	// Start ASN maps cleanup
 	go e.asnCleanupLoop()
 
 	// Start state save loop
 	go e.stateSaveLoop()
 
+	// Periodically refresh the queue depth gauge instead of computing it on
+	// every EmitSignal call (which would require summing len() across all
+	// worker shards on the hot path).
+	go e.queueDepthLoop()
+
 	// Warmup watcher
 	go func() {
 		time.Sleep(e.warmupPeriod)
 		metrics.AIEngineWarmup.Set(0)
 	}()
+}
+
+// campaignEvaluationLoop runs the global campaign evaluation on a single
+// shared ticker. See the comment in Start() for why this must not run
+// per-worker.
+func (e *Engine) campaignEvaluationLoop() {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-e.stop:
+			return
+		case <-ticker.C:
+			e.evaluateCampaigns()
+		}
+	}
+}
+
+// queueDepthLoop periodically publishes the total signal queue depth across
+// all worker shards.
+func (e *Engine) queueDepthLoop() {
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-e.stop:
+			return
+		case <-ticker.C:
+			metrics.AIEngineQueueDepth.Set(float64(e.totalQueueDepth()))
+		}
+	}
+}
+
+// newSignalShards creates one buffered channel per worker. Splitting the
+// buffer size across shards keeps total queue capacity roughly the same as
+// a single shared channel of the configured size.
+func newSignalShards(workers, bufferSize int) []chan Signal {
+	if workers < 1 {
+		workers = 1
+	}
+	perWorker := bufferSize / workers
+	if perWorker < 1 {
+		perWorker = 1
+	}
+	shards := make([]chan Signal, workers)
+	for i := range shards {
+		shards[i] = make(chan Signal, perWorker)
+	}
+	return shards
+}
+
+// signalRouteKey returns the correlation key for a signal (IP or JA4H). The
+// same key is used both to pick a worker shard in EmitSignal and to group
+// per-key window state in processSignal/evaluateWindow, so that a given
+// key's signals are always handled by the same worker and its window map
+// always sees the complete signal history for that key.
+func signalRouteKey(signal Signal) string {
+	if signal.JA4H != "" {
+		return "ja4h:" + signal.JA4H
+	}
+	if signal.IP != nil {
+		return "ip:" + signal.IP.String()
+	}
+	return ""
+}
+
+func (e *Engine) totalQueueDepth() int {
+	total := 0
+	for _, ch := range e.signalChans {
+		total += len(ch)
+	}
+	return total
+}
+
+func (e *Engine) totalQueueCapacity() int {
+	total := 0
+	for _, ch := range e.signalChans {
+		total += cap(ch)
+	}
+	return total
 }
 
 // Stop shuts down the engine
@@ -636,15 +736,23 @@ func (e *Engine) GetMLModel() MLModel {
 	return e.mlModel
 }
 
-// EmitSignal sends a signal to the detection engine
+// EmitSignal sends a signal to the detection engine, routing it to a
+// worker shard consistently keyed by its correlation key (IP or JA4H) so
+// that a single worker always owns the complete window for that key.
 func (e *Engine) EmitSignal(signal Signal) {
 	if signal.Timestamp.IsZero() {
 		signal.Timestamp = time.Now()
 	}
 
+	idx := 0
+	if n := len(e.signalChans); n > 1 {
+		if key := signalRouteKey(signal); key != "" {
+			idx = int(fnv64(key) % uint64(n))
+		}
+	}
+
 	select {
-	case e.signalChan <- signal:
-		metrics.AIEngineQueueDepth.Set(float64(len(e.signalChan)))
+	case e.signalChans[idx] <- signal:
 	default:
 		metrics.AIEngineQueueDrops.Inc()
 		// Rate-limit buffer full warnings to once per 5 seconds
@@ -653,14 +761,22 @@ func (e *Engine) EmitSignal(signal Signal) {
 		if now.Sub(e.lastBufferWarning) > 5*time.Second {
 			e.lastBufferWarning = now
 			e.bufferWarningMu.Unlock()
-			logrus.WithField("queue_depth", len(e.signalChan)).Warn("AI Detection signal buffer full, dropping signals")
+			logrus.WithFields(logrus.Fields{
+				"queue_depth": e.totalQueueDepth(),
+				"shard":       idx,
+				"shard_depth": len(e.signalChans[idx]),
+			}).Warn("AI Detection signal buffer full, dropping signals")
 		} else {
 			e.bufferWarningMu.Unlock()
 		}
 	}
 }
 
-// worker processes signals from the channel
+// worker processes signals from its dedicated shard of the queue. Because
+// EmitSignal routes by a stable hash of each signal's correlation key, this
+// worker's windowSignals map always contains the complete signal history for
+// every key it owns, so evaluateWindow's thresholds are checked against true
+// per-key totals rather than an arbitrary fragment of them.
 func (e *Engine) worker(id int) {
 	windowSignals := make(map[string][]Signal)
 	ticker := time.NewTicker(10 * time.Second)
@@ -671,11 +787,10 @@ func (e *Engine) worker(id int) {
 		case <-e.stop:
 			return
 
-		case signal := <-e.signalChan:
+		case signal := <-e.signalChans[id]:
 			e.processSignal(signal, windowSignals)
 
 		case <-ticker.C:
-			e.evaluateCampaigns()
 			e.evaluateWindow(windowSignals)
 			windowSignals = make(map[string][]Signal)
 		}
@@ -1097,12 +1212,8 @@ func (e *Engine) processSignal(signal Signal, windowSignals map[string][]Signal)
 	}
 	e.metricsMu.Unlock()
 
-	key := ""
-	if signal.JA4H != "" {
-		key = "ja4h:" + signal.JA4H
-	} else if signal.IP != nil {
-		key = "ip:" + signal.IP.String()
-	} else {
+	key := signalRouteKey(signal)
+	if key == "" {
 		return
 	}
 
