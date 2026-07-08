@@ -13,6 +13,13 @@ GEOIP_ASN_PATH=/var/lib/GeoIP/GeoLite2-ASN.mmdb
 
 # Threat intelligence uses the free, keyless Shodan InternetDB API (no API key required)
 
+# All optional/conditional analyzer flags go through EXTRA_ARGS. The unit
+# file's ExecStart uses plain systemd variable substitution only (no bash
+# ${VAR:+...} conditionals - systemd does not run ExecStart through a shell
+# and does not support that syntax), so combine every optional flag you want
+# into a single EXTRA_ARGS line, e.g.:
+#   EXTRA_ARGS=-dry-run -reputation-threshold 75 -v
+#
 # Operational safety: start new deployments with -dry-run, keep the inspector
 # on loopback or behind trusted access controls, and enable pprof only briefly.
 # EXTRA_ARGS=-dry-run -inspect-addr 127.0.0.1:9092

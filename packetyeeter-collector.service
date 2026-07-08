@@ -6,17 +6,21 @@ Wants=packetyeeter-analyzer.service
 
 [Service]
 Type=simple
-EnvironmentFile=-/etc/default/packetyeeter-collector
+# Required (not "-/etc/default/..."): native systemd does not run ExecStart
+# through a shell, so it cannot fall back to inline defaults like bash's
+# ${VAR:-default}. All values below must come from this file, which is
+# shipped with real defaults by the package. If the file is missing, refuse
+# to start rather than silently launching with empty/garbage arguments.
+EnvironmentFile=/etc/default/packetyeeter-collector
 ExecStart=/opt/packetyeeter/collector/packetyeeter-collector \
-    -i ${INTERFACE:-eth0} \
-    -analyzer-addr ${ANALYZER_ADDR:-127.0.0.1:9090} \
-    -metrics-addr ${METRICS_ADDR:-:2112} \
-    -haproxy-port ${HAPROXY_PORT:-8765} \
-    -spoe-port ${SPOE_PORT:-9876} \
-    ${ALLOWLIST:+-allowlist "$ALLOWLIST"} \
-    -socket ${SOCKET_PATH:-/var/run/packetyeeter-collector.sock} \
-    -geoip-asn ${GEOIP_ASN_PATH:-/var/lib/GeoIP/GeoLite2-ASN.mmdb} \
-    -block-duration ${BLOCK_DURATION:-300s} \
+    -i ${INTERFACE} \
+    -analyzer-addr ${ANALYZER_ADDR} \
+    -metrics-addr ${METRICS_ADDR} \
+    -haproxy-port ${HAPROXY_PORT} \
+    -spoe-port ${SPOE_PORT} \
+    -socket ${SOCKET_PATH} \
+    -geoip-asn ${GEOIP_ASN_PATH} \
+    -block-duration ${BLOCK_DURATION} \
     ${EXTRA_ARGS}
 Restart=on-failure
 RestartSec=5
