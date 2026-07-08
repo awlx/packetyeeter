@@ -166,6 +166,18 @@ func New(cfg Config, logger *logrus.Logger) (*Collector, error) {
 func (c *Collector) Start(ctx context.Context) error {
 	c.ctx, c.cancel = context.WithCancel(ctx)
 
+	// PacketYeeter does not implement its own SYN cookie challenge/response:
+	// a transparent XDP-layer syncookie would require silently splicing the
+	// client's already-"established" connection into a fresh kernel-level
+	// handshake, which is not achievable without protocol-breaking hacks
+	// (the client would see an unexpected second SYN-ACK). SYN flood
+	// mitigation instead relies on the kernel's own, battle-tested
+	// implementation via net.ipv4.tcp_syncookies, combined with
+	// PacketYeeter's existing incomplete-handshake detection and
+	// blocked_ips enforcement to cut off flood traffic before it reaches
+	// the backend at all. Warn loudly if the sysctl looks disabled.
+	c.checkKernelSynCookies()
+
 	// Load eBPF programs
 	c.Logger.Info("Loading eBPF programs...")
 	c.Loader = ebpf.NewLoader(c.Config.Interface)
