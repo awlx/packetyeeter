@@ -231,13 +231,21 @@ func (e *Engine) penalizeLocked(key string, keyType EntityType, weight float64, 
 	// Update Metric
 	setReputationScore(keyType, key, entry.Score)
 
-	logrus.WithFields(logrus.Fields{
-		"key":    key,
-		"type":   keyType,
-		"added":  weight,
-		"total":  entry.Score,
-		"reason": reason,
-	}).Debug("Reputation Penalized")
+	// Skip building the Fields map (an allocation) when debug logging is
+	// disabled — logrus.WithFields() always allocates/copies the map
+	// eagerly even if the resulting Debug() call is a no-op. This runs
+	// under e.mu for every Penalize call (up to several per signal across
+	// all AI-engine workers), so the allocation cost is paid while
+	// serializing all callers on the same lock.
+	if logrus.IsLevelEnabled(logrus.DebugLevel) {
+		logrus.WithFields(logrus.Fields{
+			"key":    key,
+			"type":   keyType,
+			"added":  weight,
+			"total":  entry.Score,
+			"reason": reason,
+		}).Debug("Reputation Penalized")
+	}
 
 	e.pruneIfNeededLocked(time.Now())
 
@@ -283,6 +291,56 @@ func (e *Engine) PenalizeASN(asn string, ip string, baseWeight float64, reason s
 	return e.penalizeASNLocked(asn, weight, fmt.Sprintf("%s (ratio=%.4f offenders=%d total=%d)", reason, ratio, offenders, total))
 }
 
+// RecordSignal atomically applies the IP, ASN, and JA4H reputation
+// penalties for a single detection signal under one lock acquisition,
+// instead of the equivalent sequence of Penalize/ObserveIP/PenalizeASN/
+// Penalize calls (up to four separate lock/unlock round trips). Under the
+// AI detection engine's per-worker signal processing (see
+// aidetection.Engine.processSignal), every signal calls into reputation
+// tracking, so serializing many short, independent lock acquisitions
+// across all workers adds contention that a single combined critical
+// section avoids. Semantics match calling ObserveIP then PenalizeASN: the
+// IP is recorded as both seen and an offender for the ASN, and the ASN
+// penalty is scaled by the offender/total ratio exactly as before.
+//
+// ip and asnWeight are ignored (no-op) when the respective key ("" for ip
+// or asn) is empty, matching the guards in the individual methods.
+func (e *Engine) RecordSignal(ip string, ipWeight float64, asn string, asnWeight float64, ja4h string, ja4Weight float64, reason string) (ipScore, asnScore float64) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if ip != "" {
+		ipScore = e.penalizeLocked(ip, TypeIP, ipWeight, reason)
+	}
+
+	if asn != "" {
+		stats := e.getASNStatsLocked(asn)
+		if ip != "" {
+			stats.Seen[ip] = struct{}{}
+			stats.Offenders[ip] = struct{}{}
+			e.boundASNStatsLocked(stats)
+		}
+		offenders := len(stats.Offenders)
+		total := len(stats.Seen)
+		if total == 0 {
+			total = 1
+		}
+		// Soften ratios for small populations to avoid instant ASN nukes
+		if total < 50 {
+			total = 50
+		}
+		ratio := float64(offenders) / float64(total)
+		weight := asnWeight * ratio
+		asnScore = e.penalizeASNLocked(asn, weight, fmt.Sprintf("%s (ratio=%.4f offenders=%d total=%d)", reason, ratio, offenders, total))
+	}
+
+	if ja4h != "" {
+		e.penalizeLocked(ja4h, TypeJA4, ja4Weight, reason)
+	}
+
+	return ipScore, asnScore
+}
+
 // RewardASN decreases the ASN score based on good traffic ratio
 func (e *Engine) RewardIP(ip string, baseWeight float64, reason string) float64 {
 	if ip == "" {
@@ -320,13 +378,15 @@ func (e *Engine) rewardLocked(key string, keyType EntityType, weight float64, re
 
 	setReputationScore(keyType, key, entry.Score)
 
-	logrus.WithFields(logrus.Fields{
-		"key":    key,
-		"type":   keyType,
-		"added":  -weight,
-		"total":  entry.Score,
-		"reason": reason,
-	}).Debug("Reputation Rewarded")
+	if logrus.IsLevelEnabled(logrus.DebugLevel) {
+		logrus.WithFields(logrus.Fields{
+			"key":    key,
+			"type":   keyType,
+			"added":  -weight,
+			"total":  entry.Score,
+			"reason": reason,
+		}).Debug("Reputation Rewarded")
+	}
 
 	return entry.Score
 }
@@ -383,13 +443,15 @@ func (e *Engine) penalizeASNLocked(asn string, weight float64, reason string) fl
 
 	setReputationScore(TypeASN, asn, entry.Score)
 
-	logrus.WithFields(logrus.Fields{
-		"key":    asn,
-		"type":   TypeASN,
-		"added":  weight,
-		"total":  entry.Score,
-		"reason": reason,
-	}).Debug("Reputation Penalized")
+	if logrus.IsLevelEnabled(logrus.DebugLevel) {
+		logrus.WithFields(logrus.Fields{
+			"key":    asn,
+			"type":   TypeASN,
+			"added":  weight,
+			"total":  entry.Score,
+			"reason": reason,
+		}).Debug("Reputation Penalized")
+	}
 
 	return entry.Score
 }
@@ -412,13 +474,15 @@ func (e *Engine) rewardASNLocked(asn string, weight float64, reason string) floa
 
 	setReputationScore(TypeASN, asn, entry.Score)
 
-	logrus.WithFields(logrus.Fields{
-		"key":    asn,
-		"type":   TypeASN,
-		"added":  -weight,
-		"total":  entry.Score,
-		"reason": reason,
-	}).Debug("Reputation Rewarded")
+	if logrus.IsLevelEnabled(logrus.DebugLevel) {
+		logrus.WithFields(logrus.Fields{
+			"key":    asn,
+			"type":   TypeASN,
+			"added":  -weight,
+			"total":  entry.Score,
+			"reason": reason,
+		}).Debug("Reputation Rewarded")
+	}
 
 	return entry.Score
 }

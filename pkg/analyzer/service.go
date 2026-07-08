@@ -1239,8 +1239,16 @@ func (a *Analyzer) runBaselineCalibrator() {
 			return
 		case <-ticker.C:
 			if a.Baseline != nil {
-				// Log baseline stats periodically
+				// GetStats() is also used to update the
+				// packetyeeter_baseline_calibrated_asns gauge here, every
+				// minute. Previously this gauge was only refreshed inside
+				// BaselineCalibrator's hourly cleanup(), so it stayed at
+				// its zero-value default for up to an hour after every
+				// analyzer restart even while observations were actively
+				// accumulating, making it look like calibration was never
+				// happening when it just hadn't reported yet.
 				calibratedASNs, totalObs := a.Baseline.GetStats()
+				metrics.BaselineCalibratedASNs.Set(float64(calibratedASNs))
 				logrus.WithFields(logrus.Fields{
 					"calibrated_asns":    calibratedASNs,
 					"total_observations": totalObs,
