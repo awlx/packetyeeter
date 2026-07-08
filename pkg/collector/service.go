@@ -83,6 +83,11 @@ type Collector struct {
 	prevICMPRates map[uint32]prevRate
 	prevUDPRates  map[uint32]prevRate
 
+	// Last-alerted timestamps for bad TCP flag scans, so repeated polls
+	// don't re-emit a signal for the same kernel-observed event.
+	prevBadFlagsSeen   map[uint32]uint64
+	prevBadFlagsSeenV6 map[[16]byte]uint64
+
 	// SYN timestamp cache for eBPF <-> SPOE correlation
 	synCache    sync.Map // IP string -> time.Time
 	synCacheTTL time.Duration
@@ -113,13 +118,15 @@ func max(a, b int) int {
 
 func New(cfg Config, logger *logrus.Logger) (*Collector, error) {
 	c := &Collector{
-		Config:        cfg,
-		Logger:        logger,
-		reconnectCh:   make(chan struct{}, 1),
-		signalQueue:   make(chan *apiv1.Signal, max(cfg.SignalQueueSize, 10000)), // Ring buffer default 10k
-		synCacheTTL:   60 * time.Second,                                          // TTL for SYN timestamp cache
-		prevICMPRates: make(map[uint32]prevRate),
-		prevUDPRates:  make(map[uint32]prevRate),
+		Config:             cfg,
+		Logger:             logger,
+		reconnectCh:        make(chan struct{}, 1),
+		signalQueue:        make(chan *apiv1.Signal, max(cfg.SignalQueueSize, 10000)), // Ring buffer default 10k
+		synCacheTTL:        60 * time.Second,                                          // TTL for SYN timestamp cache
+		prevICMPRates:      make(map[uint32]prevRate),
+		prevUDPRates:       make(map[uint32]prevRate),
+		prevBadFlagsSeen:   make(map[uint32]uint64),
+		prevBadFlagsSeenV6: make(map[[16]byte]uint64),
 	}
 
 	// Load GeoIP database
@@ -505,6 +512,7 @@ func (c *Collector) pollMaps() {
 			c.sendPendingHandshakes()
 			c.sendICMPRates()
 			c.sendUDPRates()
+			c.sendBadFlagsAlerts()
 		}
 	}
 }
@@ -958,7 +966,116 @@ func (c *Collector) sendUDPRates() {
 	}
 }
 
-// computePPS approximates pps using monotonic last_time windows. If the window rolled (lastTime increased and count reset), return previous window peak.
+// sendBadFlagsAlerts polls the kernel bad_flags/bad_flags_v6 maps (populated
+// by the XDP program whenever it detects and drops a SYN+FIN, Xmas, or NULL
+// scan packet) and emits a SIGNAL_BAD_FLAGS signal for each newly observed
+// scan. Without this, these detections were previously invisible outside
+// the kernel: the analyzer already fully supports SIGNAL_BAD_FLAGS, but
+// nothing ever produced it.
+func (c *Collector) sendBadFlagsAlerts() {
+	if c.Maps == nil {
+		return
+	}
+
+	const maxBatchSize = 1000
+	sentCount := 0
+
+	if c.Maps.BadFlags != nil {
+		var ip uint32
+		var info ebpf.BadFlagsInfo
+		iter := c.Maps.BadFlags.Iterate()
+		for iter.Next(&ip, &info) {
+			if sentCount >= maxBatchSize {
+				break
+			}
+			if info.LastSeen == 0 {
+				continue
+			}
+			if prev, ok := c.prevBadFlagsSeen[ip]; ok && info.LastSeen <= prev {
+				continue
+			}
+			c.prevBadFlagsSeen[ip] = info.LastSeen
+
+			ipBytes := make([]byte, 4)
+			binary.LittleEndian.PutUint32(ipBytes, ip)
+			ipAddr := net.IP(ipBytes)
+			if c.checkAllowlist(ipAddr) {
+				continue
+			}
+
+			asn, org := "", ""
+			if c.GeoIP != nil {
+				asn, org = c.GeoIP.Lookup(ipAddr)
+			}
+
+			c.sendSignal(&apiv1.Signal{
+				Id:        fmt.Sprintf("bad-flags-%d-%d", ip, info.LastSeen),
+				Timestamp: timestamppb.Now(),
+				Type:      apiv1.SignalType_SIGNAL_BAD_FLAGS,
+				Source:    apiv1.SignalSource_SOURCE_EBPF,
+				Ip:        ipBytes,
+				Asn:       asn,
+				Org:       org,
+				Weight:    10,
+				Metadata: map[string]string{
+					"scan_type": ebpf.BadFlagsScanName(info.ScanType),
+					"flags_raw": fmt.Sprintf("0x%02x", info.FlagsRaw),
+				},
+			})
+			sentCount++
+		}
+	}
+
+	if c.Maps.BadFlagsV6 != nil {
+		type ipv6Key [16]byte
+		var saddr ipv6Key
+		var info ebpf.BadFlagsInfo
+		iter := c.Maps.BadFlagsV6.Iterate()
+		for iter.Next(&saddr, &info) {
+			if sentCount >= maxBatchSize {
+				break
+			}
+			if info.LastSeen == 0 {
+				continue
+			}
+			if prev, ok := c.prevBadFlagsSeenV6[saddr]; ok && info.LastSeen <= prev {
+				continue
+			}
+			c.prevBadFlagsSeenV6[saddr] = info.LastSeen
+
+			ipAddr := net.IP(saddr[:])
+			if c.checkAllowlist(ipAddr) {
+				continue
+			}
+
+			asn, org := "", ""
+			if c.GeoIP != nil {
+				asn, org = c.GeoIP.Lookup(ipAddr)
+			}
+
+			c.sendSignal(&apiv1.Signal{
+				Id:        fmt.Sprintf("bad-flags-v6-%s-%d", ipAddr.String(), info.LastSeen),
+				Timestamp: timestamppb.Now(),
+				Type:      apiv1.SignalType_SIGNAL_BAD_FLAGS,
+				Source:    apiv1.SignalSource_SOURCE_EBPF,
+				Ip:        ipAddr,
+				Asn:       asn,
+				Org:       org,
+				Weight:    10,
+				Metadata: map[string]string{
+					"scan_type": ebpf.BadFlagsScanName(info.ScanType),
+					"flags_raw": fmt.Sprintf("0x%02x", info.FlagsRaw),
+				},
+			})
+			sentCount++
+		}
+	}
+
+	if sentCount > 0 {
+		c.Logger.WithField("count", sentCount).Debug("Sent bad TCP flags signals")
+	}
+}
+
 func computePPS(prev map[uint32]prevRate, ip uint32, rate ebpf.ICMPRate) float64 {
 	if prev == nil {
 		return float64(rate.Count)

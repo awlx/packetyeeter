@@ -10,11 +10,11 @@ PacketYeeter is a high-performance, eBPF-based DDoS protection and traffic filte
     *   **Enforcement**: XDP drops packets from IPs the collector has been told to block, before they reach the OS network stack.
 
 2.  **TCP Flag Sanitization**
-    *   Detects and blocks invalid TCP flag combinations commonly used in reconnaissance scans and attacks:
+    *   Detects and drops invalid TCP flag combinations commonly used in reconnaissance scans and attacks:
         *   **SYN-FIN** (Impossible state)
         *   **Xmas Tree** (FIN + PSH + URG)
         *   **NULL Scan** (No flags)
-    *   Violating IPs are immediately banned.
+    *   Each detection is classified by scan type and reported to the analyzer as a `SIGNAL_BAD_FLAGS` signal (previously these drops were kernel-only and invisible outside `packetyeeter_tcp_bad_flags_blocks_total`). Repeat offenders accumulate reputation penalties and can be banned via the same feedback loop used for other floods.
 
 3.  **IP Allowlist (CIDR Support)**
     *   Protect specific IPs or ranges (CIDR notation) from ever being blocked.

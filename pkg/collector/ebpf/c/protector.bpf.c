@@ -63,6 +63,21 @@ struct offender_data {
     __u64 limit;
 };
 
+// Bad TCP flag scan classification, stored alongside the last-seen
+// timestamp so userspace can emit a structured SIGNAL_BAD_FLAGS signal
+// (with a human-readable reason) instead of just knowing "something bad
+// happened from this IP at some point".
+#define BAD_FLAGS_NONE     0
+#define BAD_FLAGS_SYN_FIN  1
+#define BAD_FLAGS_XMAS     2
+#define BAD_FLAGS_NULL     3
+
+struct bad_flags_info {
+    __u64 last_seen;
+    __u32 scan_type;  // one of BAD_FLAGS_*
+    __u32 flags_raw;  // raw TCP flag bits (fin,syn,rst,psh,ack,urg,ece,cwr from bit 0)
+};
+
 struct lpm_key_v4 {
     __u32 prefixlen;
     __u32 data;
@@ -173,14 +188,14 @@ struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, 1000);
     __type(key, __u32);
-    __type(value, __u64);
+    __type(value, struct bad_flags_info);
 } bad_flags SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, 1000);
     __type(key, struct in6_addr);
-    __type(value, __u64);
+    __type(value, struct bad_flags_info);
 } bad_flags_v6 SEC(".maps");
 
 struct {
@@ -250,13 +265,24 @@ static __always_inline int check_rate_limit(void *map, void *key, void *offender
 }
 
 static __always_inline int check_tcp_flags(struct tcphdr *tcp) {
-    if (tcp->syn && tcp->fin) return 1; 
-    if (tcp->fin && tcp->urg && tcp->psh) return 1; 
-    // NULL scan check: all 0. 
+    if (tcp->syn && tcp->fin) return BAD_FLAGS_SYN_FIN;
+    if (tcp->fin && tcp->urg && tcp->psh) return BAD_FLAGS_XMAS;
+    // NULL scan check: all 0.
     // Note: res1, doff, res2 are not flags. We just check the flag bits.
     // Standard flags: fin,syn,rst,psh,ack,urg,ece,cwr
-    if (!tcp->syn && !tcp->ack && !tcp->rst && !tcp->fin && !tcp->urg && !tcp->psh) return 1; 
-    return 0;
+    if (!tcp->syn && !tcp->ack && !tcp->rst && !tcp->fin && !tcp->urg && !tcp->psh) return BAD_FLAGS_NULL;
+    return BAD_FLAGS_NONE;
+}
+
+static __always_inline __u32 tcp_flags_raw(struct tcphdr *tcp) {
+    return (__u32)tcp->fin
+        | ((__u32)tcp->syn << 1)
+        | ((__u32)tcp->rst << 2)
+        | ((__u32)tcp->psh << 3)
+        | ((__u32)tcp->ack << 4)
+        | ((__u32)tcp->urg << 5)
+        | ((__u32)tcp->ece << 6)
+        | ((__u32)tcp->cwr << 7);
 }
 
 // Parse TCP timestamp option
@@ -543,8 +569,13 @@ int xdp_filter(struct xdp_md *ctx) {
              // Standard IP header size for verifier
              struct tcphdr *tcp = (void *)(ip + 1);
              if ((void *)(tcp + 1) > data_end) return XDP_PASS;
-             if (check_tcp_flags(tcp)) {
-                 bpf_map_update_elem(&bad_flags, &saddr, &now, BPF_ANY);
+             int scan_type = check_tcp_flags(tcp);
+             if (scan_type != BAD_FLAGS_NONE) {
+                 struct bad_flags_info info = {};
+                 info.last_seen = now;
+                 info.scan_type = scan_type;
+                 info.flags_raw = tcp_flags_raw(tcp);
+                 bpf_map_update_elem(&bad_flags, &saddr, &info, BPF_ANY);
                  if (!is_monitor) return XDP_DROP;
              }
         }
@@ -607,9 +638,13 @@ int xdp_filter(struct xdp_md *ctx) {
         if (ip6->nexthdr == IPPROTO_TCP) {
             struct tcphdr *tcp = (void *)(ip6 + 1);
             if ((void *)(tcp + 1) > data_end) return XDP_PASS;
-            if (check_tcp_flags(tcp)) {
-                __u64 now = bpf_ktime_get_ns();
-                bpf_map_update_elem(&bad_flags_v6, &saddr, &now, BPF_ANY);
+            int scan_type = check_tcp_flags(tcp);
+            if (scan_type != BAD_FLAGS_NONE) {
+                struct bad_flags_info info = {};
+                info.last_seen = bpf_ktime_get_ns();
+                info.scan_type = scan_type;
+                info.flags_raw = tcp_flags_raw(tcp);
+                bpf_map_update_elem(&bad_flags_v6, &saddr, &info, BPF_ANY);
                 if (!is_monitor) return XDP_DROP;
             }
         }

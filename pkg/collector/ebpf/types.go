@@ -27,6 +27,35 @@ type ICMPRate struct {
 	Count    uint64
 }
 
+// Bad TCP flag scan classification, matches struct bad_flags_info in
+// protector.bpf.c. Values for ScanType match the BAD_FLAGS_* #defines.
+const (
+	BadFlagsScanNone   = 0
+	BadFlagsScanSynFin = 1
+	BadFlagsScanXmas   = 2
+	BadFlagsScanNull   = 3
+)
+
+// BadFlagsScanName returns a human-readable name for a ScanType value.
+func BadFlagsScanName(scanType uint32) string {
+	switch scanType {
+	case BadFlagsScanSynFin:
+		return "syn_fin"
+	case BadFlagsScanXmas:
+		return "xmas"
+	case BadFlagsScanNull:
+		return "null_scan"
+	default:
+		return "unknown"
+	}
+}
+
+type BadFlagsInfo struct {
+	LastSeen uint64
+	ScanType uint32
+	FlagsRaw uint32
+}
+
 // EventMetadata matches the C struct event_metadata from protector.bpf.c
 type EventMetadata struct {
 	SaddrV6        [16]byte
