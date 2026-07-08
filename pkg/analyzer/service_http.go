@@ -69,19 +69,39 @@ func isChromeFamilyUA(userAgent string) bool {
 	return strings.Contains(userAgent, "Chrome") || strings.Contains(userAgent, "CriOS") || strings.Contains(userAgent, "Edg/")
 }
 
-// isMissingSecCH reports whether a claimed Chrome-family UA's header order
-// doesn't include sec-ch-ua, which real Chrome/Edge browsers always send.
-func isMissingSecCH(chromeUA bool, headerOrderLower string) bool {
-	return chromeUA && headerOrderLower != "" && !strings.Contains(headerOrderLower, "sec-ch-ua")
+// isBlinkEngineUA reports whether the user agent claims to be a
+// Chromium/Blink-engine browser (desktop or Android Chrome, or Edge) - the
+// subset of isChromeFamilyUA that actually implements Client Hints
+// (sec-ch-ua) and Fetch Metadata (Sec-Fetch-*) request headers. Chrome for
+// iOS (CriOS) is deliberately excluded: Apple requires every iOS browser to
+// use the WebKit rendering engine, and WebKit doesn't implement either
+// header family (as of 2024) - a real CriOS session behaves like Safari for
+// both, not like desktop/Android Chrome, so gating on isChromeFamilyUA alone
+// would falsely flag every genuine Chrome-for-iOS user.
+func isBlinkEngineUA(userAgent string) bool {
+	if isKnownHonestUA(userAgent) || strings.Contains(userAgent, "CriOS") {
+		return false
+	}
+	return strings.Contains(userAgent, "Chrome") || strings.Contains(userAgent, "Edg/")
 }
 
-// isMissingSecFetch reports whether a claimed Chrome-family UA is missing
-// all three of Sec-Fetch-Site/Mode/Dest. Real browsers (Chrome 76+, Firefox
-// 90+, Safari 16.4+) auto-generate these on every request; they cannot be
-// suppressed by client-side JS, making their total absence a strong signal
-// that the request didn't actually come from the browser the UA claims.
-func isMissingSecFetch(chromeUA bool, secFetchSite, secFetchMode, secFetchDest string) bool {
-	return chromeUA && secFetchSite == "" && secFetchMode == "" && secFetchDest == ""
+// isMissingSecCH reports whether a claimed Blink-engine UA's header order
+// doesn't include sec-ch-ua, which real desktop/Android Chrome/Edge browsers
+// always send. Use blinkUA (isBlinkEngineUA), not chromeUA, since Chrome for
+// iOS never sends this header despite otherwise being Chrome-family.
+func isMissingSecCH(blinkUA bool, headerOrderLower string) bool {
+	return blinkUA && headerOrderLower != "" && !strings.Contains(headerOrderLower, "sec-ch-ua")
+}
+
+// isMissingSecFetch reports whether a claimed Blink-engine UA is missing all
+// three of Sec-Fetch-Site/Mode/Dest. Real Chromium-based browsers (Chrome
+// 76+, Edge) auto-generate these on every request; they cannot be suppressed
+// by client-side JS, making their total absence a strong indicator that the
+// request didn't actually come from the browser the UA claims. Use blinkUA
+// (isBlinkEngineUA), not chromeUA: Chrome for iOS is WebKit-based and never
+// sends these headers, same as Safari.
+func isMissingSecFetch(blinkUA bool, secFetchSite, secFetchMode, secFetchDest string) bool {
+	return blinkUA && secFetchSite == "" && secFetchMode == "" && secFetchDest == ""
 }
 
 // isAcceptMismatch reports whether a claimed browser UA sent an empty or
@@ -267,6 +287,7 @@ func (a *Analyzer) processHTTPRequest(sig *apiv1.Signal, ip net.IP, asn string, 
 		headerOrder = h
 	}
 	chromeUA := isChromeFamilyUA(userAgent)
+	blinkUA := isBlinkEngineUA(userAgent)
 	if headerOrder != "" {
 		parts := strings.Split(headerOrder, ",")
 		if len(parts) < 5 && a.SignalBuilder != nil {
@@ -275,19 +296,20 @@ func (a *Analyzer) processHTTPRequest(sig *apiv1.Signal, ip net.IP, asn string, 
 				"count":        len(parts),
 			}))
 		}
-		if isMissingSecCH(chromeUA, strings.ToLower(headerOrder)) && a.SignalBuilder != nil {
+		if isMissingSecCH(blinkUA, strings.ToLower(headerOrder)) && a.SignalBuilder != nil {
 			a.SignalBuilder.EmitHeaderAnomaly(ip, asn, org, aidetection.SignalMissingSecCH, sig.Ja4H, sig.Ja4H, sig.Ja4T, createHTTPMetadata(nil))
 		}
 	}
 
-	// Sec-Fetch-* heuristics: real browsers (Chrome 76+, Firefox 90+, Safari 16.4+)
+	// Sec-Fetch-* heuristics: real Chromium/Blink browsers (Chrome 76+, Edge)
 	// auto-generate Sec-Fetch-Site/Mode/Dest/User on every request; these are
-	// stripped from JS/HTTP client control, so a claimed browser UA missing them
-	// entirely is a strong indicator of a scripted client presenting a spoofed UA.
-	// Gated on chromeUA (like the sec-ch check above) to keep this conservative
-	// and avoid false positives on older/less common but legitimate browsers
-	// that may not yet send these headers.
-	if isMissingSecFetch(chromeUA, ctx.SecFetchSite, ctx.SecFetchMode, ctx.SecFetchDest) && a.SignalBuilder != nil {
+	// stripped from JS/HTTP client control, so a claimed Blink-engine UA missing
+	// them entirely is a strong indicator of a scripted client presenting a
+	// spoofed UA. Gated on blinkUA, not chromeUA: Chrome for iOS (CriOS) is
+	// WebKit-based and never sends these headers, same as Safari/Firefox, so
+	// gating on the broader Chrome-family check would flag every real
+	// Chrome-for-iOS user.
+	if isMissingSecFetch(blinkUA, ctx.SecFetchSite, ctx.SecFetchMode, ctx.SecFetchDest) && a.SignalBuilder != nil {
 		a.SignalBuilder.EmitHeaderAnomaly(ip, asn, org, aidetection.SignalMissingSecFetch, sig.Ja4H, sig.Ja4H, sig.Ja4T, createHTTPMetadata(nil))
 	}
 
