@@ -3,6 +3,7 @@ package reputation
 import (
 	"fmt"
 	"math"
+	"sync"
 	"testing"
 	"time"
 )
@@ -48,7 +49,7 @@ func TestDecayExpiresEntriesPastMaxAge(t *testing.T) {
 	e.SetMaxEntryAge(time.Minute)
 	e.Penalize("203.0.113.10", TypeIP, 20, "test")
 
-	entry := e.entries[string(TypeIP)+":203.0.113.10"]
+	entry := e.GetEntry("203.0.113.10")
 	entry.LastSeen = time.Now().Add(-2 * time.Minute)
 	e.decay()
 
@@ -133,7 +134,60 @@ func TestRecordSignalSkipsEmptyKeys(t *testing.T) {
 	if ipScore != 0 || asnScore != 0 {
 		t.Fatalf("expected zero scores for empty keys, got ip=%.4f asn=%.4f", ipScore, asnScore)
 	}
-	if len(e.entries) != 0 {
-		t.Fatalf("expected no entries recorded for empty keys, got %d", len(e.entries))
+	if all := e.GetAllEntries(); len(all) != 0 {
+		t.Fatalf("expected no entries recorded for empty keys, got %d", len(all))
 	}
+}
+
+// TestRecordSignalConcurrentAcrossShards is a regression test for the live
+// production bug this sharded rewrite fixes: the analyzer's AI detection
+// engine has 16 worker goroutines that each call RecordSignal synchronously
+// per detection signal. Under the old single-mutex design this fully
+// serialized all workers (confirmed live: AI engine queue permanently full,
+// roughly half of ~1370 signals/sec silently dropped, container CPU far
+// below capacity - the signature of lock contention rather than raw
+// compute cost). This test hammers RecordSignal/Penalize/Reward/GetEntry
+// concurrently from many goroutines across a spread of IP/ASN/JA4H keys
+// and must pass under -race with no panics or data races.
+func TestRecordSignalConcurrentAcrossShards(t *testing.T) {
+	e := New(time.Hour, 0.98, 100)
+	e.Start()
+	defer e.Stop()
+
+	const goroutines = 64
+	const iterations = 500
+
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for g := 0; g < goroutines; g++ {
+		go func(g int) {
+			defer wg.Done()
+			for i := 0; i < iterations; i++ {
+				ip := fmt.Sprintf("10.%d.%d.%d", g%4, (g+i)%16, i%256)
+				asn := fmt.Sprintf("AS%d", (g*31+i)%20)
+				ja4h := fmt.Sprintf("ja4-%d", (g+i)%10)
+
+				e.RecordSignal(ip, 2.0, asn, 5.0, ja4h, 1.0, "concurrency-test")
+				e.ObserveIP(asn, ip)
+				_ = e.GetScore(ip, TypeIP)
+				_ = e.IsBad(asn, TypeASN)
+				_ = e.GetEntry(ip)
+
+				if i%7 == 0 {
+					e.RewardIP(ip, 1.0, "concurrency-test-reward")
+				}
+				if i%11 == 0 {
+					e.RewardASN(asn, ip, 1.0, "concurrency-test-reward")
+				}
+			}
+		}(g)
+	}
+	wg.Wait()
+
+	all := e.GetAllEntries()
+	if len(all) == 0 {
+		t.Fatalf("expected entries to be recorded across concurrent goroutines, got none")
+	}
+	bad := e.GetBadEntries()
+	t.Logf("recorded %d entries, %d over ban threshold", len(all), len(bad))
 }
