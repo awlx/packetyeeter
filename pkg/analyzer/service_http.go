@@ -25,12 +25,47 @@ var (
 	reCrawlee = regexp.MustCompile(`(?i)(crawlee|apify|apify_client|python-httpx|httpx|aiohttp|python-requests)`)
 )
 
+// honestCrawlerMarkers lists self-identifying crawler tokens that aren't
+// already covered by ja4db.BotKeywordsExtended's generic "bot"/"crawler"/
+// "spider"/"scraper" substrings (e.g. "facebookexternalhit" contains none
+// of those words). Matched case-insensitively against the user agent.
+var honestCrawlerMarkers = []string{"facebookexternalhit", "ia_archiver"}
+
+// isKnownHonestUA reports whether the user agent honestly self-identifies as
+// an automated client/crawler (e.g. "Mozilla/5.0 ... Chrome/W.X.Y.Z Mobile
+// Safari/537.36 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)").
+// Google's and Facebook's crawlers legitimately embed a Chrome/Chromium
+// version string for rendering compatibility while still honestly declaring
+// themselves via a "bot"/"crawler" token or well-known product name
+// elsewhere in the same string - they are not impersonating a real browser.
+func isKnownHonestUA(userAgent string) bool {
+	lowerUA := strings.ToLower(userAgent)
+	for _, keyword := range ja4db.BotKeywordsExtended {
+		if strings.Contains(lowerUA, keyword) {
+			return true
+		}
+	}
+	for _, marker := range honestCrawlerMarkers {
+		if strings.Contains(lowerUA, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 // isChromeFamilyUA reports whether the user agent claims to be a
 // Chromium-family browser (Chrome, Chrome-on-iOS, or Edge). Used to gate
 // several conservative header/TLS heuristics below to browsers that
 // deterministically send certain headers/negotiate certain TLS versions,
 // keeping false-positive risk low for less common but legitimate clients.
+// Honest, self-identifying crawlers (Googlebot, facebookexternalhit, etc.)
+// are excluded even though their UA embeds a Chrome/Chromium version string,
+// since they aren't impersonating a real browser and don't reliably send
+// the same headers a real Chrome/Edge session would.
 func isChromeFamilyUA(userAgent string) bool {
+	if isKnownHonestUA(userAgent) {
+		return false
+	}
 	return strings.Contains(userAgent, "Chrome") || strings.Contains(userAgent, "CriOS") || strings.Contains(userAgent, "Edg/")
 }
 

@@ -21,11 +21,36 @@ func TestIsChromeFamilyUA(t *testing.T) {
 		{"safari", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15", false},
 		{"curl", "curl/8.4.0", false},
 		{"empty", "", false},
+		{"googlebot smartphone crawler", "Mozilla/5.0 (Linux; Android 6.0.1; Nexus 5X Build/MMB29P) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.6367.60 Mobile Safari/537.36 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)", false},
+		{"facebook external hit", "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)", false},
+		{"bingbot chrome-embedded", "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; bingbot/2.0; +http://www.bing.com/bingbot.htm) Chrome/116.0.5845.187 Safari/537.36", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := isChromeFamilyUA(tc.ua); got != tc.want {
 				t.Errorf("isChromeFamilyUA(%q) = %v, want %v", tc.ua, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestIsKnownHonestUA(t *testing.T) {
+	cases := []struct {
+		name string
+		ua   string
+		want bool
+	}{
+		{"googlebot", "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)", true},
+		{"facebook external hit", "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)", true},
+		{"ia_archiver", "ia_archiver (+http://www.alexa.com/site/help/webmasters)", true},
+		{"generic crawler keyword", "SomeCustomCrawler/1.0", true},
+		{"real chrome", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36", false},
+		{"empty", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isKnownHonestUA(tc.ua); got != tc.want {
+				t.Errorf("isKnownHonestUA(%q) = %v, want %v", tc.ua, got, tc.want)
 			}
 		})
 	}
