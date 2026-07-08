@@ -38,18 +38,6 @@ service AnalyzerService {
   rpc Health(google.protobuf.Empty) returns (HealthResponse);
 }
 
-// CollectorService allows the Analyzer to push commands to connected Collectors
-service CollectorService {
-  // Execute a blocking command
-  rpc ExecuteCommand(Command) returns (CommandResult);
-  
-  // Get collector status
-  rpc GetStatus(google.protobuf.Empty) returns (CollectorStatus);
-  
-  // Health check
-  rpc Health(google.protobuf.Empty) returns (HealthResponse);
-}
-
 // Signal represents a detection signal from the collector
 message Signal {
   string id = 1;
@@ -198,12 +186,6 @@ enum CommandType {
   COMMAND_REMOVE_ALLOWLIST_IP = 6;
 }
 
-message CommandResult {
-  string command_id = 1;
-  bool success = 2;
-  string error = 3;
-}
-
 // JA4H Lookup
 message JA4HLookupRequest {
   string fingerprint = 1;
@@ -328,23 +310,4 @@ message HealthResponse {
   string version = 2;
   google.protobuf.Timestamp uptime_since = 3;
   map<string, string> components = 4;  // Component name -> status
-}
-
-// Collector Status
-message CollectorStatus {
-  string collector_id = 1;
-  string interface_name = 2;
-  bool ebpf_attached = 3;
-  bool spoe_running = 4;
-  bool haproxy_running = 5;
-  uint64 blocked_ipv4_count = 6;
-  uint64 blocked_ipv6_count = 7;
-  bool dry_run = 8;
-  google.protobuf.Timestamp started_at = 9;
-  
-  // Counters
-  uint64 tcp_blocks_total = 10;
-  uint64 udp_blocks_total = 11;
-  uint64 icmp_blocks_total = 12;
-  uint64 haproxy_blocks_total = 13;
 }
