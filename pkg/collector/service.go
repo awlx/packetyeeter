@@ -41,6 +41,7 @@ type Config struct {
 	BlockDuration   time.Duration
 	PollInterval    time.Duration // How often to poll eBPF maps and send to analyzer
 	SignalQueueSize int           // Collector signal queue size (default 10000)
+	DryRun          bool          // If true, the collector's own kernel-space detections (bad flags, SYN flood, ICMP/UDP rate limits) log/count but never drop traffic
 }
 
 // Collector is a thin relay layer that:
@@ -155,6 +156,18 @@ func (c *Collector) Start(ctx context.Context) error {
 	}
 	c.Maps = c.Loader.GetMaps()
 	c.Logger.Info("eBPF programs loaded and attached")
+
+	// Enable kernel-space monitor/dry-run mode if requested. This is
+	// independent of the analyzer's own -dry-run flag: it governs whether
+	// the collector's own kernel-level detections (bad flags, SYN-flood
+	// blocklist, ICMP/UDP rate limits) actually drop traffic.
+	if c.Config.DryRun {
+		if err := c.Maps.SetMonitorMode(true); err != nil {
+			c.Logger.WithError(err).Warn("Failed to enable kernel-space monitor mode; enforcement may still drop traffic")
+		} else {
+			c.Logger.Warn("Collector running in DRY-RUN / monitor mode: kernel-space detections will log but not drop traffic")
+		}
+	}
 
 	// Populate the kernel-space allowlist maps so XDP/TC can bypass
 	// allowlisted CIDRs directly, instead of relying solely on the

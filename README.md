@@ -94,7 +94,9 @@ PacketYeeter is a high-performance, eBPF-based DDoS protection and traffic filte
 > **Dashboards**: Prom/Influx dashboards map panels to metrics; see `docs/observability.md`.
 
 11. **Monitor / Dry-Run Mode**
-    *   Run the analyzer with `-dry-run` to log detections and update metrics **without** sending BLOCK commands to the collector. Useful for tuning thresholds without dropping traffic.
+    *   Run the analyzer with `-dry-run` to log detections and update metrics **without** sending BLOCK commands to the collector.
+    *   Run the collector with `-dry-run` to put its own kernel-space detections (bad flags, SYN-flood blocklist, ICMP/UDP rate limits) into log-only mode **without** dropping matching traffic.
+    *   The two flags are independent; for a full dry-run rollout, enable both.
 
 12. **Observability & Metrics**
     *   **Prometheus Exporters**: Each daemon exposes its own metrics endpoint (collector default `:2112`, analyzer default `:9091`) covering block counts, pps rates, reputation, and attack types.
@@ -217,8 +219,10 @@ The `AnalyzerService` gRPC contract (`api/proto/v1/packetyeeter.proto`) exposes 
 
 Start the **analyzer** first (anywhere; no root needed), then the **collector**
 on each protected host pointing at the analyzer's gRPC address. For new
-deployments, start the analyzer with `-dry-run`, review logs and metrics, then
-roll out enforcement gradually after tuning thresholds and allowlists.
+deployments, start both daemons with `-dry-run` (the analyzer's flag
+suppresses BLOCK commands; the collector's flag suppresses its own
+kernel-space drops), review logs and metrics, then roll out enforcement
+gradually after tuning thresholds and allowlists.
 
 ```bash
 # Analyzer (brain) — listens for collectors on :9090, metrics on :9091
@@ -244,6 +248,7 @@ sudo ./packetyeeter-collector -i eth0 -analyzer-addr 127.0.0.1:9090
 | `-block-duration` | `5m` | Default duration to keep an IP blocked. |
 | `-poll-interval` | `1s` | How often to poll the eBPF maps. |
 | `-signal-queue-size` | `10000` | Collector → analyzer signal queue size. |
+| `-dry-run` | `false` | Monitor mode: the collector's own kernel-space detections (bad flags, SYN-flood blocklist, ICMP/UDP rate limits) log/count but never drop traffic. Independent of the analyzer's `-dry-run`, which only suppresses BLOCK commands sent back over gRPC. |
 | `-v` | `false` | Verbose logging. |
 
 ### Analyzer Flags

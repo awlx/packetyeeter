@@ -28,6 +28,7 @@ func main() {
 		blockDuration   = flag.Duration("block-duration", 5*time.Minute, "Default block duration")
 		pollInterval    = flag.Duration("poll-interval", 1*time.Second, "How often to poll eBPF maps")
 		signalQueueSize = flag.Int("signal-queue-size", 10000, "Collector signal queue size")
+		dryRun          = flag.Bool("dry-run", false, "Monitor mode: log/count the collector's own kernel-space detections (bad flags, SYN flood, ICMP/UDP rate limits) without dropping traffic")
 		showVersion     = flag.Bool("version", false, "Print build version and exit")
 		verbose         = flag.Bool("v", false, "Verbose logging")
 	)
@@ -55,6 +56,7 @@ func main() {
 		BlockDuration:   *blockDuration,
 		PollInterval:    *pollInterval,
 		SignalQueueSize: *signalQueueSize,
+		DryRun:          *dryRun,
 	}
 
 	coll, err := collector.New(cfg, logger)
