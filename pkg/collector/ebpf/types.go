@@ -56,6 +56,50 @@ type BadFlagsInfo struct {
 	FlagsRaw uint32
 }
 
+// Structured incident logging reason codes, matching the INCIDENT_*
+// #defines in protector.bpf.c.
+const (
+	IncidentBlockedIP   = 1
+	IncidentPolicyBlock = 2
+	IncidentICMPRate    = 3
+	IncidentUDPRate     = 4
+	IncidentUDPFrag     = 5
+	IncidentBadFlags    = 6
+)
+
+// IncidentReasonName returns a human-readable name for an incident reason
+// code, for logging/metrics labels.
+func IncidentReasonName(reason uint8) string {
+	switch reason {
+	case IncidentBlockedIP:
+		return "blocked_ip"
+	case IncidentPolicyBlock:
+		return "policy_block"
+	case IncidentICMPRate:
+		return "icmp_rate"
+	case IncidentUDPRate:
+		return "udp_rate"
+	case IncidentUDPFrag:
+		return "udp_frag"
+	case IncidentBadFlags:
+		return "bad_flags"
+	default:
+		return "unknown"
+	}
+}
+
+// IncidentEvent mirrors `struct incident_event` in protector.bpf.c. Field
+// order and the explicit two-byte pad must stay in sync with the C struct
+// so binary.Read can decode the perf event's raw bytes directly.
+type IncidentEvent struct {
+	Timestamp uint64
+	SaddrV4   uint32
+	SaddrV6   [16]byte
+	IsV6      uint8
+	Reason    uint8
+	_         [2]byte // padding, matches struct incident_event.pad
+}
+
 // EventMetadata matches the C struct event_metadata from protector.bpf.c
 type EventMetadata struct {
 	SaddrV6        [16]byte

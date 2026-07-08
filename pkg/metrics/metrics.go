@@ -221,6 +221,15 @@ var (
 		Help: "Total anomalies/abuse events by ASN",
 	}, []string{"asn", "org", "type"})
 
+	// KernelIncidents counts structured incident records emitted by the
+	// collector's own kernel-space enforcement (as opposed to blocks
+	// commanded by the analyzer). The "reason" label is a small, fixed
+	// enum (see ebpf.IncidentReasonName), so cardinality stays bounded.
+	KernelIncidents = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "packetyeeter_kernel_incidents_total",
+		Help: "Structured kernel-space enforcement incidents by reason",
+	}, []string{"reason"})
+
 	// AI Detection Engine Metrics (centralized)
 
 	AISignalsTotal = promauto.NewCounter(prometheus.CounterOpts{

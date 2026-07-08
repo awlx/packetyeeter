@@ -78,6 +78,29 @@ struct bad_flags_info {
     __u32 flags_raw;  // raw TCP flag bits (fin,syn,rst,psh,ack,urg,ece,cwr from bit 0)
 };
 
+// Structured incident logging: every XDP_DROP decision made by the
+// collector's own kernel-space enforcement (as opposed to blocks
+// commanded by the analyzer) emits one of these onto the `incidents`
+// perf event array, so operators get a per-packet audit trail (source,
+// reason, timestamp) instead of only aggregate counters.
+#define INCIDENT_BLOCKED_IP   1 // Matched blocked_ips/blocked_ips_v6 (analyzer-issued block)
+#define INCIDENT_POLICY_BLOCK 2 // Matched an operator -policy CIDR with action=block
+#define INCIDENT_ICMP_RATE    3 // ICMP/ICMPv6 rate limit exceeded
+#define INCIDENT_UDP_RATE     4 // UDP rate limit exceeded
+#define INCIDENT_UDP_FRAG     5 // Fragmented UDP/IPv6 fragment extension header
+#define INCIDENT_BAD_FLAGS    6 // SYN+FIN / Xmas / NULL scan TCP flags
+
+struct incident_event {
+    __u64 timestamp;
+    __u32 saddr_v4;
+    __u8  saddr_v6[16];
+    __u8  is_v6;
+    __u8  reason;
+    __u8  pad[2]; // Explicit padding: keeps sizeof() at 32 bytes with no
+                  // compiler-inserted gaps, so the Go-side mirror struct
+                  // can be decoded with a plain sequential binary.Read.
+};
+
 // Per-CIDR policy engine: lets an operator force a BLOCK or MONITOR
 // decision for a whole network range, independent of (and checked before)
 // the rest of the detection pipeline. MONITOR forces monitor-mode
@@ -262,6 +285,16 @@ struct {
     __uint(value_size, sizeof(__u32));
 } events SEC(".maps");
 
+// Perf Event Array for structured incident logging (see struct
+// incident_event above). Kept separate from `events` so userspace can
+// decode a single fixed struct layout per ring instead of a discriminated
+// union.
+struct {
+    __uint(type, BPF_MAP_TYPE_PERF_EVENT_ARRAY);
+    __uint(key_size, sizeof(__u32));
+    __uint(value_size, sizeof(__u32));
+} incidents SEC(".maps");
+
 // Metadata struct
 struct event_metadata {
     __u8  saddr_v6[16];
@@ -333,6 +366,27 @@ static __always_inline __u32 tcp_flags_raw(struct tcphdr *tcp) {
         | ((__u32)tcp->urg << 5)
         | ((__u32)tcp->ece << 6)
         | ((__u32)tcp->cwr << 7);
+}
+
+// emit_incident_v4/v6 record a structured incident (source, reason,
+// timestamp) onto the `incidents` perf event array for every XDP_DROP
+// decision made by the collector's own kernel-space enforcement.
+static __always_inline void emit_incident_v4(struct xdp_md *ctx, __u32 saddr, __u8 reason, __u64 now) {
+    struct incident_event inc = {};
+    inc.timestamp = now;
+    inc.saddr_v4 = saddr;
+    inc.is_v6 = 0;
+    inc.reason = reason;
+    bpf_perf_event_output(ctx, &incidents, BPF_F_CURRENT_CPU, &inc, sizeof(inc));
+}
+
+static __always_inline void emit_incident_v6(struct xdp_md *ctx, struct in6_addr *saddr, __u8 reason, __u64 now) {
+    struct incident_event inc = {};
+    inc.timestamp = now;
+    __builtin_memcpy(inc.saddr_v6, saddr, 16);
+    inc.is_v6 = 1;
+    inc.reason = reason;
+    bpf_perf_event_output(ctx, &incidents, BPF_F_CURRENT_CPU, &inc, sizeof(inc));
 }
 
 // Parse TCP timestamp option
@@ -566,6 +620,8 @@ int xdp_filter(struct xdp_md *ctx) {
         if ((void *)(ip + 1) > data_end)
             return XDP_PASS;
 
+        __u64 now = bpf_ktime_get_ns();
+
         // 0. AllowList Check
         struct lpm_key_v4 key_allowed = { .prefixlen = 32, .data = ip->saddr };
         if (bpf_map_lookup_elem(&allowlist_v4, &key_allowed)) {
@@ -586,6 +642,7 @@ int xdp_filter(struct xdp_md *ctx) {
                     __u64 one = 1;
                     bpf_map_update_elem(&policy_blocks, &saddr_policy, &one, BPF_ANY);
                 }
+                emit_incident_v4(ctx, saddr_policy, INCIDENT_POLICY_BLOCK, now);
                 if (!is_monitor) return XDP_DROP;
             }
         }
@@ -596,11 +653,11 @@ int xdp_filter(struct xdp_md *ctx) {
         __u64 *val = bpf_map_lookup_elem(&blocked_ips, &saddr);
         if (val) {
             __sync_fetch_and_add(val, 1);
+            emit_incident_v4(ctx, saddr, INCIDENT_BLOCKED_IP, now);
             if (!is_monitor) return XDP_DROP;
         }
 
         // 2. ICMP Rate Limit
-        __u64 now = bpf_ktime_get_ns();
         if (ip->protocol == IPPROTO_ICMP) {
              __u32 key_icmp_limit = 0;
              __u32 *icmp_thresh = bpf_map_lookup_elem(&config_map, &key_icmp_limit);
@@ -609,6 +666,7 @@ int xdp_filter(struct xdp_md *ctx) {
              
              // Alert Code 1 = ICMP
              if (check_rate_limit(&icmp_rates, &saddr, &offendoor_events, limit, now, 1)) {
+                 emit_incident_v4(ctx, saddr, INCIDENT_ICMP_RATE, now);
                  if (!is_monitor) return XDP_DROP;
              }
         }
@@ -617,6 +675,7 @@ int xdp_filter(struct xdp_md *ctx) {
         if (ip->protocol == IPPROTO_UDP) {
              // Block Fragmented UDP
              if (ip->frag_off & bpf_htons(IP_MF | IP_OFFSET)) {
+                 emit_incident_v4(ctx, saddr, INCIDENT_UDP_FRAG, now);
                  if (!is_monitor) return XDP_DROP;
              }
              
@@ -628,6 +687,7 @@ int xdp_filter(struct xdp_md *ctx) {
 
              // Alert Code 2 = UDP
              if (check_rate_limit(&udp_rates, &saddr, &offendoor_events, limit, now, 2)) {
+                 emit_incident_v4(ctx, saddr, INCIDENT_UDP_RATE, now);
                  if (!is_monitor) return XDP_DROP;
              }
         }
@@ -644,6 +704,7 @@ int xdp_filter(struct xdp_md *ctx) {
                  info.scan_type = scan_type;
                  info.flags_raw = tcp_flags_raw(tcp);
                  bpf_map_update_elem(&bad_flags, &saddr, &info, BPF_ANY);
+                 emit_incident_v4(ctx, saddr, INCIDENT_BAD_FLAGS, now);
                  if (!is_monitor) return XDP_DROP;
              }
         }
@@ -654,6 +715,7 @@ int xdp_filter(struct xdp_md *ctx) {
             return XDP_PASS;
         
         struct in6_addr saddr = ip6->saddr;
+        __u64 now = bpf_ktime_get_ns();
 
         // 0. AllowList Check
         struct lpm_key_v6 key_allowed;
@@ -676,17 +738,18 @@ int xdp_filter(struct xdp_md *ctx) {
                     __u64 one = 1;
                     bpf_map_update_elem(&policy_blocks_v6, &saddr, &one, BPF_ANY);
                 }
+                emit_incident_v6(ctx, &saddr, INCIDENT_POLICY_BLOCK, now);
                 if (!is_monitor) return XDP_DROP;
             }
         }
 
         __u64 *val = bpf_map_lookup_elem(&blocked_ips_v6, &saddr);
         if (val) {
+            emit_incident_v6(ctx, &saddr, INCIDENT_BLOCKED_IP, now);
             if (!is_monitor) return XDP_DROP;
         }
 
         // IPv6 ICMPv6 Rate Limit
-        __u64 now = bpf_ktime_get_ns();
         if (ip6->nexthdr == IPPROTO_ICMPV6) {
              __u32 key_icmp_limit = 0; // Shared threshold
              __u32 *icmp_thresh = bpf_map_lookup_elem(&config_map, &key_icmp_limit);
@@ -695,6 +758,7 @@ int xdp_filter(struct xdp_md *ctx) {
 
              // Alert Code 1 = ICMP
              if (check_rate_limit(&icmp_rates_v6, &saddr, &offendoor_events_v6, limit, now, 1)) {
+                 emit_incident_v6(ctx, &saddr, INCIDENT_ICMP_RATE, now);
                  if (!is_monitor) return XDP_DROP;
              }
         }
@@ -710,12 +774,14 @@ int xdp_filter(struct xdp_md *ctx) {
 
              // Alert Code 2 = UDP
              if (check_rate_limit(&udp_rates_v6, &saddr, &offendoor_events_v6, limit, now, 2)) {
+                 emit_incident_v6(ctx, &saddr, INCIDENT_UDP_RATE, now);
                  if (!is_monitor) return XDP_DROP;
              }
         }
         // Block IPv6 Fragments
         if (ip6->nexthdr == 44) {
             // It is a fragment.
+            emit_incident_v6(ctx, &saddr, INCIDENT_UDP_FRAG, now);
             if (!is_monitor) return XDP_DROP;
         }
 
@@ -726,10 +792,11 @@ int xdp_filter(struct xdp_md *ctx) {
             int scan_type = check_tcp_flags(tcp);
             if (scan_type != BAD_FLAGS_NONE) {
                 struct bad_flags_info info = {};
-                info.last_seen = bpf_ktime_get_ns();
+                info.last_seen = now;
                 info.scan_type = scan_type;
                 info.flags_raw = tcp_flags_raw(tcp);
                 bpf_map_update_elem(&bad_flags_v6, &saddr, &info, BPF_ANY);
+                emit_incident_v6(ctx, &saddr, INCIDENT_BAD_FLAGS, now);
                 if (!is_monitor) return XDP_DROP;
             }
         }

@@ -71,6 +71,7 @@ func (l *Loader) Load() error {
 		PolicyBlocks:        l.coll.Maps["policy_blocks"],
 		PolicyBlocksV6:      l.coll.Maps["policy_blocks_v6"],
 		Events:              l.coll.Maps["events"],
+		Incidents:           l.coll.Maps["incidents"],
 	}
 
 	return nil
