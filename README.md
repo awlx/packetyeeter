@@ -21,6 +21,12 @@ PacketYeeter is a high-performance, eBPF-based DDoS protection and traffic filte
     *   Allowlisted CIDRs are synced into kernel-space LPM trie maps (`allowlist_v4`/`allowlist_v6`) at startup and updated dynamically when the analyzer pushes allowlist commands, so the XDP program bypasses matching traffic directly; the collector's userspace block-decision path also honors the same list as a second layer of defense. (TC-side handshake/latency tracking still observes allowlisted traffic — it only tracks state, it never blocks.)
     *   Supports both IPv4 and IPv6 CIDRs.
 
+3.5. **Per-CIDR Policy Engine**
+    *   Lets an operator force a `block` or `monitor` decision for a whole network range via the `-policy` flag, checked in XDP right after the allowlist and before every other detection.
+    *   `block` drops all matching traffic outright (still subject to the collector's own `-dry-run`/monitor mode, so a new policy can be tested log-only before it takes effect).
+    *   `monitor` forces monitor-mode for matching sources only — useful for staging a CIDR's blast radius, or for a range that shouldn't be dropped by any detection but isn't fully allowlisted either.
+    *   Policy rules are kernel-space LPM trie maps (`policy_v4`/`policy_v6`), populated once at startup from `-policy`; they are not currently mutated at runtime by the analyzer (unlike the allowlist).
+
 4.  **Volumetric Rate Limiting (ICMP & UDP)**
     *   **ICMP**: Limits the rate of ICMP packets from a single source to prevent ping floods.
     *   **UDP**: Strict rate limiting for UDP traffic to mitigate amplification/flood attacks.
@@ -250,6 +256,7 @@ sudo ./packetyeeter-collector -i eth0 -analyzer-addr 127.0.0.1:9090
 | `-socket` | `/var/run/packetyeeter-collector.sock` | UNIX socket for `yeetctl`. |
 | `-geoip-asn` | `""` | Path to `GeoLite2-ASN.mmdb` for ASN enrichment. |
 | `-allowlist` | `""` | Comma-separated CIDRs to bypass all filtering (IPv4/IPv6). |
+| `-policy` | `""` | Comma-separated per-CIDR policy overrides as `CIDR=action` (`block` or `monitor`), e.g. `203.0.113.0/24=block,198.51.100.0/24=monitor`. |
 | `-block-duration` | `5m` | Default duration to keep an IP blocked. |
 | `-poll-interval` | `1s` | How often to poll the eBPF maps. |
 | `-signal-queue-size` | `10000` | Collector → analyzer signal queue size. |

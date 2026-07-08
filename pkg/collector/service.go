@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -38,6 +39,7 @@ type Config struct {
 	SocketPath      string
 	GeoIPASNPath    string
 	AllowlistCIDRs  string // Comma-separated CIDRs
+	PolicyRules     string // Comma-separated CIDR=action rules (action = block|monitor)
 	BlockDuration   time.Duration
 	PollInterval    time.Duration // How often to poll eBPF maps and send to analyzer
 	SignalQueueSize int           // Collector signal queue size (default 10000)
@@ -63,6 +65,7 @@ type Collector struct {
 	GeoIP       *geoip.Provider
 	Logger      *logrus.Logger
 	allowedNets []*net.IPNet
+	policyRules []ebpf.PolicyRule
 	perfReader  *perf.Reader
 
 	// gRPC connection to analyzer
@@ -145,6 +148,16 @@ func New(cfg Config, logger *logrus.Logger) (*Collector, error) {
 		logger.WithField("count", len(c.allowedNets)).Info("Loaded allowlist CIDRs")
 	}
 
+	// Parse per-CIDR policy engine rules
+	if cfg.PolicyRules != "" {
+		rules, err := parsePolicyRules(cfg.PolicyRules)
+		if err != nil {
+			logger.WithError(err).Warn("Failed to parse -policy rules; ignoring invalid entries")
+		}
+		c.policyRules = rules
+		logger.WithField("count", len(c.policyRules)).Info("Loaded policy engine rules")
+	}
+
 	return c, nil
 }
 
@@ -182,6 +195,16 @@ func (c *Collector) Start(ctx context.Context) error {
 	if len(c.allowedNets) > 0 {
 		if err := c.Maps.SyncAllowlist(c.allowedNets); err != nil {
 			c.Logger.WithError(err).Warn("Failed to fully populate kernel-space allowlist maps")
+		}
+	}
+
+	// Populate the kernel-space per-CIDR policy engine maps (operator
+	// block/monitor overrides configured via -policy).
+	if len(c.policyRules) > 0 {
+		if err := c.Maps.SetPolicies(c.policyRules); err != nil {
+			c.Logger.WithError(err).Warn("Failed to fully populate kernel-space policy engine maps")
+		} else {
+			c.Logger.WithField("count", len(c.policyRules)).Info("Kernel-space policy engine rules active")
 		}
 	}
 
@@ -1265,4 +1288,57 @@ func parseAllowlist(cidrs string, logger *logrus.Logger) []*net.IPNet {
 	}
 
 	return nets
+}
+
+// parsePolicyRules parses -policy flag values of the form
+// "CIDR=action,CIDR=action,..." (action = "block" or "monitor") into
+// ebpf.PolicyRule entries. "=" is used (not ":") because IPv6 addresses
+// contain colons, which would make CIDR:action ambiguous to split.
+// Invalid entries are skipped with an error collected via errors.Join;
+// parsing continues so a single typo doesn't silently disable every rule.
+func parsePolicyRules(spec string) ([]ebpf.PolicyRule, error) {
+	if spec == "" {
+		return nil, nil
+	}
+
+	var rules []ebpf.PolicyRule
+	var errs []error
+	for _, entry := range strings.Split(spec, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+
+		idx := strings.LastIndex(entry, "=")
+		if idx < 0 {
+			errs = append(errs, fmt.Errorf("invalid policy entry %q (want CIDR=action)", entry))
+			continue
+		}
+		cidr := strings.TrimSpace(entry[:idx])
+		actionStr := strings.TrimSpace(entry[idx+1:])
+
+		if !strings.Contains(cidr, "/") {
+			if strings.Contains(cidr, ":") {
+				cidr = cidr + "/128"
+			} else {
+				cidr = cidr + "/32"
+			}
+		}
+
+		_, ipNet, err := net.ParseCIDR(cidr)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("invalid CIDR %q in policy entry %q: %w", entry[:idx], entry, err))
+			continue
+		}
+
+		action, err := ebpf.ParsePolicyAction(actionStr)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("invalid policy entry %q: %w", entry, err))
+			continue
+		}
+
+		rules = append(rules, ebpf.PolicyRule{Net: ipNet, Action: action})
+	}
+
+	return rules, errors.Join(errs...)
 }
