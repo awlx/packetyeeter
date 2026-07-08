@@ -5,6 +5,8 @@ on:
   push:
     branches:
       - main
+    tags:
+      - "v*.*.*"
 
 jobs:
   build-test:
@@ -56,8 +58,11 @@ jobs:
       - name: Build collector
         run: make collector
 
-      - name: Build Docker image
-        run: docker build .
+      - name: Build analyzer Docker image
+        run: docker build --target analyzer -t packetyeeter-analyzer:ci .
+
+      - name: Build collector Docker image
+        run: docker build --target collector -t packetyeeter-collector:ci .
 
   e2e-haproxy:
     runs-on: ubuntu-latest
@@ -111,3 +116,113 @@ jobs:
 
       - name: Run kernel eBPF/XDP block-enforcement e2e test
         run: make e2e-ebpf-test
+
+  # Builds and publishes release artifacts (binaries, .deb packages,
+  # Docker images) on every push to main and on version tags. Gated on
+  # build-test so nothing broken gets published. Binaries/images are
+  # linux/amd64 only for the collector and analyzer (eBPF and onnxruntime
+  # cgo constraints -- see Makefile's dist-binaries target); yeetctl,
+  # yeetexplorer, and labeler additionally ship linux/arm64 builds since
+  # they're pure Go.
+  release:
+    needs: build-test
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history so `git describe` finds tags
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang llvm libbpf-dev linux-libc-dev
+
+      - name: Install protobuf tools
+        run: make install-buf
+
+      - name: Install nfpm
+        run: make install-nfpm
+
+      - name: Build release binaries
+        run: make dist-binaries
+
+      - name: Build .deb packages
+        run: make packages
+
+      - name: Upload binaries and packages as build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: packetyeeter-release-${{ github.sha }}
+          path: dist/*
+          if-no-files-found: error
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute Docker image tags
+        id: tags
+        run: |
+          REPO="ghcr.io/${{ github.repository_owner }}"
+          SHA="${{ github.sha }}"
+          {
+            echo "analyzer_tags<<EOF"
+            echo "$REPO/packetyeeter-analyzer:$SHA"
+            if [[ "${{ github.ref_type }}" == "tag" ]]; then
+              echo "$REPO/packetyeeter-analyzer:${{ github.ref_name }}"
+              echo "$REPO/packetyeeter-analyzer:latest"
+            else
+              echo "$REPO/packetyeeter-analyzer:main"
+            fi
+            echo "EOF"
+            echo "collector_tags<<EOF"
+            echo "$REPO/packetyeeter-collector:$SHA"
+            if [[ "${{ github.ref_type }}" == "tag" ]]; then
+              echo "$REPO/packetyeeter-collector:${{ github.ref_name }}"
+              echo "$REPO/packetyeeter-collector:latest"
+            else
+              echo "$REPO/packetyeeter-collector:main"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and push analyzer image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: analyzer
+          push: true
+          tags: ${{ steps.tags.outputs.analyzer_tags }}
+
+      - name: Build and push collector image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: collector
+          push: true
+          tags: ${{ steps.tags.outputs.collector_tags }}
+
+      - name: Create GitHub Release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

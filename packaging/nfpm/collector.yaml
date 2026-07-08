@@ -1,0 +1,47 @@
+# nfpm package definition for packetyeeter-collector.
+# Build with: nfpm package --config packaging/nfpm/collector.yaml --packager deb --target dist/
+#
+# Requires the packetyeeter-collector binary to already be built at the
+# repo root (see `make collector`) and the following env vars set:
+#   VERSION - package version (e.g. 1.2.3, no leading "v")
+#   ARCH    - target arch (amd64 or arm64; collector is amd64-only today
+#             since its eBPF object is compiled for the host architecture)
+name: packetyeeter-collector
+arch: ${ARCH}
+platform: linux
+version: ${VERSION}
+section: net
+priority: optional
+maintainer: PacketYeeter maintainers
+homepage: https://github.com/awlx/packetyeeter
+license: MIT
+description: |
+  PacketYeeter Collector - eBPF/XDP-based DDoS packet collection and
+  enforcement daemon. Runs on protected Linux hosts, loads XDP/TC eBPF
+  programs, enforces blocks, exposes metrics, and streams signals to the
+  analyzer.
+
+depends:
+  - libc6
+
+contents:
+  - src: ./packetyeeter-collector
+    dst: /opt/packetyeeter/collector/packetyeeter-collector
+    file_info:
+      mode: 0755
+
+  - src: ./packetyeeter-collector.service
+    dst: /etc/systemd/system/packetyeeter-collector.service
+    file_info:
+      mode: 0644
+
+  - src: ./packetyeeter-collector.default
+    dst: /etc/default/packetyeeter-collector
+    type: config|noreplace
+    file_info:
+      mode: 0644
+
+scripts:
+  postinstall: packaging/nfpm/scripts/collector-postinstall.sh
+  preremove: packaging/nfpm/scripts/collector-preremove.sh
+  postremove: packaging/nfpm/scripts/collector-postremove.sh
