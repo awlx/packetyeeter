@@ -154,7 +154,6 @@ The `AnalyzerService` gRPC contract (`api/proto/v1/packetyeeter.proto`) exposes 
 | `yeetctl` | `cmd/yeetctl` | CLI to inspect collector state over a UNIX socket. |
 | `yeetexplorer` | `cmd/yeetexplorer` | Interactive terminal (TUI) dashboard for live inspection. |
 | `labeler` | `cmd/labeler` | Offline tool to label captured sessions for ML training. |
-| `packetyeeter` (legacy) | repo root (`make legacy`) | Optional combined single-binary build for backwards compatibility. |
 
 ## Prerequisites
 
@@ -181,7 +180,6 @@ The `AnalyzerService` gRPC contract (`api/proto/v1/packetyeeter.proto`) exposes 
     make collector  # packetyeeter-collector only (needs the compiled BPF object, see below)
     make analyzer   # packetyeeter-analyzer only
     make yeetctl    # yeetctl CLI
-    make legacy     # optional combined single-binary build
     ```
 
     The BPF object (`pkg/collector/ebpf/c/protector.bpf.o`) is embedded into the

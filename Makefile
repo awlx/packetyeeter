@@ -19,7 +19,7 @@ LDFLAGS := -s -w \
 	-X PacketYeeter/pkg/buildinfo.Commit=$(COMMIT) \
 	-X PacketYeeter/pkg/buildinfo.BuildDate=$(BUILD_DATE)
 
-.PHONY: all proto bpf collector analyzer legacy yeetctl clean install-buf deps lint test portable-test linux install-services run-collector run-analyzer
+.PHONY: all proto bpf collector analyzer yeetctl clean install-buf deps lint test portable-test linux install-services run-collector run-analyzer
 
 # Default target
 all: proto collector analyzer
@@ -47,11 +47,6 @@ collector: proto bpf
 analyzer: proto
 	@echo "Building packetyeeter-analyzer..."
 	$(GO) build -ldflags="$(LDFLAGS)" -o packetyeeter-analyzer ./cmd/analyzer
-
-# Build legacy combined daemon (for backwards compatibility)
-legacy: proto
-	@echo "Building packetyeeter (legacy combined)..."
-	$(GO) build -ldflags="$(LDFLAGS)" -o packetyeeter .
 
 # Build CLI tool
 yeetctl: proto
