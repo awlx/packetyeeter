@@ -96,8 +96,8 @@ func TestVerifyCrawlerResolverFailureIsDeterministic(t *testing.T) {
 	v := newCrawlerVerifier(nil, resolver, time.Nanosecond, time.Minute)
 
 	status := v.VerifyCrawler(net.ParseIP("192.0.2.10"), "Googlebot/2.1")
-	if status != VerificationFailed {
-		t.Fatalf("expected failed verification on resolver error, got %s", status)
+	if status != VerificationUnknown {
+		t.Fatalf("expected unknown verification on resolver error (no PTR isn't evidence of anything), got %s", status)
 	}
 	if resolver.addrCalls != 1 {
 		t.Fatalf("expected exactly one reverse DNS lookup, got %d", resolver.addrCalls)
@@ -127,11 +127,12 @@ func TestVerificationCacheRespectsSizeCap(t *testing.T) {
 	}
 }
 
-// TestNegativeVerificationExpiresBeforePositiveTTL demonstrates that a
-// failed/negative verification result is cached for a much shorter TTL than
-// a successful one, so a transient failure (or an attacker poisoning the
-// cache for a victim IP) self-heals and a legitimate crawler is
-// re-verified well before the full positive-result TTL would elapse.
+// TestNegativeVerificationExpiresBeforePositiveTTL demonstrates that an
+// unresolved/negative verification result is cached for a much shorter TTL
+// than a successful one, so a transient DNS failure or a not-yet-configured
+// PTR record (or an attacker poisoning the cache for a victim IP) self-heals
+// and a legitimate crawler is re-verified well before the full positive-
+// result TTL would elapse.
 func TestNegativeVerificationExpiresBeforePositiveTTL(t *testing.T) {
 	ip := net.ParseIP("66.249.66.5")
 	resolver := &fakeCrawlerResolver{err: errors.New("dns timeout")}
@@ -142,10 +143,10 @@ func TestNegativeVerificationExpiresBeforePositiveTTL(t *testing.T) {
 	clock := &fakeClock{t: time.Now()}
 	v.now = clock.now
 
-	// First request fails DNS verification (negative cache entry).
+	// First request can't complete DNS verification (negative/unknown cache entry).
 	status := v.VerifyCrawler(ip, "Mozilla/5.0 Googlebot/2.1")
-	if status != VerificationFailed {
-		t.Fatalf("expected initial verification to fail, got %s", status)
+	if status != VerificationUnknown {
+		t.Fatalf("expected initial verification to be unknown, got %s", status)
 	}
 	if resolver.addrCalls != 1 {
 		t.Fatalf("expected one reverse DNS lookup, got %d", resolver.addrCalls)
@@ -156,7 +157,7 @@ func TestNegativeVerificationExpiresBeforePositiveTTL(t *testing.T) {
 
 	// The transient failure has "healed" (DNS now resolves correctly), and
 	// because the negative entry expired quickly, the legitimate crawler is
-	// re-verified rather than being stuck with the stale failure.
+	// re-verified rather than being stuck with the stale unknown result.
 	resolver.err = nil
 	resolver.names = []string{"crawl-66-249-66-5.googlebot.com."}
 	resolver.ips = []net.IPAddr{{IP: ip}}
@@ -168,5 +169,21 @@ func TestNegativeVerificationExpiresBeforePositiveTTL(t *testing.T) {
 	}
 	if resolver.addrCalls != 2 {
 		t.Fatalf("expected negative cache entry to expire and trigger a second lookup, got %d calls", resolver.addrCalls)
+	}
+}
+
+// TestVerifyCrawlerPTRMismatchIsFailed verifies that a PTR record which
+// *does* resolve, but to a hostname that doesn't match any domain expected
+// for the claimed crawler, is still treated as an active verification
+// failure (distinct from the "no PTR at all" case above) since it's a much
+// stronger signal that the user agent's crawler claim doesn't match reality.
+func TestVerifyCrawlerPTRMismatchIsFailed(t *testing.T) {
+	ip := net.ParseIP("203.0.113.50")
+	resolver := &fakeCrawlerResolver{names: []string{"some-other-host.example.net."}}
+	v := newCrawlerVerifier(nil, resolver, time.Second, time.Minute)
+
+	status := v.VerifyCrawler(ip, "Mozilla/5.0 Googlebot/2.1")
+	if status != VerificationFailed {
+		t.Fatalf("expected a PTR record resolving to an unrelated domain to be a verification failure, got %s", status)
 	}
 }

@@ -170,15 +170,27 @@ func (v *CrawlerVerifier) verifyCrawlerUncached(ip net.IP, claimedBot string) Ve
 	// Perform reverse DNS lookup
 	names, err := v.resolver.LookupAddr(ctx, ip.String())
 	if err != nil {
+		// A DNS lookup error (including NXDOMAIN, i.e. no PTR record at all)
+		// is not evidence of anything - it just means we couldn't check.
+		// Many legitimate crawler operators (e.g. Meta's meta-externalagent)
+		// don't consistently publish PTR records for their crawler ranges,
+		// so treating "no PTR" the same as "actively contradicts the claim"
+		// (VerificationFailed) produced real false positives in production:
+		// a genuine Meta crawler IP (confirmed via WHOIS) got scored as
+		// verification-failed purely because it had no PTR record, which
+		// fed a confidence bump that pushed it over the block threshold.
+		// Report VerificationUnknown here instead so "couldn't determine"
+		// doesn't get penalized the same as "confirmed not who it claims
+		// to be".
 		logrus.WithFields(logrus.Fields{
 			"ip":    ip.String(),
 			"error": err,
 		}).Debug("Failed reverse DNS lookup")
-		return VerificationFailed
+		return VerificationUnknown
 	}
 
 	if len(names) == 0 {
-		return VerificationFailed
+		return VerificationUnknown
 	}
 
 	// Check if any reverse DNS name matches verified domains
@@ -195,6 +207,10 @@ func (v *CrawlerVerifier) verifyCrawlerUncached(ip net.IP, claimedBot string) Ve
 		}
 	}
 
+	// A PTR record exists but resolves to a hostname that doesn't match any
+	// expected domain for the claimed crawler - this is a real signal
+	// (someone spoofing a well-known crawler's user agent from unrelated
+	// infrastructure), unlike the "no PTR at all" case above.
 	return VerificationFailed
 }
 
@@ -234,10 +250,12 @@ func (v *CrawlerVerifier) storeVerification(cacheKey string, status Verification
 	defer v.cacheMu.Unlock()
 
 	ttl := v.cacheTTL
-	if status == VerificationFailed {
-		// Negative results get a much shorter TTL so transient DNS failures
-		// (or an attacker deliberately poisoning a victim IP's entry) don't
-		// deny verified status to a legitimate crawler for the full TTL.
+	if status == VerificationFailed || status == VerificationUnknown {
+		// Negative/indeterminate results get a much shorter TTL so
+		// transient DNS failures, missing PTR records that get configured
+		// later, or an attacker deliberately poisoning a victim IP's entry
+		// don't deny verified status to a legitimate crawler for the full
+		// TTL.
 		ttl = v.negativeCacheTTL
 	}
 
