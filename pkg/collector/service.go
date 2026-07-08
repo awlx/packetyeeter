@@ -1289,39 +1289,104 @@ func (c *Collector) sendSignal(signal *apiv1.Signal) {
 	}
 }
 
+// signalSendTimeout bounds how long signalSender waits for a single
+// stream.Send() call to the analyzer before treating the connection as
+// stuck and forcing a reconnect. Without this, a stalled/slow-reading
+// analyzer can block the single sender goroutine indefinitely: the
+// signal queue then fills up silently ("queuing but not processing")
+// while manageAnalyzerConnection never notices anything is wrong, since
+// it only detects disconnects via a failing stream.Recv().
+const signalSendTimeout = 2 * time.Second
+
 // signalSender drains the signal queue and sends to analyzer
 func (c *Collector) signalSender() {
 	defer c.wg.Done()
 
 	c.Logger.Info("Signal sender goroutine started")
 
+	depthTicker := time.NewTicker(time.Second)
+	defer depthTicker.Stop()
+
 	for {
 		select {
 		case <-c.ctx.Done():
 			c.Logger.Info("Signal sender stopping")
 			return
+		case <-depthTicker.C:
+			metrics.SPOEQueueDepth.Set(float64(len(c.signalQueue)))
 		case signal := <-c.signalQueue:
 			if !c.connected.Load() {
 				c.Logger.Debug("Not connected to analyzer, skipping signal")
 				continue // Not connected, skip
 			}
 
-			start := time.Now()
+			// Copy the stream reference under the lock, then send
+			// outside of it. Holding c.mu across the (potentially
+			// blocking) Send() call would also block connectToAnalyzer
+			// and Stop() from acquiring the same mutex, preventing any
+			// reconnect from ever happening while a send is stuck.
 			c.mu.Lock()
-			if c.signalStream != nil {
-				if err := c.signalStream.Send(signal); err != nil {
-					c.Logger.WithError(err).Warn("Failed to send signal to analyzer")
-				} else {
-					c.Logger.WithFields(logrus.Fields{
-						"type": signal.Type.String(),
-						"ip":   net.IP(signal.Ip).String(),
-					}).Debug("Signal sent to analyzer")
-				}
-			}
+			stream := c.signalStream
 			c.mu.Unlock()
+			if stream == nil {
+				continue
+			}
+
+			start := time.Now()
+			if err := c.sendSignalWithTimeout(stream, signal, signalSendTimeout); err != nil {
+				c.Logger.WithError(err).Warn("Failed to send signal to analyzer")
+				if errors.Is(err, errSignalSendTimedOut) {
+					// The stream appears stuck (e.g. analyzer stopped
+					// reading). Tear down the connection so
+					// manageAnalyzerConnection redials immediately
+					// instead of silently backlogging the queue.
+					c.resetAnalyzerConnection()
+				}
+			} else {
+				c.Logger.WithFields(logrus.Fields{
+					"type": signal.Type.String(),
+					"ip":   net.IP(signal.Ip).String(),
+				}).Debug("Signal sent to analyzer")
+			}
 			metrics.SPOEProcessingLatency.Observe(time.Since(start).Seconds())
 		}
 	}
+}
+
+var errSignalSendTimedOut = errors.New("timed out sending signal to analyzer")
+
+// sendSignalWithTimeout calls stream.Send in a goroutine and bounds how
+// long we wait for it to return. gRPC's ClientStream.Send does not accept
+// a per-call context/deadline, so this is the only way to detect a stuck
+// send without blocking the sender goroutine forever.
+func (c *Collector) sendSignalWithTimeout(stream apiv1.AnalyzerService_StreamSignalsClient, signal *apiv1.Signal, timeout time.Duration) error {
+	done := make(chan error, 1)
+	go func() {
+		done <- stream.Send(signal)
+	}()
+
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(timeout):
+		return errSignalSendTimedOut
+	}
+}
+
+// resetAnalyzerConnection tears down the current analyzer connection so
+// manageAnalyzerConnection's loop redials on its next iteration, instead
+// of waiting for a Recv() error that may never come while Send() is
+// wedged on a half-broken stream.
+func (c *Collector) resetAnalyzerConnection() {
+	c.mu.Lock()
+	if c.analyzerConn != nil {
+		c.analyzerConn.Close()
+		c.analyzerConn = nil
+		c.analyzerClient = nil
+		c.signalStream = nil
+	}
+	c.mu.Unlock()
+	c.connected.Store(false)
 }
 
 // SPOE callback implementations - these forward to analyzer
