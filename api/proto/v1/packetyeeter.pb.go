@@ -935,66 +935,6 @@ func (x *Command) GetSource() string {
 	return ""
 }
 
-type CommandResult struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	CommandId     string                 `protobuf:"bytes,1,opt,name=command_id,json=commandId,proto3" json:"command_id,omitempty"`
-	Success       bool                   `protobuf:"varint,2,opt,name=success,proto3" json:"success,omitempty"`
-	Error         string                 `protobuf:"bytes,3,opt,name=error,proto3" json:"error,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *CommandResult) Reset() {
-	*x = CommandResult{}
-	mi := &file_v1_packetyeeter_proto_msgTypes[4]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *CommandResult) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*CommandResult) ProtoMessage() {}
-
-func (x *CommandResult) ProtoReflect() protoreflect.Message {
-	mi := &file_v1_packetyeeter_proto_msgTypes[4]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use CommandResult.ProtoReflect.Descriptor instead.
-func (*CommandResult) Descriptor() ([]byte, []int) {
-	return file_v1_packetyeeter_proto_rawDescGZIP(), []int{4}
-}
-
-func (x *CommandResult) GetCommandId() string {
-	if x != nil {
-		return x.CommandId
-	}
-	return ""
-}
-
-func (x *CommandResult) GetSuccess() bool {
-	if x != nil {
-		return x.Success
-	}
-	return false
-}
-
-func (x *CommandResult) GetError() string {
-	if x != nil {
-		return x.Error
-	}
-	return ""
-}
-
 // JA4H Lookup
 type JA4HLookupRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -1005,7 +945,7 @@ type JA4HLookupRequest struct {
 
 func (x *JA4HLookupRequest) Reset() {
 	*x = JA4HLookupRequest{}
-	mi := &file_v1_packetyeeter_proto_msgTypes[5]
+	mi := &file_v1_packetyeeter_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1017,7 +957,7 @@ func (x *JA4HLookupRequest) String() string {
 func (*JA4HLookupRequest) ProtoMessage() {}
 
 func (x *JA4HLookupRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_v1_packetyeeter_proto_msgTypes[5]
+	mi := &file_v1_packetyeeter_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1030,7 +970,7 @@ func (x *JA4HLookupRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JA4HLookupRequest.ProtoReflect.Descriptor instead.
 func (*JA4HLookupRequest) Descriptor() ([]byte, []int) {
-	return file_v1_packetyeeter_proto_rawDescGZIP(), []int{5}
+	return file_v1_packetyeeter_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *JA4HLookupRequest) GetFingerprint() string {
@@ -1056,7 +996,7 @@ type JA4HLookupResponse struct {
 
 func (x *JA4HLookupResponse) Reset() {
 	*x = JA4HLookupResponse{}
-	mi := &file_v1_packetyeeter_proto_msgTypes[6]
+	mi := &file_v1_packetyeeter_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1068,7 +1008,7 @@ func (x *JA4HLookupResponse) String() string {
 func (*JA4HLookupResponse) ProtoMessage() {}
 
 func (x *JA4HLookupResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_v1_packetyeeter_proto_msgTypes[6]
+	mi := &file_v1_packetyeeter_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1081,7 +1021,7 @@ func (x *JA4HLookupResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JA4HLookupResponse.ProtoReflect.Descriptor instead.
 func (*JA4HLookupResponse) Descriptor() ([]byte, []int) {
-	return file_v1_packetyeeter_proto_rawDescGZIP(), []int{6}
+	return file_v1_packetyeeter_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *JA4HLookupResponse) GetFound() bool {
@@ -1151,7 +1091,7 @@ type JA4TLookupRequest struct {
 
 func (x *JA4TLookupRequest) Reset() {
 	*x = JA4TLookupRequest{}
-	mi := &file_v1_packetyeeter_proto_msgTypes[7]
+	mi := &file_v1_packetyeeter_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1163,7 +1103,7 @@ func (x *JA4TLookupRequest) String() string {
 func (*JA4TLookupRequest) ProtoMessage() {}
 
 func (x *JA4TLookupRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_v1_packetyeeter_proto_msgTypes[7]
+	mi := &file_v1_packetyeeter_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1176,7 +1116,7 @@ func (x *JA4TLookupRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JA4TLookupRequest.ProtoReflect.Descriptor instead.
 func (*JA4TLookupRequest) Descriptor() ([]byte, []int) {
-	return file_v1_packetyeeter_proto_rawDescGZIP(), []int{7}
+	return file_v1_packetyeeter_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *JA4TLookupRequest) GetFingerprint() string {
@@ -1205,7 +1145,7 @@ type JA4TLookupResponse struct {
 
 func (x *JA4TLookupResponse) Reset() {
 	*x = JA4TLookupResponse{}
-	mi := &file_v1_packetyeeter_proto_msgTypes[8]
+	mi := &file_v1_packetyeeter_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1217,7 +1157,7 @@ func (x *JA4TLookupResponse) String() string {
 func (*JA4TLookupResponse) ProtoMessage() {}
 
 func (x *JA4TLookupResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_v1_packetyeeter_proto_msgTypes[8]
+	mi := &file_v1_packetyeeter_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1230,7 +1170,7 @@ func (x *JA4TLookupResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JA4TLookupResponse.ProtoReflect.Descriptor instead.
 func (*JA4TLookupResponse) Descriptor() ([]byte, []int) {
-	return file_v1_packetyeeter_proto_rawDescGZIP(), []int{8}
+	return file_v1_packetyeeter_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *JA4TLookupResponse) GetSuspicious() bool {
@@ -1273,7 +1213,7 @@ type BotVerifyRequest struct {
 
 func (x *BotVerifyRequest) Reset() {
 	*x = BotVerifyRequest{}
-	mi := &file_v1_packetyeeter_proto_msgTypes[9]
+	mi := &file_v1_packetyeeter_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1285,7 +1225,7 @@ func (x *BotVerifyRequest) String() string {
 func (*BotVerifyRequest) ProtoMessage() {}
 
 func (x *BotVerifyRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_v1_packetyeeter_proto_msgTypes[9]
+	mi := &file_v1_packetyeeter_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1298,7 +1238,7 @@ func (x *BotVerifyRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BotVerifyRequest.ProtoReflect.Descriptor instead.
 func (*BotVerifyRequest) Descriptor() ([]byte, []int) {
-	return file_v1_packetyeeter_proto_rawDescGZIP(), []int{9}
+	return file_v1_packetyeeter_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *BotVerifyRequest) GetIp() []byte {
@@ -1337,7 +1277,7 @@ type BotVerifyResponse struct {
 
 func (x *BotVerifyResponse) Reset() {
 	*x = BotVerifyResponse{}
-	mi := &file_v1_packetyeeter_proto_msgTypes[10]
+	mi := &file_v1_packetyeeter_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1349,7 +1289,7 @@ func (x *BotVerifyResponse) String() string {
 func (*BotVerifyResponse) ProtoMessage() {}
 
 func (x *BotVerifyResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_v1_packetyeeter_proto_msgTypes[10]
+	mi := &file_v1_packetyeeter_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1362,7 +1302,7 @@ func (x *BotVerifyResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BotVerifyResponse.ProtoReflect.Descriptor instead.
 func (*BotVerifyResponse) Descriptor() ([]byte, []int) {
-	return file_v1_packetyeeter_proto_rawDescGZIP(), []int{10}
+	return file_v1_packetyeeter_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *BotVerifyResponse) GetIsVerified() bool {
@@ -1425,7 +1365,7 @@ type AICrawlerVerifyRequest struct {
 
 func (x *AICrawlerVerifyRequest) Reset() {
 	*x = AICrawlerVerifyRequest{}
-	mi := &file_v1_packetyeeter_proto_msgTypes[11]
+	mi := &file_v1_packetyeeter_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1437,7 +1377,7 @@ func (x *AICrawlerVerifyRequest) String() string {
 func (*AICrawlerVerifyRequest) ProtoMessage() {}
 
 func (x *AICrawlerVerifyRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_v1_packetyeeter_proto_msgTypes[11]
+	mi := &file_v1_packetyeeter_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1450,7 +1390,7 @@ func (x *AICrawlerVerifyRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AICrawlerVerifyRequest.ProtoReflect.Descriptor instead.
 func (*AICrawlerVerifyRequest) Descriptor() ([]byte, []int) {
-	return file_v1_packetyeeter_proto_rawDescGZIP(), []int{11}
+	return file_v1_packetyeeter_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *AICrawlerVerifyRequest) GetIp() []byte {
@@ -1478,7 +1418,7 @@ type AICrawlerVerifyResponse struct {
 
 func (x *AICrawlerVerifyResponse) Reset() {
 	*x = AICrawlerVerifyResponse{}
-	mi := &file_v1_packetyeeter_proto_msgTypes[12]
+	mi := &file_v1_packetyeeter_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1490,7 +1430,7 @@ func (x *AICrawlerVerifyResponse) String() string {
 func (*AICrawlerVerifyResponse) ProtoMessage() {}
 
 func (x *AICrawlerVerifyResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_v1_packetyeeter_proto_msgTypes[12]
+	mi := &file_v1_packetyeeter_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1503,7 +1443,7 @@ func (x *AICrawlerVerifyResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AICrawlerVerifyResponse.ProtoReflect.Descriptor instead.
 func (*AICrawlerVerifyResponse) Descriptor() ([]byte, []int) {
-	return file_v1_packetyeeter_proto_rawDescGZIP(), []int{12}
+	return file_v1_packetyeeter_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *AICrawlerVerifyResponse) GetIsVerified() bool {
@@ -1538,7 +1478,7 @@ type ThreatIntelRequest struct {
 
 func (x *ThreatIntelRequest) Reset() {
 	*x = ThreatIntelRequest{}
-	mi := &file_v1_packetyeeter_proto_msgTypes[13]
+	mi := &file_v1_packetyeeter_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1550,7 +1490,7 @@ func (x *ThreatIntelRequest) String() string {
 func (*ThreatIntelRequest) ProtoMessage() {}
 
 func (x *ThreatIntelRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_v1_packetyeeter_proto_msgTypes[13]
+	mi := &file_v1_packetyeeter_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1563,7 +1503,7 @@ func (x *ThreatIntelRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ThreatIntelRequest.ProtoReflect.Descriptor instead.
 func (*ThreatIntelRequest) Descriptor() ([]byte, []int) {
-	return file_v1_packetyeeter_proto_rawDescGZIP(), []int{13}
+	return file_v1_packetyeeter_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *ThreatIntelRequest) GetIp() []byte {
@@ -1598,7 +1538,7 @@ type ThreatIntelResponse struct {
 
 func (x *ThreatIntelResponse) Reset() {
 	*x = ThreatIntelResponse{}
-	mi := &file_v1_packetyeeter_proto_msgTypes[14]
+	mi := &file_v1_packetyeeter_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1610,7 +1550,7 @@ func (x *ThreatIntelResponse) String() string {
 func (*ThreatIntelResponse) ProtoMessage() {}
 
 func (x *ThreatIntelResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_v1_packetyeeter_proto_msgTypes[14]
+	mi := &file_v1_packetyeeter_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1623,7 +1563,7 @@ func (x *ThreatIntelResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ThreatIntelResponse.ProtoReflect.Descriptor instead.
 func (*ThreatIntelResponse) Descriptor() ([]byte, []int) {
-	return file_v1_packetyeeter_proto_rawDescGZIP(), []int{14}
+	return file_v1_packetyeeter_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *ThreatIntelResponse) GetFound() bool {
@@ -1707,7 +1647,7 @@ type ReputationRequest struct {
 
 func (x *ReputationRequest) Reset() {
 	*x = ReputationRequest{}
-	mi := &file_v1_packetyeeter_proto_msgTypes[15]
+	mi := &file_v1_packetyeeter_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1719,7 +1659,7 @@ func (x *ReputationRequest) String() string {
 func (*ReputationRequest) ProtoMessage() {}
 
 func (x *ReputationRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_v1_packetyeeter_proto_msgTypes[15]
+	mi := &file_v1_packetyeeter_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1732,7 +1672,7 @@ func (x *ReputationRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReputationRequest.ProtoReflect.Descriptor instead.
 func (*ReputationRequest) Descriptor() ([]byte, []int) {
-	return file_v1_packetyeeter_proto_rawDescGZIP(), []int{15}
+	return file_v1_packetyeeter_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *ReputationRequest) GetKey() string {
@@ -1762,7 +1702,7 @@ type ReputationResponse struct {
 
 func (x *ReputationResponse) Reset() {
 	*x = ReputationResponse{}
-	mi := &file_v1_packetyeeter_proto_msgTypes[16]
+	mi := &file_v1_packetyeeter_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1774,7 +1714,7 @@ func (x *ReputationResponse) String() string {
 func (*ReputationResponse) ProtoMessage() {}
 
 func (x *ReputationResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_v1_packetyeeter_proto_msgTypes[16]
+	mi := &file_v1_packetyeeter_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1787,7 +1727,7 @@ func (x *ReputationResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReputationResponse.ProtoReflect.Descriptor instead.
 func (*ReputationResponse) Descriptor() ([]byte, []int) {
-	return file_v1_packetyeeter_proto_rawDescGZIP(), []int{16}
+	return file_v1_packetyeeter_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *ReputationResponse) GetScore() float64 {
@@ -1839,7 +1779,7 @@ type BlockReport struct {
 
 func (x *BlockReport) Reset() {
 	*x = BlockReport{}
-	mi := &file_v1_packetyeeter_proto_msgTypes[17]
+	mi := &file_v1_packetyeeter_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1851,7 +1791,7 @@ func (x *BlockReport) String() string {
 func (*BlockReport) ProtoMessage() {}
 
 func (x *BlockReport) ProtoReflect() protoreflect.Message {
-	mi := &file_v1_packetyeeter_proto_msgTypes[17]
+	mi := &file_v1_packetyeeter_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1864,7 +1804,7 @@ func (x *BlockReport) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BlockReport.ProtoReflect.Descriptor instead.
 func (*BlockReport) Descriptor() ([]byte, []int) {
-	return file_v1_packetyeeter_proto_rawDescGZIP(), []int{17}
+	return file_v1_packetyeeter_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *BlockReport) GetIp() []byte {
@@ -1915,7 +1855,7 @@ type HealthResponse struct {
 
 func (x *HealthResponse) Reset() {
 	*x = HealthResponse{}
-	mi := &file_v1_packetyeeter_proto_msgTypes[18]
+	mi := &file_v1_packetyeeter_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1927,7 +1867,7 @@ func (x *HealthResponse) String() string {
 func (*HealthResponse) ProtoMessage() {}
 
 func (x *HealthResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_v1_packetyeeter_proto_msgTypes[18]
+	mi := &file_v1_packetyeeter_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1940,7 +1880,7 @@ func (x *HealthResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HealthResponse.ProtoReflect.Descriptor instead.
 func (*HealthResponse) Descriptor() ([]byte, []int) {
-	return file_v1_packetyeeter_proto_rawDescGZIP(), []int{18}
+	return file_v1_packetyeeter_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *HealthResponse) GetHealthy() bool {
@@ -1969,148 +1909,6 @@ func (x *HealthResponse) GetComponents() map[string]string {
 		return x.Components
 	}
 	return nil
-}
-
-// Collector Status
-type CollectorStatus struct {
-	state            protoimpl.MessageState `protogen:"open.v1"`
-	CollectorId      string                 `protobuf:"bytes,1,opt,name=collector_id,json=collectorId,proto3" json:"collector_id,omitempty"`
-	InterfaceName    string                 `protobuf:"bytes,2,opt,name=interface_name,json=interfaceName,proto3" json:"interface_name,omitempty"`
-	EbpfAttached     bool                   `protobuf:"varint,3,opt,name=ebpf_attached,json=ebpfAttached,proto3" json:"ebpf_attached,omitempty"`
-	SpoeRunning      bool                   `protobuf:"varint,4,opt,name=spoe_running,json=spoeRunning,proto3" json:"spoe_running,omitempty"`
-	HaproxyRunning   bool                   `protobuf:"varint,5,opt,name=haproxy_running,json=haproxyRunning,proto3" json:"haproxy_running,omitempty"`
-	BlockedIpv4Count uint64                 `protobuf:"varint,6,opt,name=blocked_ipv4_count,json=blockedIpv4Count,proto3" json:"blocked_ipv4_count,omitempty"`
-	BlockedIpv6Count uint64                 `protobuf:"varint,7,opt,name=blocked_ipv6_count,json=blockedIpv6Count,proto3" json:"blocked_ipv6_count,omitempty"`
-	DryRun           bool                   `protobuf:"varint,8,opt,name=dry_run,json=dryRun,proto3" json:"dry_run,omitempty"`
-	StartedAt        *timestamppb.Timestamp `protobuf:"bytes,9,opt,name=started_at,json=startedAt,proto3" json:"started_at,omitempty"`
-	// Counters
-	TcpBlocksTotal     uint64 `protobuf:"varint,10,opt,name=tcp_blocks_total,json=tcpBlocksTotal,proto3" json:"tcp_blocks_total,omitempty"`
-	UdpBlocksTotal     uint64 `protobuf:"varint,11,opt,name=udp_blocks_total,json=udpBlocksTotal,proto3" json:"udp_blocks_total,omitempty"`
-	IcmpBlocksTotal    uint64 `protobuf:"varint,12,opt,name=icmp_blocks_total,json=icmpBlocksTotal,proto3" json:"icmp_blocks_total,omitempty"`
-	HaproxyBlocksTotal uint64 `protobuf:"varint,13,opt,name=haproxy_blocks_total,json=haproxyBlocksTotal,proto3" json:"haproxy_blocks_total,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
-}
-
-func (x *CollectorStatus) Reset() {
-	*x = CollectorStatus{}
-	mi := &file_v1_packetyeeter_proto_msgTypes[19]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *CollectorStatus) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*CollectorStatus) ProtoMessage() {}
-
-func (x *CollectorStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_v1_packetyeeter_proto_msgTypes[19]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use CollectorStatus.ProtoReflect.Descriptor instead.
-func (*CollectorStatus) Descriptor() ([]byte, []int) {
-	return file_v1_packetyeeter_proto_rawDescGZIP(), []int{19}
-}
-
-func (x *CollectorStatus) GetCollectorId() string {
-	if x != nil {
-		return x.CollectorId
-	}
-	return ""
-}
-
-func (x *CollectorStatus) GetInterfaceName() string {
-	if x != nil {
-		return x.InterfaceName
-	}
-	return ""
-}
-
-func (x *CollectorStatus) GetEbpfAttached() bool {
-	if x != nil {
-		return x.EbpfAttached
-	}
-	return false
-}
-
-func (x *CollectorStatus) GetSpoeRunning() bool {
-	if x != nil {
-		return x.SpoeRunning
-	}
-	return false
-}
-
-func (x *CollectorStatus) GetHaproxyRunning() bool {
-	if x != nil {
-		return x.HaproxyRunning
-	}
-	return false
-}
-
-func (x *CollectorStatus) GetBlockedIpv4Count() uint64 {
-	if x != nil {
-		return x.BlockedIpv4Count
-	}
-	return 0
-}
-
-func (x *CollectorStatus) GetBlockedIpv6Count() uint64 {
-	if x != nil {
-		return x.BlockedIpv6Count
-	}
-	return 0
-}
-
-func (x *CollectorStatus) GetDryRun() bool {
-	if x != nil {
-		return x.DryRun
-	}
-	return false
-}
-
-func (x *CollectorStatus) GetStartedAt() *timestamppb.Timestamp {
-	if x != nil {
-		return x.StartedAt
-	}
-	return nil
-}
-
-func (x *CollectorStatus) GetTcpBlocksTotal() uint64 {
-	if x != nil {
-		return x.TcpBlocksTotal
-	}
-	return 0
-}
-
-func (x *CollectorStatus) GetUdpBlocksTotal() uint64 {
-	if x != nil {
-		return x.UdpBlocksTotal
-	}
-	return 0
-}
-
-func (x *CollectorStatus) GetIcmpBlocksTotal() uint64 {
-	if x != nil {
-		return x.IcmpBlocksTotal
-	}
-	return 0
-}
-
-func (x *CollectorStatus) GetHaproxyBlocksTotal() uint64 {
-	if x != nil {
-		return x.HaproxyBlocksTotal
-	}
-	return 0
 }
 
 var File_v1_packetyeeter_proto protoreflect.FileDescriptor
@@ -2181,12 +1979,7 @@ const file_v1_packetyeeter_proto_rawDesc = "" +
 	"\x10duration_seconds\x18\x06 \x01(\x03R\x0fdurationSeconds\x12\x16\n" +
 	"\x06reason\x18\a \x01(\tR\x06reason\x12\x1a\n" +
 	"\bpriority\x18\b \x01(\x05R\bpriority\x12\x16\n" +
-	"\x06source\x18\t \x01(\tR\x06source\"^\n" +
-	"\rCommandResult\x12\x1d\n" +
-	"\n" +
-	"command_id\x18\x01 \x01(\tR\tcommandId\x12\x18\n" +
-	"\asuccess\x18\x02 \x01(\bR\asuccess\x12\x14\n" +
-	"\x05error\x18\x03 \x01(\tR\x05error\"5\n" +
+	"\x06source\x18\t \x01(\tR\x06source\"5\n" +
 	"\x11JA4HLookupRequest\x12 \n" +
 	"\vfingerprint\x18\x01 \x01(\tR\vfingerprint\"\x85\x02\n" +
 	"\x12JA4HLookupResponse\x12\x14\n" +
@@ -2274,23 +2067,7 @@ const file_v1_packetyeeter_proto_rawDesc = "" +
 	"components\x1a=\n" +
 	"\x0fComponentsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xae\x04\n" +
-	"\x0fCollectorStatus\x12!\n" +
-	"\fcollector_id\x18\x01 \x01(\tR\vcollectorId\x12%\n" +
-	"\x0einterface_name\x18\x02 \x01(\tR\rinterfaceName\x12#\n" +
-	"\rebpf_attached\x18\x03 \x01(\bR\febpfAttached\x12!\n" +
-	"\fspoe_running\x18\x04 \x01(\bR\vspoeRunning\x12'\n" +
-	"\x0fhaproxy_running\x18\x05 \x01(\bR\x0ehaproxyRunning\x12,\n" +
-	"\x12blocked_ipv4_count\x18\x06 \x01(\x04R\x10blockedIpv4Count\x12,\n" +
-	"\x12blocked_ipv6_count\x18\a \x01(\x04R\x10blockedIpv6Count\x12\x17\n" +
-	"\adry_run\x18\b \x01(\bR\x06dryRun\x129\n" +
-	"\n" +
-	"started_at\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\tstartedAt\x12(\n" +
-	"\x10tcp_blocks_total\x18\n" +
-	" \x01(\x04R\x0etcpBlocksTotal\x12(\n" +
-	"\x10udp_blocks_total\x18\v \x01(\x04R\x0eudpBlocksTotal\x12*\n" +
-	"\x11icmp_blocks_total\x18\f \x01(\x04R\x0ficmpBlocksTotal\x120\n" +
-	"\x14haproxy_blocks_total\x18\r \x01(\x04R\x12haproxyBlocksTotal*\xeb\x06\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01*\xeb\x06\n" +
 	"\n" +
 	"SignalType\x12\x12\n" +
 	"\x0eSIGNAL_UNKNOWN\x10\x00\x12\x14\n" +
@@ -2369,10 +2146,6 @@ const file_v1_packetyeeter_proto_rawDesc = "" +
 	"\x0eGetThreatIntel\x12#.packetyeeter.v1.ThreatIntelRequest\x1a$.packetyeeter.v1.ThreatIntelResponse\x12X\n" +
 	"\rGetReputation\x12\".packetyeeter.v1.ReputationRequest\x1a#.packetyeeter.v1.ReputationResponse\x12C\n" +
 	"\vReportBlock\x12\x1c.packetyeeter.v1.BlockReport\x1a\x16.google.protobuf.Empty\x12A\n" +
-	"\x06Health\x12\x16.google.protobuf.Empty\x1a\x1f.packetyeeter.v1.HealthResponse2\xe8\x01\n" +
-	"\x10CollectorService\x12J\n" +
-	"\x0eExecuteCommand\x12\x18.packetyeeter.v1.Command\x1a\x1e.packetyeeter.v1.CommandResult\x12E\n" +
-	"\tGetStatus\x12\x16.google.protobuf.Empty\x1a .packetyeeter.v1.CollectorStatus\x12A\n" +
 	"\x06Health\x12\x16.google.protobuf.Empty\x1a\x1f.packetyeeter.v1.HealthResponseB!Z\x1fPacketYeeter/api/proto/v1;apiv1b\x06proto3"
 
 var (
@@ -2388,7 +2161,7 @@ func file_v1_packetyeeter_proto_rawDescGZIP() []byte {
 }
 
 var file_v1_packetyeeter_proto_enumTypes = make([]protoimpl.EnumInfo, 5)
-var file_v1_packetyeeter_proto_msgTypes = make([]protoimpl.MessageInfo, 22)
+var file_v1_packetyeeter_proto_msgTypes = make([]protoimpl.MessageInfo, 20)
 var file_v1_packetyeeter_proto_goTypes = []any{
 	(SignalType)(0),                 // 0: packetyeeter.v1.SignalType
 	(SignalSource)(0),               // 1: packetyeeter.v1.SignalSource
@@ -2399,71 +2172,62 @@ var file_v1_packetyeeter_proto_goTypes = []any{
 	(*HTTPContext)(nil),             // 6: packetyeeter.v1.HTTPContext
 	(*TCPContext)(nil),              // 7: packetyeeter.v1.TCPContext
 	(*Command)(nil),                 // 8: packetyeeter.v1.Command
-	(*CommandResult)(nil),           // 9: packetyeeter.v1.CommandResult
-	(*JA4HLookupRequest)(nil),       // 10: packetyeeter.v1.JA4HLookupRequest
-	(*JA4HLookupResponse)(nil),      // 11: packetyeeter.v1.JA4HLookupResponse
-	(*JA4TLookupRequest)(nil),       // 12: packetyeeter.v1.JA4TLookupRequest
-	(*JA4TLookupResponse)(nil),      // 13: packetyeeter.v1.JA4TLookupResponse
-	(*BotVerifyRequest)(nil),        // 14: packetyeeter.v1.BotVerifyRequest
-	(*BotVerifyResponse)(nil),       // 15: packetyeeter.v1.BotVerifyResponse
-	(*AICrawlerVerifyRequest)(nil),  // 16: packetyeeter.v1.AICrawlerVerifyRequest
-	(*AICrawlerVerifyResponse)(nil), // 17: packetyeeter.v1.AICrawlerVerifyResponse
-	(*ThreatIntelRequest)(nil),      // 18: packetyeeter.v1.ThreatIntelRequest
-	(*ThreatIntelResponse)(nil),     // 19: packetyeeter.v1.ThreatIntelResponse
-	(*ReputationRequest)(nil),       // 20: packetyeeter.v1.ReputationRequest
-	(*ReputationResponse)(nil),      // 21: packetyeeter.v1.ReputationResponse
-	(*BlockReport)(nil),             // 22: packetyeeter.v1.BlockReport
-	(*HealthResponse)(nil),          // 23: packetyeeter.v1.HealthResponse
-	(*CollectorStatus)(nil),         // 24: packetyeeter.v1.CollectorStatus
-	nil,                             // 25: packetyeeter.v1.Signal.MetadataEntry
-	nil,                             // 26: packetyeeter.v1.HealthResponse.ComponentsEntry
-	(*timestamppb.Timestamp)(nil),   // 27: google.protobuf.Timestamp
-	(*emptypb.Empty)(nil),           // 28: google.protobuf.Empty
+	(*JA4HLookupRequest)(nil),       // 9: packetyeeter.v1.JA4HLookupRequest
+	(*JA4HLookupResponse)(nil),      // 10: packetyeeter.v1.JA4HLookupResponse
+	(*JA4TLookupRequest)(nil),       // 11: packetyeeter.v1.JA4TLookupRequest
+	(*JA4TLookupResponse)(nil),      // 12: packetyeeter.v1.JA4TLookupResponse
+	(*BotVerifyRequest)(nil),        // 13: packetyeeter.v1.BotVerifyRequest
+	(*BotVerifyResponse)(nil),       // 14: packetyeeter.v1.BotVerifyResponse
+	(*AICrawlerVerifyRequest)(nil),  // 15: packetyeeter.v1.AICrawlerVerifyRequest
+	(*AICrawlerVerifyResponse)(nil), // 16: packetyeeter.v1.AICrawlerVerifyResponse
+	(*ThreatIntelRequest)(nil),      // 17: packetyeeter.v1.ThreatIntelRequest
+	(*ThreatIntelResponse)(nil),     // 18: packetyeeter.v1.ThreatIntelResponse
+	(*ReputationRequest)(nil),       // 19: packetyeeter.v1.ReputationRequest
+	(*ReputationResponse)(nil),      // 20: packetyeeter.v1.ReputationResponse
+	(*BlockReport)(nil),             // 21: packetyeeter.v1.BlockReport
+	(*HealthResponse)(nil),          // 22: packetyeeter.v1.HealthResponse
+	nil,                             // 23: packetyeeter.v1.Signal.MetadataEntry
+	nil,                             // 24: packetyeeter.v1.HealthResponse.ComponentsEntry
+	(*timestamppb.Timestamp)(nil),   // 25: google.protobuf.Timestamp
+	(*emptypb.Empty)(nil),           // 26: google.protobuf.Empty
 }
 var file_v1_packetyeeter_proto_depIdxs = []int32{
-	27, // 0: packetyeeter.v1.Signal.timestamp:type_name -> google.protobuf.Timestamp
+	25, // 0: packetyeeter.v1.Signal.timestamp:type_name -> google.protobuf.Timestamp
 	0,  // 1: packetyeeter.v1.Signal.type:type_name -> packetyeeter.v1.SignalType
 	1,  // 2: packetyeeter.v1.Signal.source:type_name -> packetyeeter.v1.SignalSource
-	25, // 3: packetyeeter.v1.Signal.metadata:type_name -> packetyeeter.v1.Signal.MetadataEntry
+	23, // 3: packetyeeter.v1.Signal.metadata:type_name -> packetyeeter.v1.Signal.MetadataEntry
 	6,  // 4: packetyeeter.v1.Signal.http_context:type_name -> packetyeeter.v1.HTTPContext
 	7,  // 5: packetyeeter.v1.Signal.tcp_context:type_name -> packetyeeter.v1.TCPContext
-	27, // 6: packetyeeter.v1.Command.timestamp:type_name -> google.protobuf.Timestamp
+	25, // 6: packetyeeter.v1.Command.timestamp:type_name -> google.protobuf.Timestamp
 	2,  // 7: packetyeeter.v1.Command.type:type_name -> packetyeeter.v1.CommandType
 	3,  // 8: packetyeeter.v1.BotVerifyResponse.category:type_name -> packetyeeter.v1.BotCategory
-	27, // 9: packetyeeter.v1.ReputationResponse.last_seen:type_name -> google.protobuf.Timestamp
-	27, // 10: packetyeeter.v1.BlockReport.timestamp:type_name -> google.protobuf.Timestamp
-	27, // 11: packetyeeter.v1.HealthResponse.uptime_since:type_name -> google.protobuf.Timestamp
-	26, // 12: packetyeeter.v1.HealthResponse.components:type_name -> packetyeeter.v1.HealthResponse.ComponentsEntry
-	27, // 13: packetyeeter.v1.CollectorStatus.started_at:type_name -> google.protobuf.Timestamp
-	5,  // 14: packetyeeter.v1.AnalyzerService.StreamSignals:input_type -> packetyeeter.v1.Signal
-	10, // 15: packetyeeter.v1.AnalyzerService.LookupJA4H:input_type -> packetyeeter.v1.JA4HLookupRequest
-	12, // 16: packetyeeter.v1.AnalyzerService.LookupJA4T:input_type -> packetyeeter.v1.JA4TLookupRequest
-	14, // 17: packetyeeter.v1.AnalyzerService.VerifyBot:input_type -> packetyeeter.v1.BotVerifyRequest
-	16, // 18: packetyeeter.v1.AnalyzerService.VerifyAICrawler:input_type -> packetyeeter.v1.AICrawlerVerifyRequest
-	18, // 19: packetyeeter.v1.AnalyzerService.GetThreatIntel:input_type -> packetyeeter.v1.ThreatIntelRequest
-	20, // 20: packetyeeter.v1.AnalyzerService.GetReputation:input_type -> packetyeeter.v1.ReputationRequest
-	22, // 21: packetyeeter.v1.AnalyzerService.ReportBlock:input_type -> packetyeeter.v1.BlockReport
-	28, // 22: packetyeeter.v1.AnalyzerService.Health:input_type -> google.protobuf.Empty
-	8,  // 23: packetyeeter.v1.CollectorService.ExecuteCommand:input_type -> packetyeeter.v1.Command
-	28, // 24: packetyeeter.v1.CollectorService.GetStatus:input_type -> google.protobuf.Empty
-	28, // 25: packetyeeter.v1.CollectorService.Health:input_type -> google.protobuf.Empty
-	8,  // 26: packetyeeter.v1.AnalyzerService.StreamSignals:output_type -> packetyeeter.v1.Command
-	11, // 27: packetyeeter.v1.AnalyzerService.LookupJA4H:output_type -> packetyeeter.v1.JA4HLookupResponse
-	13, // 28: packetyeeter.v1.AnalyzerService.LookupJA4T:output_type -> packetyeeter.v1.JA4TLookupResponse
-	15, // 29: packetyeeter.v1.AnalyzerService.VerifyBot:output_type -> packetyeeter.v1.BotVerifyResponse
-	17, // 30: packetyeeter.v1.AnalyzerService.VerifyAICrawler:output_type -> packetyeeter.v1.AICrawlerVerifyResponse
-	19, // 31: packetyeeter.v1.AnalyzerService.GetThreatIntel:output_type -> packetyeeter.v1.ThreatIntelResponse
-	21, // 32: packetyeeter.v1.AnalyzerService.GetReputation:output_type -> packetyeeter.v1.ReputationResponse
-	28, // 33: packetyeeter.v1.AnalyzerService.ReportBlock:output_type -> google.protobuf.Empty
-	23, // 34: packetyeeter.v1.AnalyzerService.Health:output_type -> packetyeeter.v1.HealthResponse
-	9,  // 35: packetyeeter.v1.CollectorService.ExecuteCommand:output_type -> packetyeeter.v1.CommandResult
-	24, // 36: packetyeeter.v1.CollectorService.GetStatus:output_type -> packetyeeter.v1.CollectorStatus
-	23, // 37: packetyeeter.v1.CollectorService.Health:output_type -> packetyeeter.v1.HealthResponse
-	26, // [26:38] is the sub-list for method output_type
-	14, // [14:26] is the sub-list for method input_type
-	14, // [14:14] is the sub-list for extension type_name
-	14, // [14:14] is the sub-list for extension extendee
-	0,  // [0:14] is the sub-list for field type_name
+	25, // 9: packetyeeter.v1.ReputationResponse.last_seen:type_name -> google.protobuf.Timestamp
+	25, // 10: packetyeeter.v1.BlockReport.timestamp:type_name -> google.protobuf.Timestamp
+	25, // 11: packetyeeter.v1.HealthResponse.uptime_since:type_name -> google.protobuf.Timestamp
+	24, // 12: packetyeeter.v1.HealthResponse.components:type_name -> packetyeeter.v1.HealthResponse.ComponentsEntry
+	5,  // 13: packetyeeter.v1.AnalyzerService.StreamSignals:input_type -> packetyeeter.v1.Signal
+	9,  // 14: packetyeeter.v1.AnalyzerService.LookupJA4H:input_type -> packetyeeter.v1.JA4HLookupRequest
+	11, // 15: packetyeeter.v1.AnalyzerService.LookupJA4T:input_type -> packetyeeter.v1.JA4TLookupRequest
+	13, // 16: packetyeeter.v1.AnalyzerService.VerifyBot:input_type -> packetyeeter.v1.BotVerifyRequest
+	15, // 17: packetyeeter.v1.AnalyzerService.VerifyAICrawler:input_type -> packetyeeter.v1.AICrawlerVerifyRequest
+	17, // 18: packetyeeter.v1.AnalyzerService.GetThreatIntel:input_type -> packetyeeter.v1.ThreatIntelRequest
+	19, // 19: packetyeeter.v1.AnalyzerService.GetReputation:input_type -> packetyeeter.v1.ReputationRequest
+	21, // 20: packetyeeter.v1.AnalyzerService.ReportBlock:input_type -> packetyeeter.v1.BlockReport
+	26, // 21: packetyeeter.v1.AnalyzerService.Health:input_type -> google.protobuf.Empty
+	8,  // 22: packetyeeter.v1.AnalyzerService.StreamSignals:output_type -> packetyeeter.v1.Command
+	10, // 23: packetyeeter.v1.AnalyzerService.LookupJA4H:output_type -> packetyeeter.v1.JA4HLookupResponse
+	12, // 24: packetyeeter.v1.AnalyzerService.LookupJA4T:output_type -> packetyeeter.v1.JA4TLookupResponse
+	14, // 25: packetyeeter.v1.AnalyzerService.VerifyBot:output_type -> packetyeeter.v1.BotVerifyResponse
+	16, // 26: packetyeeter.v1.AnalyzerService.VerifyAICrawler:output_type -> packetyeeter.v1.AICrawlerVerifyResponse
+	18, // 27: packetyeeter.v1.AnalyzerService.GetThreatIntel:output_type -> packetyeeter.v1.ThreatIntelResponse
+	20, // 28: packetyeeter.v1.AnalyzerService.GetReputation:output_type -> packetyeeter.v1.ReputationResponse
+	26, // 29: packetyeeter.v1.AnalyzerService.ReportBlock:output_type -> google.protobuf.Empty
+	22, // 30: packetyeeter.v1.AnalyzerService.Health:output_type -> packetyeeter.v1.HealthResponse
+	22, // [22:31] is the sub-list for method output_type
+	13, // [13:22] is the sub-list for method input_type
+	13, // [13:13] is the sub-list for extension type_name
+	13, // [13:13] is the sub-list for extension extendee
+	0,  // [0:13] is the sub-list for field type_name
 }
 
 func init() { file_v1_packetyeeter_proto_init() }
@@ -2477,9 +2241,9 @@ func file_v1_packetyeeter_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_v1_packetyeeter_proto_rawDesc), len(file_v1_packetyeeter_proto_rawDesc)),
 			NumEnums:      5,
-			NumMessages:   22,
+			NumMessages:   20,
 			NumExtensions: 0,
-			NumServices:   2,
+			NumServices:   1,
 		},
 		GoTypes:           file_v1_packetyeeter_proto_goTypes,
 		DependencyIndexes: file_v1_packetyeeter_proto_depIdxs,
