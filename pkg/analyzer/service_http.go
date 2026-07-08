@@ -45,6 +45,16 @@ func (a *Analyzer) processHTTPRequest(sig *apiv1.Signal, ip net.IP, asn string, 
 		if ctx.Path != "" {
 			m["path"] = ctx.Path
 		}
+		// Connection request count (HTTP-layer keep-alive reuse count) is
+		// intentionally observational-only: real users frequently make a
+		// single request per connection (first visit, short session, CDN/edge
+		// connection churn, HTTP/2 multiplexing quirks), so this is too noisy
+		// to gate a standalone detection signal on. It's attached here purely
+		// for operator visibility in the inspector API and for future model
+		// training features, not to trigger blocks by itself.
+		if ctx.ConnRequestCount > 0 {
+			m["conn_request_count"] = ctx.ConnRequestCount
+		}
 		for k, v := range extra {
 			m[k] = v
 		}
@@ -170,6 +180,38 @@ func (a *Analyzer) processHTTPRequest(sig *apiv1.Signal, ip net.IP, asn string, 
 		if chromeUA && !strings.Contains(strings.ToLower(headerOrder), "sec-ch-ua") && a.SignalBuilder != nil {
 			a.SignalBuilder.EmitHeaderAnomaly(ip, asn, org, aidetection.SignalMissingSecCH, sig.Ja4H, sig.Ja4H, sig.Ja4T, createHTTPMetadata(nil))
 		}
+	}
+
+	// Sec-Fetch-* heuristics: real browsers (Chrome 76+, Firefox 90+, Safari 16.4+)
+	// auto-generate Sec-Fetch-Site/Mode/Dest/User on every request; these are
+	// stripped from JS/HTTP client control, so a claimed browser UA missing them
+	// entirely is a strong indicator of a scripted client presenting a spoofed UA.
+	// Gated on chromeUA (like the sec-ch check above) to keep this conservative
+	// and avoid false positives on older/less common but legitimate browsers
+	// that may not yet send these headers.
+	if chromeUA && a.SignalBuilder != nil && ctx.SecFetchSite == "" && ctx.SecFetchMode == "" && ctx.SecFetchDest == "" {
+		a.SignalBuilder.EmitHeaderAnomaly(ip, asn, org, aidetection.SignalMissingSecFetch, sig.Ja4H, sig.Ja4H, sig.Ja4T, createHTTPMetadata(nil))
+	}
+
+	// Accept header heuristics: real browsers send a specific, detailed Accept
+	// header (e.g. "text/html,application/xhtml+xml,..."); scripted HTTP
+	// clients frequently leave it empty or send the default wildcard "*/*".
+	if chromeUA && a.SignalBuilder != nil && (ctx.Accept == "" || strings.TrimSpace(ctx.Accept) == "*/*") {
+		a.SignalBuilder.EmitHeaderAnomaly(ip, asn, org, aidetection.SignalAcceptMismatch, sig.Ja4H, sig.Ja4H, sig.Ja4T, createHTTPMetadata(map[string]interface{}{
+			"accept": ctx.Accept,
+		}))
+	}
+
+	// TLS version heuristics: modern browsers only ever negotiate TLS 1.2/1.3.
+	// A claimed Chrome/Edge UA that actually negotiated TLS 1.0/1.1 is not the
+	// browser it claims to be (real Chrome removed TLS 1.0/1.1 support in 2020).
+	// Only evaluated when HAProxy actually forwarded a TLS version (ssl_fc
+	// requests only), so this never fires for plain HTTP.
+	if chromeUA && a.SignalBuilder != nil && (ctx.TlsVersion == "TLSv1.0" || ctx.TlsVersion == "TLSv1.1" || ctx.TlsVersion == "SSLv3") {
+		a.SignalBuilder.EmitHeaderAnomaly(ip, asn, org, aidetection.SignalTLSVersionMismatch, sig.Ja4H, sig.Ja4H, sig.Ja4T, createHTTPMetadata(map[string]interface{}{
+			"tls_version": ctx.TlsVersion,
+			"tls_cipher":  ctx.TlsCipher,
+		}))
 	}
 
 	logrus.WithFields(logrus.Fields{

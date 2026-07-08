@@ -139,6 +139,7 @@ func (a *CollectorAgent) Start() error {
 		ja4 := getString("ja4")
 		ja4h := getString("ja4h")
 		ja4t := getString("ja4t")
+		accept := getString("accept")
 		acceptLang := getString("accept_language")
 		acceptEnc := getString("accept_encoding")
 		referer := getString("referer")
@@ -147,6 +148,13 @@ func (a *CollectorAgent) Start() error {
 		method := getString("method")
 		path := getString("path")
 		headerOrder := getString("header_order")
+		secFetchSite := getString("sec_fetch_site")
+		secFetchMode := getString("sec_fetch_mode")
+		secFetchDest := getString("sec_fetch_dest")
+		secFetchUser := getString("sec_fetch_user")
+		tlsVersion := getString("tls_version")
+		tlsCipher := getString("tls_cipher")
+		connRequestCount := uint32(getInt("conn_request_count"))
 		dstPort := uint32(getInt("dst_port"))
 		statusCode := uint32(getInt("status"))
 
@@ -197,19 +205,27 @@ func (a *CollectorAgent) Start() error {
 		}
 
 		httpContext := &apiv1.HTTPContext{
-			UserAgent:      userAgent,
-			AcceptLanguage: acceptLang,
-			AcceptEncoding: acceptEnc,
-			Referer:        referer,
-			HasCookies:     hasCookies,
-			Host:           host,
-			Method:         method,
-			Path:           path,
-			ClientReqMs:    clientReqMs,
-			PacketRttMs:    rttMs,
-			DstPort:        dstPort,
-			DstIp:          dstIP,
-			StatusCode:     statusCode,
+			UserAgent:        userAgent,
+			Accept:           accept,
+			AcceptLanguage:   acceptLang,
+			AcceptEncoding:   acceptEnc,
+			Referer:          referer,
+			HasCookies:       hasCookies,
+			Host:             host,
+			Method:           method,
+			Path:             path,
+			ClientReqMs:      clientReqMs,
+			PacketRttMs:      rttMs,
+			DstPort:          dstPort,
+			DstIp:            dstIP,
+			StatusCode:       statusCode,
+			SecFetchSite:     secFetchSite,
+			SecFetchMode:     secFetchMode,
+			SecFetchDest:     secFetchDest,
+			SecFetchUser:     secFetchUser,
+			TlsVersion:       tlsVersion,
+			TlsCipher:        tlsCipher,
+			ConnRequestCount: connRequestCount,
 		}
 
 		a.emitSignal(apiv1.SignalType_SIGNAL_HTTP_REQUEST, srcIP, ja4h, ja4t, ja4, httpContext, metadata)

@@ -138,6 +138,14 @@ message HTTPContext {
   uint32 dst_port = 11;  // Destination port (80, 443, etc.)
   string dst_ip = 12;     // Destination IP address
   uint32 status_code = 13; // HTTP response status code (200, 404, 403, etc.)
+  string accept = 14;          // Raw Accept header value
+  string sec_fetch_site = 15;  // Sec-Fetch-Site header value (browser-generated, hard to fake)
+  string sec_fetch_mode = 16;  // Sec-Fetch-Mode header value
+  string sec_fetch_dest = 17;  // Sec-Fetch-Dest header value
+  string sec_fetch_user = 18;  // Sec-Fetch-User header value
+  string tls_version = 19;     // Negotiated TLS protocol version (e.g. TLSv1.3)
+  string tls_cipher = 20;      // Negotiated TLS cipher suite
+  uint32 conn_request_count = 21; // Number of HTTP requests seen on this connection so far (keep-alive reuse)
 }
 
 message TCPContext {

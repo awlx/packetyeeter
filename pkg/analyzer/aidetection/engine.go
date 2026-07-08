@@ -1083,6 +1083,8 @@ var lowSeverityASNSignals = map[SignalType]bool{
 	SignalIncompleteHandshake: true,
 	SignalHeaderOrderAnomaly:  true,
 	SignalMissingSecCH:        true,
+	SignalMissingSecFetch:     true,
+	SignalAcceptMismatch:      true,
 }
 
 // asnBaselineTrustMultiplier is the multiplier applied to a signal's
@@ -1603,6 +1605,8 @@ func (e *Engine) evaluateWindow(windowSignals map[string][]Signal) {
 		SignalBrowserDetected:     true,
 		SignalTCPMetadata:         true,
 		SignalMissingAcceptLang:   true,
+		SignalMissingSecFetch:     true,
+		SignalAcceptMismatch:      true,
 	}
 	highSeverity := map[SignalType]bool{
 		SignalHoneypot:          true,
@@ -2109,6 +2113,9 @@ func (e *Engine) handleDetection(key string, signals []Signal, ewmaBaseline, con
 		SignalProxyLag:            2,
 		SignalHeaderOrderAnomaly:  2,
 		SignalMissingSecCH:        2,
+		SignalMissingSecFetch:     2,
+		SignalAcceptMismatch:      2,
+		SignalTLSVersionMismatch:  2,
 		SignalBotUA:               10,
 		SignalJA4HBotMatch:        30,
 		SignalHoneypot:            30,

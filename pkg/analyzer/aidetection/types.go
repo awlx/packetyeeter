@@ -53,6 +53,9 @@ const (
 	SignalPathSeqIDs          SignalType = "path_seq_ids"         // Sequential numeric path IDs (alias of numeric_seq)
 	SignalHeaderOrderAnomaly  SignalType = "header_order_anomaly" // Header order inconsistent with browser
 	SignalMissingSecCH        SignalType = "missing_sec_ch"       // Missing sec-ch headers for browser UA
+	SignalMissingSecFetch     SignalType = "missing_sec_fetch"    // Missing Sec-Fetch-* headers for browser UA (browser-generated, hard to fake)
+	SignalAcceptMismatch      SignalType = "accept_mismatch"      // Accept header missing/wildcard-only for a claimed browser UA
+	SignalTLSVersionMismatch  SignalType = "tls_version_mismatch" // Outdated negotiated TLS version for a claimed modern-browser UA
 	SignalExcessiveNotFound   SignalType = "excessive_404"        // Excessive 404 errors (path enumeration)
 	SignalExcessiveForbidden  SignalType = "excessive_403"        // Excessive 403 errors (permission probing)
 	SignalErrorBurst          SignalType = "error_burst"          // Burst of consecutive 4xx errors (scanner)

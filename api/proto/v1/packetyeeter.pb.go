@@ -566,22 +566,30 @@ func (x *Signal) GetJa4() string {
 }
 
 type HTTPContext struct {
-	state          protoimpl.MessageState `protogen:"open.v1"`
-	UserAgent      string                 `protobuf:"bytes,1,opt,name=user_agent,json=userAgent,proto3" json:"user_agent,omitempty"`
-	AcceptLanguage string                 `protobuf:"bytes,2,opt,name=accept_language,json=acceptLanguage,proto3" json:"accept_language,omitempty"`
-	AcceptEncoding string                 `protobuf:"bytes,3,opt,name=accept_encoding,json=acceptEncoding,proto3" json:"accept_encoding,omitempty"`
-	Referer        string                 `protobuf:"bytes,4,opt,name=referer,proto3" json:"referer,omitempty"`
-	HasCookies     bool                   `protobuf:"varint,5,opt,name=has_cookies,json=hasCookies,proto3" json:"has_cookies,omitempty"`
-	Host           string                 `protobuf:"bytes,6,opt,name=host,proto3" json:"host,omitempty"`
-	Method         string                 `protobuf:"bytes,7,opt,name=method,proto3" json:"method,omitempty"`
-	Path           string                 `protobuf:"bytes,8,opt,name=path,proto3" json:"path,omitempty"`
-	ClientReqMs    int64                  `protobuf:"varint,9,opt,name=client_req_ms,json=clientReqMs,proto3" json:"client_req_ms,omitempty"`
-	PacketRttMs    float64                `protobuf:"fixed64,10,opt,name=packet_rtt_ms,json=packetRttMs,proto3" json:"packet_rtt_ms,omitempty"`
-	DstPort        uint32                 `protobuf:"varint,11,opt,name=dst_port,json=dstPort,proto3" json:"dst_port,omitempty"`          // Destination port (80, 443, etc.)
-	DstIp          string                 `protobuf:"bytes,12,opt,name=dst_ip,json=dstIp,proto3" json:"dst_ip,omitempty"`                 // Destination IP address
-	StatusCode     uint32                 `protobuf:"varint,13,opt,name=status_code,json=statusCode,proto3" json:"status_code,omitempty"` // HTTP response status code (200, 404, 403, etc.)
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	UserAgent        string                 `protobuf:"bytes,1,opt,name=user_agent,json=userAgent,proto3" json:"user_agent,omitempty"`
+	AcceptLanguage   string                 `protobuf:"bytes,2,opt,name=accept_language,json=acceptLanguage,proto3" json:"accept_language,omitempty"`
+	AcceptEncoding   string                 `protobuf:"bytes,3,opt,name=accept_encoding,json=acceptEncoding,proto3" json:"accept_encoding,omitempty"`
+	Referer          string                 `protobuf:"bytes,4,opt,name=referer,proto3" json:"referer,omitempty"`
+	HasCookies       bool                   `protobuf:"varint,5,opt,name=has_cookies,json=hasCookies,proto3" json:"has_cookies,omitempty"`
+	Host             string                 `protobuf:"bytes,6,opt,name=host,proto3" json:"host,omitempty"`
+	Method           string                 `protobuf:"bytes,7,opt,name=method,proto3" json:"method,omitempty"`
+	Path             string                 `protobuf:"bytes,8,opt,name=path,proto3" json:"path,omitempty"`
+	ClientReqMs      int64                  `protobuf:"varint,9,opt,name=client_req_ms,json=clientReqMs,proto3" json:"client_req_ms,omitempty"`
+	PacketRttMs      float64                `protobuf:"fixed64,10,opt,name=packet_rtt_ms,json=packetRttMs,proto3" json:"packet_rtt_ms,omitempty"`
+	DstPort          uint32                 `protobuf:"varint,11,opt,name=dst_port,json=dstPort,proto3" json:"dst_port,omitempty"`                              // Destination port (80, 443, etc.)
+	DstIp            string                 `protobuf:"bytes,12,opt,name=dst_ip,json=dstIp,proto3" json:"dst_ip,omitempty"`                                     // Destination IP address
+	StatusCode       uint32                 `protobuf:"varint,13,opt,name=status_code,json=statusCode,proto3" json:"status_code,omitempty"`                     // HTTP response status code (200, 404, 403, etc.)
+	Accept           string                 `protobuf:"bytes,14,opt,name=accept,proto3" json:"accept,omitempty"`                                                // Raw Accept header value
+	SecFetchSite     string                 `protobuf:"bytes,15,opt,name=sec_fetch_site,json=secFetchSite,proto3" json:"sec_fetch_site,omitempty"`              // Sec-Fetch-Site header value (browser-generated, hard to fake)
+	SecFetchMode     string                 `protobuf:"bytes,16,opt,name=sec_fetch_mode,json=secFetchMode,proto3" json:"sec_fetch_mode,omitempty"`              // Sec-Fetch-Mode header value
+	SecFetchDest     string                 `protobuf:"bytes,17,opt,name=sec_fetch_dest,json=secFetchDest,proto3" json:"sec_fetch_dest,omitempty"`              // Sec-Fetch-Dest header value
+	SecFetchUser     string                 `protobuf:"bytes,18,opt,name=sec_fetch_user,json=secFetchUser,proto3" json:"sec_fetch_user,omitempty"`              // Sec-Fetch-User header value
+	TlsVersion       string                 `protobuf:"bytes,19,opt,name=tls_version,json=tlsVersion,proto3" json:"tls_version,omitempty"`                      // Negotiated TLS protocol version (e.g. TLSv1.3)
+	TlsCipher        string                 `protobuf:"bytes,20,opt,name=tls_cipher,json=tlsCipher,proto3" json:"tls_cipher,omitempty"`                         // Negotiated TLS cipher suite
+	ConnRequestCount uint32                 `protobuf:"varint,21,opt,name=conn_request_count,json=connRequestCount,proto3" json:"conn_request_count,omitempty"` // Number of HTTP requests seen on this connection so far (keep-alive reuse)
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *HTTPContext) Reset() {
@@ -701,6 +709,62 @@ func (x *HTTPContext) GetDstIp() string {
 func (x *HTTPContext) GetStatusCode() uint32 {
 	if x != nil {
 		return x.StatusCode
+	}
+	return 0
+}
+
+func (x *HTTPContext) GetAccept() string {
+	if x != nil {
+		return x.Accept
+	}
+	return ""
+}
+
+func (x *HTTPContext) GetSecFetchSite() string {
+	if x != nil {
+		return x.SecFetchSite
+	}
+	return ""
+}
+
+func (x *HTTPContext) GetSecFetchMode() string {
+	if x != nil {
+		return x.SecFetchMode
+	}
+	return ""
+}
+
+func (x *HTTPContext) GetSecFetchDest() string {
+	if x != nil {
+		return x.SecFetchDest
+	}
+	return ""
+}
+
+func (x *HTTPContext) GetSecFetchUser() string {
+	if x != nil {
+		return x.SecFetchUser
+	}
+	return ""
+}
+
+func (x *HTTPContext) GetTlsVersion() string {
+	if x != nil {
+		return x.TlsVersion
+	}
+	return ""
+}
+
+func (x *HTTPContext) GetTlsCipher() string {
+	if x != nil {
+		return x.TlsCipher
+	}
+	return ""
+}
+
+func (x *HTTPContext) GetConnRequestCount() uint32 {
+	if x != nil {
+		return x.ConnRequestCount
 	}
 	return 0
 }
@@ -1944,7 +2008,7 @@ const file_v1_packetyeeter_proto_rawDesc = "" +
 	"\x03ja4\x18\x0f \x01(\tR\x03ja4\x1a;\n" +
 	"\rMetadataEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x94\x03\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xb2\x05\n" +
 	"\vHTTPContext\x12\x1d\n" +
 	"\n" +
 	"user_agent\x18\x01 \x01(\tR\tuserAgent\x12'\n" +
@@ -1962,7 +2026,17 @@ const file_v1_packetyeeter_proto_rawDesc = "" +
 	"\bdst_port\x18\v \x01(\rR\adstPort\x12\x15\n" +
 	"\x06dst_ip\x18\f \x01(\tR\x05dstIp\x12\x1f\n" +
 	"\vstatus_code\x18\r \x01(\rR\n" +
-	"statusCode\"\xda\x02\n" +
+	"statusCode\x12\x16\n" +
+	"\x06accept\x18\x0e \x01(\tR\x06accept\x12$\n" +
+	"\x0esec_fetch_site\x18\x0f \x01(\tR\fsecFetchSite\x12$\n" +
+	"\x0esec_fetch_mode\x18\x10 \x01(\tR\fsecFetchMode\x12$\n" +
+	"\x0esec_fetch_dest\x18\x11 \x01(\tR\fsecFetchDest\x12$\n" +
+	"\x0esec_fetch_user\x18\x12 \x01(\tR\fsecFetchUser\x12\x1f\n" +
+	"\vtls_version\x18\x13 \x01(\tR\n" +
+	"tlsVersion\x12\x1d\n" +
+	"\n" +
+	"tls_cipher\x18\x14 \x01(\tR\ttlsCipher\x12,\n" +
+	"\x12conn_request_count\x18\x15 \x01(\rR\x10connRequestCount\"\xda\x02\n" +
 	"\n" +
 	"TCPContext\x12\x1b\n" +
 	"\tsyn_count\x18\x01 \x01(\rR\bsynCount\x12\x1b\n" +

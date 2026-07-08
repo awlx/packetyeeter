@@ -71,3 +71,35 @@ func TestComboWithHighSeveritySignalStillFastPaths(t *testing.T) {
 		t.Fatalf("expected a detection for a combination including a genuinely suspicious signal type")
 	}
 }
+
+// TestNewHAProxySignalsAreLowSeverityAndCapped guards the new Accept-header
+// and Sec-Fetch-* SPOE signals (added alongside expanded HAProxy/SPOE
+// enrichment): they must stay classified as low-severity (so a burst alone
+// doesn't fast-path a detection, matching missing_accept_language) and their
+// per-window score must be capped, so that legitimate clients which merely
+// lack one uncommon header can't accumulate an outsized score from request
+// volume alone.
+func TestNewHAProxySignalsAreLowSeverityAndCapped(t *testing.T) {
+	e := New(Config{Workers: 1, BufferSize: 100, WarmupPeriod: 0, StaticThreshold: 3})
+	ch := make(chan DetectionEvent, 1)
+	e.RegisterDetectionHandler(testHandler{ch})
+
+	ip := net.ParseIP("203.0.113.70")
+	key := "ip:" + ip.String()
+
+	signals := []Signal{{Type: SignalTCPMetadata, Source: SourceTCP, Weight: 1, IP: ip}}
+	for i := 0; i < 20; i++ {
+		signals = append(signals,
+			Signal{Type: SignalMissingSecFetch, Source: SourceSPOE, Weight: 2, IP: ip},
+			Signal{Type: SignalAcceptMismatch, Source: SourceSPOE, Weight: 2, IP: ip},
+		)
+	}
+
+	e.evaluateWindow(map[string][]Signal{key: signals})
+
+	select {
+	case ev := <-ch:
+		t.Fatalf("expected no detection for a first-seen low-severity-only burst of new HAProxy signals, got %+v", ev)
+	case <-time.After(200 * time.Millisecond):
+	}
+}
