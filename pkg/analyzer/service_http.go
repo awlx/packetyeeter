@@ -232,6 +232,25 @@ func (a *Analyzer) processHTTPRequest(sig *apiv1.Signal, ip net.IP, asn string, 
 		}
 	}
 
+	// Bot verification using unified handler. Run this before the UA/header
+	// impersonation heuristics below (crawlee regex, sec-ch, Sec-Fetch-*,
+	// Accept, TLS-version mismatch): those heuristics infer impersonation
+	// from a claimed browser identity, so a request already verified as a
+	// known-good bot (e.g. Googlebot's Chrome-embedded rendering UA, which
+	// legitimately omits Sec-Fetch-*/sends "Accept: */*") must be excluded
+	// from them, not just from the JA4 fingerprint analysis further down.
+	// The verifier caches per-IP results, so calling it this early adds no
+	// meaningful cost on the hot path.
+	if a.BotHandler != nil && userAgent != "" {
+		result := a.BotHandler.VerifyBot(ip, userAgent, asn, org)
+		if result.IsVerified {
+			// Create observation for verified bot (for training data)
+			a.recordVerifiedBot(ip, userAgent, asn, org, result, sig)
+			return // Don't penalize verified bots/crawlers
+		}
+		// Impersonation is already handled and penalized by BotHandler
+	}
+
 	// UA heuristics
 	if userAgent != "" && reCrawlee.MatchString(userAgent) {
 		if a.SignalBuilder != nil {
@@ -376,17 +395,6 @@ func (a *Analyzer) processHTTPRequest(sig *apiv1.Signal, ip net.IP, asn string, 
 				}
 			}
 		}
-	}
-
-	// Bot verification using unified handler
-	if a.BotHandler != nil && userAgent != "" {
-		result := a.BotHandler.VerifyBot(ip, userAgent, asn, org)
-		if result.IsVerified {
-			// Create observation for verified bot (for training data)
-			a.recordVerifiedBot(ip, userAgent, asn, org, result, sig)
-			return // Don't penalize verified bots/crawlers
-		}
-		// Impersonation is already handled and penalized by BotHandler
 	}
 
 	// JA4/JA4H/JA4T fingerprint analysis (prefer JA4 TLS, then JA4H HTTP, then JA4T transport)
