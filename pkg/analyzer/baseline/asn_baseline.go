@@ -3,6 +3,7 @@ package baseline
 import (
 	"PacketYeeter/pkg/metrics"
 	"PacketYeeter/pkg/utils/stats"
+	"hash/fnv"
 	"math"
 	"sync"
 	"time"
@@ -46,17 +47,44 @@ type ASNBaseline struct {
 	ByteRate     RunningStats
 }
 
+// numBaselineShards controls how many independent lock domains the
+// calibrator's ASN map is split across. RecordObservation (called for
+// every incoming signal with TCP context, on the ingestion hot path) and
+// CalculateAnomaly (called for every signal during AI-engine window
+// evaluation, from up to Workers concurrent goroutines) both need to
+// touch this map extremely frequently. A single global mutex here
+// reintroduces the same class of contention already fixed once for the
+// reputation manager: under sustained write pressure from many ASNs,
+// Go's sync.RWMutex favors waiting writers over new readers, so readers
+// (CalculateAnomaly) end up serialized behind writers (RecordObservation)
+// even though both only ever touch one ASN's entry. Sharding by ASN keeps
+// unrelated ASNs from contending with each other at all.
+const numBaselineShards = 32
+
+// baselineShard is one independent lock domain of the ASN map.
+type baselineShard struct {
+	mu        sync.RWMutex
+	baselines map[string]*ASNBaseline // ASN -> baseline
+}
+
 // BaselineCalibrator manages ASN baselines
 type BaselineCalibrator struct {
-	mu sync.RWMutex
-
-	baselines map[string]*ASNBaseline // ASN -> baseline
+	shards [numBaselineShards]*baselineShard
 
 	minObservations uint64        // Minimum observations before baseline is valid (default: 100)
 	retentionPeriod time.Duration // How long to keep baselines (default: 7 days)
 
-	lastCleanup     time.Time
 	cleanupInterval time.Duration
+}
+
+// shardFor returns the shard responsible for the given ASN. Using a hash
+// of the ASN string (rather than e.g. round-robin) ensures the same ASN
+// always maps to the same shard, which is required for correctness (all
+// operations on one ASN must observe each other).
+func (bc *BaselineCalibrator) shardFor(asn string) *baselineShard {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(asn))
+	return bc.shards[h.Sum32()%numBaselineShards]
 }
 
 // Config holds configuration for the baseline calibrator
@@ -82,11 +110,12 @@ func NewBaselineCalibrator(cfg Config) *BaselineCalibrator {
 	}
 
 	bc := &BaselineCalibrator{
-		baselines:       make(map[string]*ASNBaseline),
 		minObservations: cfg.MinObservations,
 		retentionPeriod: cfg.RetentionPeriod,
 		cleanupInterval: cfg.CleanupInterval,
-		lastCleanup:     time.Now(),
+	}
+	for i := range bc.shards {
+		bc.shards[i] = &baselineShard{baselines: make(map[string]*ASNBaseline)}
 	}
 
 	// Start cleanup goroutine
@@ -105,16 +134,17 @@ func (bc *BaselineCalibrator) RecordObservation(asn string, obs ObservationData)
 		obs.Timestamp = time.Now()
 	}
 
-	bc.mu.Lock()
-	defer bc.mu.Unlock()
+	shard := bc.shardFor(asn)
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
 
-	baseline, ok := bc.baselines[asn]
+	baseline, ok := shard.baselines[asn]
 	if !ok {
 		baseline = &ASNBaseline{
 			ASN:       asn,
 			FirstSeen: obs.Timestamp,
 		}
-		bc.baselines[asn] = baseline
+		shard.baselines[asn] = baseline
 	}
 
 	baseline.LastSeen = obs.Timestamp
@@ -176,14 +206,15 @@ type AnomalyScore struct {
 
 // CalculateAnomaly calculates z-scores for an observation against the baseline
 func (bc *BaselineCalibrator) CalculateAnomaly(asn string, obs ObservationData) AnomalyScore {
-	bc.mu.RLock()
-	defer bc.mu.RUnlock()
+	shard := bc.shardFor(asn)
+	shard.mu.RLock()
+	defer shard.mu.RUnlock()
 
 	result := AnomalyScore{
 		ASN: asn,
 	}
 
-	baseline, ok := bc.baselines[asn]
+	baseline, ok := shard.baselines[asn]
 	if !ok || baseline.ObservationCount < bc.minObservations {
 		result.IsBaselineValid = false
 		return result
@@ -250,10 +281,11 @@ func (as *AnomalyScore) IsAnomalous() bool {
 
 // GetBaseline returns the baseline for an ASN
 func (bc *BaselineCalibrator) GetBaseline(asn string) *ASNBaseline {
-	bc.mu.RLock()
-	defer bc.mu.RUnlock()
+	shard := bc.shardFor(asn)
+	shard.mu.RLock()
+	defer shard.mu.RUnlock()
 
-	if baseline, ok := bc.baselines[asn]; ok {
+	if baseline, ok := shard.baselines[asn]; ok {
 		// Return a copy to avoid race conditions
 		baselineCopy := *baseline
 		return &baselineCopy
@@ -264,14 +296,15 @@ func (bc *BaselineCalibrator) GetBaseline(asn string) *ASNBaseline {
 
 // GetStats returns calibrator statistics
 func (bc *BaselineCalibrator) GetStats() (calibratedASNs int, totalObservations uint64) {
-	bc.mu.RLock()
-	defer bc.mu.RUnlock()
-
-	for _, baseline := range bc.baselines {
-		if baseline.ObservationCount >= bc.minObservations {
-			calibratedASNs++
+	for _, shard := range bc.shards {
+		shard.mu.RLock()
+		for _, baseline := range shard.baselines {
+			if baseline.ObservationCount >= bc.minObservations {
+				calibratedASNs++
+			}
+			totalObservations += baseline.ObservationCount
 		}
-		totalObservations += baseline.ObservationCount
+		shard.mu.RUnlock()
 	}
 
 	return
@@ -287,28 +320,29 @@ func (bc *BaselineCalibrator) cleanupLoop() {
 	}
 }
 
-// cleanup removes baselines that haven't been updated recently
+// cleanup removes baselines that haven't been updated recently. Each shard
+// is locked independently so a cleanup pass never blocks the entire
+// calibrator - only the one shard being swept at a time.
 func (bc *BaselineCalibrator) cleanup() {
-	bc.mu.Lock()
-	defer bc.mu.Unlock()
-
 	now := time.Now()
 	cutoff := now.Add(-bc.retentionPeriod)
 
-	for asn, baseline := range bc.baselines {
-		if baseline.LastSeen.Before(cutoff) {
-			delete(bc.baselines, asn)
+	calibratedCount := 0
+	for _, shard := range bc.shards {
+		shard.mu.Lock()
+		for asn, baseline := range shard.baselines {
+			if baseline.LastSeen.Before(cutoff) {
+				delete(shard.baselines, asn)
+			}
 		}
+		for _, baseline := range shard.baselines {
+			if baseline.ObservationCount >= bc.minObservations {
+				calibratedCount++
+			}
+		}
+		shard.mu.Unlock()
 	}
 
 	// Update metric for calibrated ASNs (those with enough observations)
-	calibratedCount := 0
-	for _, baseline := range bc.baselines {
-		if baseline.ObservationCount >= uint64(bc.minObservations) {
-			calibratedCount++
-		}
-	}
 	metrics.BaselineCalibratedASNs.Set(float64(calibratedCount))
-
-	bc.lastCleanup = now
 }
