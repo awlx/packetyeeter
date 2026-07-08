@@ -2,6 +2,7 @@ package ja4db
 
 import (
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -24,7 +25,19 @@ var (
 )
 
 const (
-	JA4DBURL         = "https://ja4db.com/api/download/"
+	// JA4DBURL was the free, keyless JA4DB bulk-download API. As of 2026,
+	// ja4db.com redirects here and FoxIO's ja4db.foxio.io no longer serves
+	// this endpoint publicly (it now requires an authenticated account) -
+	// the request reliably returns 404. Kept as the primary source in case
+	// it is restored; FallbackURL below is used when it fails.
+	JA4DBURL = "https://ja4db.com/api/download/"
+
+	// FallbackURL is FoxIO's public, unauthenticated, community-maintained
+	// JA4+ mapping CSV from the ja4 GitHub repo. It is much smaller than the
+	// old JA4DB bulk export and lacks fields like ObservationCount/Verified/
+	// CertificateAuthority, but it is free, keyless, and currently live.
+	FallbackURL = "https://raw.githubusercontent.com/FoxIO-LLC/ja4/main/ja4plus-mapping.csv"
+
 	UpdateInterval   = 12 * time.Hour
 	DefaultCachePath = "/var/cache/packetyeeter/ja4db.json"
 )
@@ -57,8 +70,13 @@ func (e JA4Entry) GetSearchableText() string {
 
 // JA4Database holds the loaded JA4 database with separate maps for different fingerprint types
 type JA4Database struct {
-	LastUpdated         time.Time
-	Version             string
+	LastUpdated time.Time
+	Version     string
+	// Source records where the currently loaded data came from: "primary"
+	// (JA4DBURL), "fallback" (FallbackURL), or "cache" (on-disk cache from
+	// a previous run). Useful for distinguishing full-fidelity data from
+	// the reduced-fidelity community CSV fallback.
+	Source              string
 	Entries             map[string]JA4Entry // ja4_fingerprint -> entry
 	EntriesByJA4Prefix  map[string]JA4Entry // ja4 prefix (p1..p6) -> entry
 	EntriesByJA4H       map[string]JA4Entry // ja4h_fingerprint -> entry
@@ -75,6 +93,12 @@ type Downloader struct {
 	logger    *logrus.Logger
 	ctx       context.Context
 	cancel    context.CancelFunc
+
+	// primaryURL and fallbackURL default to JA4DBURL and FallbackURL but are
+	// overridable (unexported, test-only) so unit tests can point at local
+	// httptest servers instead of real network endpoints.
+	primaryURL  string
+	fallbackURL string
 }
 
 // NewDownloader creates a new JA4 database downloader
@@ -97,9 +121,11 @@ func NewDownloader(cachePath string, logger *logrus.Logger) *Downloader {
 			EntriesByJA4HPrefix: make(map[string]JA4Entry),
 			EntriesByJA4T:       make(map[string]JA4Entry),
 		},
-		logger: logger,
-		ctx:    ctx,
-		cancel: cancel,
+		logger:      logger,
+		ctx:         ctx,
+		cancel:      cancel,
+		primaryURL:  JA4DBURL,
+		fallbackURL: FallbackURL,
 	}
 }
 
@@ -181,45 +207,193 @@ func (d *Downloader) periodicUpdate() {
 	}
 }
 
-// Download fetches the latest JA4 database from ja4db.com
+// Download fetches the latest JA4 database. It tries the primary JA4DBURL
+// first; if that fails (e.g. the free bulk-download API is unavailable or
+// has been removed upstream), it falls back to FallbackURL, FoxIO's public
+// JA4+ mapping CSV, which is smaller and lower-fidelity but free and keyless.
 func (d *Downloader) Download() error {
 	d.logger.Info("Downloading JA4 database...")
 
-	req, err := http.NewRequestWithContext(d.ctx, "GET", JA4DBURL, nil)
+	entries, version, err := d.fetchPrimary()
+	source := "primary"
 	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
+		if isNotFoundErr(err) {
+			d.logger.WithError(err).Warn(
+				"Primary JA4DB endpoint returned 404 - the free bulk-download API " +
+					"appears to have been removed or moved behind authentication " +
+					"upstream, not a transient outage. Falling back to the community " +
+					"JA4+ mapping CSV (smaller, reduced-fidelity data).")
+		} else {
+			d.logger.WithError(err).Warn("Primary JA4DB download failed, trying fallback source")
+		}
+
+		entries, err = d.fetchFallback()
+		source = "fallback"
+		if err != nil {
+			return fmt.Errorf("primary and fallback JA4 database downloads both failed: %w", err)
+		}
+	}
+
+	if len(entries) == 0 {
+		return fmt.Errorf("received empty database from %s source", source)
+	}
+
+	d.applyEntries(entries, source, version)
+
+	// Save to cache (just the array format) so a future restart can load it
+	// even if both sources are unreachable at that time.
+	if err := d.saveToCache(entries); err != nil {
+		d.logger.WithError(err).Warn("Failed to save JA4 database to cache")
+	}
+
+	return nil
+}
+
+// fetchPrimary downloads and parses the JSON array from JA4DBURL.
+func (d *Downloader) fetchPrimary() ([]JA4Entry, string, error) {
+	req, err := http.NewRequestWithContext(d.ctx, "GET", d.primaryURL, nil)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to create request: %w", err)
 	}
 
 	resp, err := d.Client.Do(req)
 	if err != nil {
-		return fmt.Errorf("failed to download database: %w", err)
+		return nil, "", fmt.Errorf("failed to download database: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+		return nil, "", &notFoundError{statusCode: resp.StatusCode}
 	}
 
-	// Read response body
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return fmt.Errorf("failed to read response: %w", err)
+		return nil, "", fmt.Errorf("failed to read response: %w", err)
 	}
 
-	d.logger.WithField("body_size", len(body)).Debug("Downloaded JA4 database")
+	d.logger.WithField("body_size", len(body)).Debug("Downloaded JA4 database (primary)")
 
-	// Parse JSON array from API
 	var entries []JA4Entry
 	if err := json.Unmarshal(body, &entries); err != nil {
-		return fmt.Errorf("failed to parse database: %w", err)
+		return nil, "", fmt.Errorf("failed to parse database: %w", err)
 	}
 
-	// Don't update if we got an empty response
-	if len(entries) == 0 {
-		return fmt.Errorf("received empty database from server")
+	return entries, resp.Header.Get("X-JA4DB-Version"), nil
+}
+
+// fetchFallback downloads and parses the community JA4+ mapping CSV from
+// FallbackURL when the primary source is unavailable.
+func (d *Downloader) fetchFallback() ([]JA4Entry, error) {
+	req, err := http.NewRequestWithContext(d.ctx, "GET", d.fallbackURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create fallback request: %w", err)
 	}
 
-	// Convert to maps for fast lookups - separate maps for each fingerprint type
+	resp, err := d.Client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to download fallback database: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("unexpected fallback status code: %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read fallback response: %w", err)
+	}
+
+	d.logger.WithField("body_size", len(body)).Debug("Downloaded JA4 database (fallback CSV)")
+
+	entries, err := parseJA4PlusCSV(body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse fallback CSV: %w", err)
+	}
+
+	return entries, nil
+}
+
+// notFoundError distinguishes an HTTP-level "not found" response (the
+// endpoint itself is gone) from other transport/parse failures, so callers
+// can log a more accurate message instead of a generic timeout/network error.
+type notFoundError struct {
+	statusCode int
+}
+
+func (e *notFoundError) Error() string {
+	return fmt.Sprintf("unexpected status code: %d", e.statusCode)
+}
+
+func isNotFoundErr(err error) bool {
+	nfe, ok := err.(*notFoundError)
+	return ok && nfe.statusCode == http.StatusNotFound
+}
+
+// parseJA4PlusCSV parses FoxIO's ja4plus-mapping.csv format:
+// Application,Library,Device,OS,ja4,ja4s,ja4h,ja4x,ja4t,ja4tscan,Notes
+// Column order/presence is read from the header row rather than assumed, so
+// upstream column reordering or additions don't silently corrupt the data.
+func parseJA4PlusCSV(data []byte) ([]JA4Entry, error) {
+	r := csv.NewReader(strings.NewReader(string(data)))
+	r.FieldsPerRecord = -1 // tolerate short/blank trailing fields
+
+	header, err := r.Read()
+	if err != nil {
+		return nil, fmt.Errorf("failed to read CSV header: %w", err)
+	}
+
+	col := make(map[string]int, len(header))
+	for i, name := range header {
+		col[strings.ToLower(strings.TrimSpace(name))] = i
+	}
+
+	get := func(row []string, name string) string {
+		idx, ok := col[name]
+		if !ok || idx >= len(row) {
+			return ""
+		}
+		return strings.TrimSpace(row[idx])
+	}
+
+	var entries []JA4Entry
+	for {
+		row, err := r.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("failed to read CSV row: %w", err)
+		}
+
+		entry := JA4Entry{
+			Application:         get(row, "application"),
+			Library:             get(row, "library"),
+			Device:              get(row, "device"),
+			OS:                  get(row, "os"),
+			Notes:               get(row, "notes"),
+			JA4Fingerprint:      get(row, "ja4"),
+			JA4SFingerprint:     get(row, "ja4s"),
+			JA4HFingerprint:     get(row, "ja4h"),
+			JA4XFingerprint:     get(row, "ja4x"),
+			JA4TFingerprint:     get(row, "ja4t"),
+			JA4TScanFingerprint: get(row, "ja4tscan"),
+		}
+
+		// Skip fully empty rows (no fingerprint of any kind to index on).
+		if entry.JA4Fingerprint == "" && entry.JA4HFingerprint == "" && entry.JA4TFingerprint == "" {
+			continue
+		}
+
+		entries = append(entries, entry)
+	}
+
+	return entries, nil
+}
+
+// applyEntries indexes entries into the lookup maps and atomically swaps
+// them into the live database, recording which source they came from.
+func (d *Downloader) applyEntries(entries []JA4Entry, source, version string) {
 	entriesMap := make(map[string]JA4Entry)
 	entriesByJA4Prefix := make(map[string]JA4Entry)
 	entriesByJA4H := make(map[string]JA4Entry)
@@ -250,7 +424,6 @@ func (d *Downloader) Download() error {
 		}
 	}
 
-	// Update database atomically
 	d.DB.mu.Lock()
 	d.DB.Entries = entriesMap
 	d.DB.EntriesByJA4Prefix = entriesByJA4Prefix
@@ -258,22 +431,17 @@ func (d *Downloader) Download() error {
 	d.DB.EntriesByJA4HPrefix = entriesByJA4HPrefix
 	d.DB.EntriesByJA4T = entriesByJA4T
 	d.DB.LastUpdated = time.Now()
-	d.DB.Version = resp.Header.Get("X-JA4DB-Version")
+	d.DB.Version = version
+	d.DB.Source = source
 	d.DB.mu.Unlock()
-
-	// Save to cache (just the array format)
-	if err := d.saveToCache(entries); err != nil {
-		d.logger.WithError(err).Warn("Failed to save JA4 database to cache")
-	}
 
 	d.logger.WithFields(logrus.Fields{
 		"ja4_entries":  len(entriesMap),
 		"ja4h_entries": len(entriesByJA4H),
 		"ja4t_entries": len(entriesByJA4T),
-		"version":      resp.Header.Get("X-JA4DB-Version"),
+		"version":      version,
+		"source":       source,
 	}).Info("JA4 database updated successfully")
-
-	return nil
 }
 
 // LookupResult captures a lookup outcome
@@ -583,6 +751,7 @@ func (d *Downloader) loadFromCache() error {
 	d.DB.EntriesByJA4HPrefix = entriesByJA4HPrefix
 	d.DB.EntriesByJA4T = entriesByJA4T
 	d.DB.LastUpdated = time.Now() // Mark as loaded now
+	d.DB.Source = "cache"
 	d.DB.mu.Unlock()
 
 	d.logger.WithFields(logrus.Fields{
@@ -633,6 +802,7 @@ func (d *Downloader) Stats() map[string]interface{} {
 		"ja4h_entries": len(d.DB.EntriesByJA4H),
 		"last_updated": d.DB.LastUpdated,
 		"version":      d.DB.Version,
+		"source":       d.DB.Source,
 		"cache_path":   d.CachePath,
 		"update_age":   time.Since(d.DB.LastUpdated).String(),
 	}

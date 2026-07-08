@@ -94,6 +94,20 @@ Only enable `-enable-pprof` temporarily and bind it to a trusted address.
 
 Keep `-enable-high-cardinality-metrics=false` unless you need per-IP or per-fingerprint diagnostics. If enabled, use short retention or restricted scraping for the diagnostic job.
 
+### JA4 database download logs "Primary JA4DB endpoint returned 404"
+
+The free, keyless `ja4db.com` bulk-download API that JA4 fingerprint lookups
+used to rely on has been removed or moved behind an authenticated account
+upstream (as of 2026, requests to it consistently 404). This is expected and
+non-fatal: the analyzer automatically falls back to FoxIO's public
+`ja4plus-mapping.csv` (a smaller, community-maintained mapping with less
+metadata per entry - no `observation_count`/`verified`/`certificate_authority`
+fields), and falls back further to its on-disk cache from a previous run if
+even that is unreachable. The `source` field logged in the "JA4 database
+updated successfully" line (`primary`, `fallback`, or `cache`) shows which
+one is currently loaded. JA4 lookups degrade gracefully to fewer hits; they
+never block analyzer startup.
+
 ### Campaign detections are firing but no blocks appear
 
 Attack campaign and carpet-bombing detections are observe-only aggregate
