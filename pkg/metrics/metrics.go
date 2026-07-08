@@ -566,6 +566,22 @@ var (
 		Help: "Current size of Shodan InternetDB cache",
 	})
 
+	// ThreatIntelEnrichQueueDepth/Drops track the bounded worker pool that
+	// replaced unbounded per-signal goroutine spawning for enrichment
+	// lookups. Under a flood of many distinct source IPs, the queue can
+	// fill up; drops are expected/safe (enrichment is best-effort) and
+	// exist to bound goroutines/outbound HTTP calls to the threat intel
+	// source rather than let them grow unbounded.
+	ThreatIntelEnrichQueueDepth = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "packetyeeter_threat_intel_enrich_queue_depth",
+		Help: "Current depth of the bounded threat intel enrichment work queue",
+	})
+
+	ThreatIntelEnrichQueueDrops = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "packetyeeter_threat_intel_enrich_queue_drops_total",
+		Help: "Total enrichment requests dropped because the bounded work queue was full",
+	})
+
 	// Path entropy metrics
 	PathEntropyByIP = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "packetyeeter_http_path_entropy_by_ip",

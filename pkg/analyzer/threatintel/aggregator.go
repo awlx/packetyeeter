@@ -12,6 +12,20 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+// enrichWorkerCount bounds the number of concurrent goroutines performing
+// outbound threat-intel lookups (currently Shodan InternetDB). Without a
+// bound, a flood of many distinct/spoofed source IPs -- exactly the
+// scenario this system exists to survive -- could otherwise spawn one
+// goroutine and one outbound HTTP request per signal, exhausting local
+// goroutines/file descriptors and risking the analyzer's own egress IP
+// being rate-limited by the upstream threat intel source.
+const enrichWorkerCount = 16
+
+// enrichQueueSize bounds how many pending enrichment requests can be
+// buffered before new requests are dropped (enrichment is best-effort;
+// dropping is safe and preferable to unbounded growth).
+const enrichQueueSize = 2048
+
 // ThreatIntelligence aggregates multiple threat intelligence sources
 type ThreatIntelligence struct {
 	shodan *ShodanInternetDB
@@ -20,6 +34,13 @@ type ThreatIntelligence struct {
 	mu              sync.RWMutex
 	enrichmentCache map[string]*EnrichedIPInfo
 	enrichmentTTL   time.Duration
+
+	// Bounded worker pool for enrichment lookups, plus in-flight
+	// deduplication so a burst of repeated signals for the same
+	// not-yet-cached IP doesn't queue redundant lookups.
+	enrichQueue chan net.IP
+	inFlightMu  sync.Mutex
+	inFlight    map[string]struct{}
 }
 
 // EnrichedIPInfo contains aggregated threat intelligence
@@ -43,16 +64,27 @@ func NewThreatIntelligence() *ThreatIntelligence {
 		shodan:          NewShodanInternetDB(24 * time.Hour),
 		enrichmentCache: make(map[string]*EnrichedIPInfo),
 		enrichmentTTL:   12 * time.Hour, // Re-enrich every 12 hours
+		enrichQueue:     make(chan net.IP, enrichQueueSize),
+		inFlight:        make(map[string]struct{}),
 	}
 
 	// Start background enrichment cleanup
 	go ti.cleanupLoop()
 
-	logrus.Info("Threat Intelligence initialized (Shodan InternetDB)")
+	// Start a bounded pool of enrichment workers instead of spawning one
+	// goroutine per signal (see enrichWorkerCount for why).
+	for i := 0; i < enrichWorkerCount; i++ {
+		go ti.enrichWorker()
+	}
+
+	logrus.WithField("workers", enrichWorkerCount).Info("Threat Intelligence initialized (Shodan InternetDB)")
 	return ti
 }
 
-// EnrichIP performs async threat intelligence lookup
+// EnrichIP requests an async threat intelligence lookup for ip. It is
+// non-blocking: if the bounded enrichment queue is full, or a lookup for
+// this IP is already in flight, the request is dropped (enrichment is
+// best-effort and safe to skip -- it never gates blocking decisions).
 func (t *ThreatIntelligence) EnrichIP(ip net.IP) {
 	if ip == nil {
 		return
@@ -69,8 +101,40 @@ func (t *ThreatIntelligence) EnrichIP(ip net.IP) {
 		return // Already fresh
 	}
 
-	// Async enrichment - don't block
-	go t.performEnrichment(ip)
+	// Deduplicate: don't queue another lookup for an IP that already has
+	// one in flight (common under repeated signals for the same source
+	// while the first lookup is still pending).
+	t.inFlightMu.Lock()
+	if _, already := t.inFlight[ipStr]; already {
+		t.inFlightMu.Unlock()
+		return
+	}
+	t.inFlight[ipStr] = struct{}{}
+	t.inFlightMu.Unlock()
+
+	select {
+	case t.enrichQueue <- ip:
+		metrics.ThreatIntelEnrichQueueDepth.Set(float64(len(t.enrichQueue)))
+	default:
+		// Queue full - drop and clear the in-flight marker so a future
+		// signal for this IP can try again.
+		t.inFlightMu.Lock()
+		delete(t.inFlight, ipStr)
+		t.inFlightMu.Unlock()
+		metrics.ThreatIntelEnrichQueueDrops.Inc()
+	}
+}
+
+// enrichWorker drains the bounded enrichment queue. A fixed pool of these
+// run for the lifetime of the process, capping the number of concurrent
+// outbound threat-intel lookups regardless of inbound signal volume.
+func (t *ThreatIntelligence) enrichWorker() {
+	for ip := range t.enrichQueue {
+		t.performEnrichment(ip)
+		t.inFlightMu.Lock()
+		delete(t.inFlight, ip.String())
+		t.inFlightMu.Unlock()
+	}
 }
 
 // performEnrichment fetches data from all sources
