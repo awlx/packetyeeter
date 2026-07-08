@@ -18,7 +18,7 @@ PacketYeeter is a high-performance, eBPF-based DDoS protection and traffic filte
 
 3.  **IP Allowlist (CIDR Support)**
     *   Protect specific IPs or ranges (CIDR notation) from ever being blocked.
-    *   Enforced today in the collector's userspace block-decision path (`-allowlist` flag, plus dynamic entries pushed by the analyzer); an allowlisted IP is simply never written to the kernel blocklist map.
+    *   Allowlisted CIDRs are synced into kernel-space LPM trie maps (`allowlist_v4`/`allowlist_v6`) at startup and updated dynamically when the analyzer pushes allowlist commands, so the XDP program bypasses matching traffic directly; the collector's userspace block-decision path also honors the same list as a second layer of defense. (TC-side handshake/latency tracking still observes allowlisted traffic — it only tracks state, it never blocks.)
     *   Supports both IPv4 and IPv6 CIDRs.
 
 4.  **Volumetric Rate Limiting (ICMP & UDP)**

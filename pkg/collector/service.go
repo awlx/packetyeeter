@@ -156,6 +156,15 @@ func (c *Collector) Start(ctx context.Context) error {
 	c.Maps = c.Loader.GetMaps()
 	c.Logger.Info("eBPF programs loaded and attached")
 
+	// Populate the kernel-space allowlist maps so XDP/TC can bypass
+	// allowlisted CIDRs directly, instead of relying solely on the
+	// userspace block-decision path.
+	if len(c.allowedNets) > 0 {
+		if err := c.Maps.SyncAllowlist(c.allowedNets); err != nil {
+			c.Logger.WithError(err).Warn("Failed to fully populate kernel-space allowlist maps")
+		}
+	}
+
 	if c.Config.SocketPath != "" {
 		if err := c.startManagementSocket(); err != nil {
 			return fmt.Errorf("failed to start management socket: %w", err)
@@ -435,6 +444,9 @@ func (c *Collector) executeCommand(cmd *apiv1.Command) {
 			ipNet = &net.IPNet{IP: ip, Mask: net.CIDRMask(128, 128)}
 		}
 		c.allowedNets = append(c.allowedNets, ipNet)
+		if err := c.Maps.AddAllowlistEntry(ipNet); err != nil {
+			logger.WithError(err).Warn("Failed to add IP to kernel-space allowlist")
+		}
 		logger.WithField("cidr", ipNet.String()).Info("Added IP to allowlist by analyzer command")
 
 	case apiv1.CommandType_COMMAND_REMOVE_ALLOWLIST_IP:
@@ -443,6 +455,10 @@ func (c *Collector) executeCommand(cmd *apiv1.Command) {
 		for _, n := range c.allowedNets {
 			if !n.IP.Equal(ip) {
 				filtered = append(filtered, n)
+				continue
+			}
+			if err := c.Maps.RemoveAllowlistEntry(n); err != nil {
+				logger.WithError(err).Warn("Failed to remove IP from kernel-space allowlist")
 			}
 		}
 		c.allowedNets = filtered
