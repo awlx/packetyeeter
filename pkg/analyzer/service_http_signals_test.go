@@ -127,22 +127,27 @@ func TestIsMissingSecFetch(t *testing.T) {
 
 func TestIsAcceptMismatch(t *testing.T) {
 	cases := []struct {
-		name     string
-		chromeUA bool
-		accept   string
-		want     bool
+		name         string
+		chromeUA     bool
+		accept       string
+		secFetchDest string
+		want         bool
 	}{
-		{"chrome with real accept header", true, "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8", false},
-		{"chrome with empty accept", true, "", true},
-		{"chrome with bare wildcard", true, "*/*", true},
-		{"chrome with whitespace-padded wildcard", true, "  */*  ", true},
-		{"non-chrome with empty accept (not gated)", false, "", false},
-		{"non-chrome with wildcard (not gated)", false, "*/*", false},
+		{"chrome with real accept header, navigation", true, "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8", "document", false},
+		{"chrome with empty accept, no sec-fetch-dest", true, "", "", true},
+		{"chrome with bare wildcard, no sec-fetch-dest", true, "*/*", "", true},
+		{"chrome with whitespace-padded wildcard, no sec-fetch-dest", true, "  */*  ", "", true},
+		{"chrome with bare wildcard on navigation", true, "*/*", "document", true},
+		{"chrome fetch()/XHR subresource with wildcard (not gated)", true, "*/*", "empty", false},
+		{"chrome script subresource with wildcard (not gated)", true, "*/*", "script", false},
+		{"chrome image subresource with wildcard (not gated)", true, "*/*", "image", false},
+		{"non-chrome with empty accept (not gated)", false, "", "", false},
+		{"non-chrome with wildcard (not gated)", false, "*/*", "", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := isAcceptMismatch(tc.chromeUA, tc.accept); got != tc.want {
-				t.Errorf("isAcceptMismatch(%v, %q) = %v, want %v", tc.chromeUA, tc.accept, got, tc.want)
+			if got := isAcceptMismatch(tc.chromeUA, tc.accept, tc.secFetchDest); got != tc.want {
+				t.Errorf("isAcceptMismatch(%v, %q, %q) = %v, want %v", tc.chromeUA, tc.accept, tc.secFetchDest, got, tc.want)
 			}
 		})
 	}

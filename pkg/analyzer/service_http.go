@@ -105,11 +105,24 @@ func isMissingSecFetch(blinkUA bool, secFetchSite, secFetchMode, secFetchDest st
 }
 
 // isAcceptMismatch reports whether a claimed browser UA sent an empty or
-// bare wildcard-only Accept header. Real browsers always send a detailed,
-// specific Accept header (e.g. "text/html,application/xhtml+xml,...");
-// scripted HTTP clients frequently leave it empty or default to "*/*".
-func isAcceptMismatch(chromeUA bool, accept string) bool {
-	return chromeUA && (accept == "" || strings.TrimSpace(accept) == "*/*")
+// bare wildcard-only Accept header for what looks like a top-level page
+// navigation. Real browsers always send a detailed, specific Accept header
+// for navigations (e.g. "text/html,application/xhtml+xml,..."); scripted
+// HTTP clients frequently leave it empty or default to "*/*". However, real
+// browsers' fetch()/XHR calls for subresources (JSON, WASM, scripts,
+// images, etc.) legitimately default to "Accept: */*" too, so this only
+// fires when Sec-Fetch-Dest is absent (not sent at all - the pre-existing
+// behavior, kept for clients that don't send Fetch Metadata headers) or is
+// explicitly "document" (a real navigation). Any other Sec-Fetch-Dest value
+// indicates a legitimate non-navigation subresource fetch and is excluded.
+func isAcceptMismatch(chromeUA bool, accept, secFetchDest string) bool {
+	if !chromeUA {
+		return false
+	}
+	if secFetchDest != "" && secFetchDest != "document" {
+		return false
+	}
+	return accept == "" || strings.TrimSpace(accept) == "*/*"
 }
 
 // isTLSVersionMismatch reports whether a claimed Chrome/Edge UA negotiated
@@ -316,7 +329,10 @@ func (a *Analyzer) processHTTPRequest(sig *apiv1.Signal, ip net.IP, asn string, 
 	// Accept header heuristics: real browsers send a specific, detailed Accept
 	// header (e.g. "text/html,application/xhtml+xml,..."); scripted HTTP
 	// clients frequently leave it empty or send the default wildcard "*/*".
-	if isAcceptMismatch(chromeUA, ctx.Accept) && a.SignalBuilder != nil {
+	// Excluded for legitimate non-navigation subresource fetches (fetch()/XHR
+	// for JSON, WASM, scripts, etc.), which real browsers legitimately send
+	// with "Accept: */*" - see isAcceptMismatch's doc comment.
+	if isAcceptMismatch(chromeUA, ctx.Accept, ctx.SecFetchDest) && a.SignalBuilder != nil {
 		a.SignalBuilder.EmitHeaderAnomaly(ip, asn, org, aidetection.SignalAcceptMismatch, sig.Ja4H, sig.Ja4H, sig.Ja4T, createHTTPMetadata(map[string]interface{}{
 			"accept": ctx.Accept,
 		}))
