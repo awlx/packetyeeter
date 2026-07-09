@@ -1169,7 +1169,8 @@
               <th>Category</th>
               <th>Verification</th>
               <th>Confidence</th>
-              <th>Signals</th>
+              <th>Why Flagged</th>
+              <th></th>
             </tr>
           </thead>
           <tbody id="historyTable"></tbody>
@@ -1382,6 +1383,135 @@
     let selectedDetections = new Set();
     let labeledData = JSON.parse(localStorage.getItem('labeledDetections') || '{}');
 
+    // Human-readable labels + short "why this matters" descriptions for every
+    // signal type the engine can emit. Falls back to a title-cased version of
+    // the raw type if a new signal type is added here without an entry.
+    const SIGNAL_INFO = {
+      ua_suspicious: { label: 'Suspicious User-Agent', desc: 'The User-Agent string looks automated, empty, or doesn\'t match a real browser.' },
+      missing_accept_language: { label: 'Missing Accept-Language', desc: 'Real browsers almost always send this header; automated clients often omit it.' },
+      missing_accept_encoding: { label: 'Missing Accept-Encoding', desc: 'Real browsers advertise supported compression; scripts/bots often skip it.' },
+      no_cookies: { label: 'No Cookies Sent', desc: 'Client never sent a cookie even though the site issues them - typical of scripted requests.' },
+      no_referer: { label: 'No Referer', desc: 'Request arrived with no referer, consistent with direct/scripted access rather than link navigation.' },
+      missing_ja4h: { label: 'Missing JA4H Fingerprint', desc: 'No HTTP fingerprint captured for this request.' },
+      honeypot: { label: 'Honeypot Hit', desc: 'Client accessed a trap path/resource that legitimate users and crawlers never touch.' },
+      numeric_seq: { label: 'Numeric ID Sequence', desc: 'Client is walking through sequential numeric IDs (e.g. /item/1, /item/2, ...) - classic scraping behavior.' },
+      alpha_seq: { label: 'Alphabetic Sequence', desc: 'Client is walking through sequential alphabetic identifiers.' },
+      request_timing_regular: { label: 'Metronomic Request Timing', desc: 'Requests arrive at suspiciously constant intervals - a strong sign of a script/scheduler rather than a human.' },
+      ja4_rotation: { label: 'JA4 Fingerprint Rotation', desc: 'The same IP claims a consistent browser identity but presents multiple different TLS/HTTP fingerprints - typical of rotating proxies/bots.' },
+      proxy_lag: { label: 'Proxy Lag', desc: 'Latency pattern consistent with traffic passing through a proxy or automation layer.' },
+      bot_ua: { label: 'Bot User-Agent', desc: 'User-Agent explicitly identifies as a bot/crawler.' },
+      user_agent_bot_keyword: { label: 'Bot Keyword in UA', desc: 'User-Agent string contains a known bot/crawler keyword.' },
+      ja4h_bot_match: { label: 'JA4H Matches Known Bot', desc: 'The HTTP fingerprint matches a signature previously seen from bot/malicious traffic.' },
+      browser_detected: { label: 'Browser Detected', desc: 'Fingerprint/headers are consistent with a real browser.' },
+      high_latency: { label: 'High Latency', desc: 'Unusually high response latency for this client.' },
+      latency_mismatch: { label: 'Latency Mismatch', desc: 'Latency doesn\'t match what\'s expected for the claimed client/location.' },
+      latency_anomaly: { label: 'Latency Anomaly', desc: 'Latency pattern deviates from the established baseline for this client.' },
+      high_frequency: { label: 'High Request Frequency', desc: 'Client is making requests far more often than typical traffic.' },
+      ja4t_abuse: { label: 'JA4T Abuse Pattern', desc: 'TCP fingerprint matches a pattern associated with abusive automated traffic.' },
+      ttl_anomaly: { label: 'TTL Anomaly', desc: 'IP TTL value is inconsistent with the claimed network path/OS.' },
+      window_anomaly: { label: 'TCP Window Anomaly', desc: 'TCP window size is inconsistent with a normal client stack.' },
+      connection_pattern: { label: 'Rapid Reconnection', desc: 'Client is opening/closing connections unusually quickly or repeatedly.' },
+      packet_size_uniform: { label: 'Uniform Packet Sizes', desc: 'Packet sizes are unnaturally uniform, consistent with scripted/generated traffic.' },
+      timing_pattern: { label: 'Mechanical Packet Timing', desc: 'Packet-level timing is too regular to be human-driven.' },
+      incomplete_handshake: { label: 'Incomplete TCP Handshake', desc: 'Connection attempts that never complete the TCP handshake - typical of SYN flood traffic.' },
+      tcp_metadata: { label: 'TCP Metadata Anomaly', desc: 'Low-level TCP metadata looks inconsistent with normal client behavior.' },
+      port_scanning: { label: 'Port Scanning', desc: 'Client is probing a sequential range of destination ports.' },
+      geo_anomaly: { label: 'Geographic Anomaly', desc: 'Traffic pattern implies an impossible or highly unlikely geographic path.' },
+      connection_reuse: { label: 'Unusual Connection Reuse', desc: 'Connection reuse pattern doesn\'t match typical client behavior.' },
+      clock_skew_anomaly: { label: 'Clock Skew Anomaly', desc: 'TCP timestamp clock skew is inconsistent with a normal single client.' },
+      clock_skew_change: { label: 'Clock Skew Changed', desc: 'This client\'s clock skew changed significantly mid-session, suggesting a different underlying host/NAT peer.' },
+      entropy_low: { label: 'Low Payload Entropy', desc: 'Payload content is repetitive/templated rather than organic.' },
+      entropy_high: { label: 'High Payload Entropy', desc: 'Payload content is unusually uniform/random, consistent with encrypted or generated traffic.' },
+      entropy_mixed: { label: 'Mixed Entropy Pattern', desc: 'Entropy pattern across requests is consistent with automated/bot traffic.' },
+      path_entropy_low: { label: 'Repetitive Request Paths', desc: 'This client requests the same small set of paths repeatedly rather than browsing naturally.' },
+      path_seq_ids: { label: 'Sequential Path IDs', desc: 'Requested paths walk through sequential numeric identifiers.' },
+      header_order_anomaly: { label: 'Header Order Anomaly', desc: 'HTTP header order doesn\'t match what the claimed browser normally sends.' },
+      missing_sec_ch: { label: 'Missing Sec-CH Headers', desc: 'Claimed browser but missing Client-Hints headers real browsers of that type send.' },
+      missing_sec_fetch: { label: 'Missing Sec-Fetch Headers', desc: 'Claimed browser but missing Sec-Fetch-* headers, which are hard to fake and browser-generated.' },
+      accept_mismatch: { label: 'Accept Header Mismatch', desc: 'Accept header is missing or wildcard-only for a claimed browser - browsers normally send a specific list.' },
+      tls_version_mismatch: { label: 'TLS Version Mismatch', desc: 'Negotiated TLS version is older than what the claimed browser version would use.' },
+      excessive_404: { label: 'Excessive 404s', desc: 'Client is triggering an unusually high rate of "not found" responses, consistent with path enumeration.' },
+      excessive_403: { label: 'Excessive 403s', desc: 'Client is triggering an unusually high rate of "forbidden" responses, consistent with permission probing.' },
+      error_burst: { label: 'Burst of 4xx Errors', desc: 'A burst of consecutive client errors in a short window - typical of a scanner.' },
+      icmp_flood: { label: 'ICMP Flood', desc: 'Excessive ICMP traffic consistent with a flood attack.' },
+      udp_flood: { label: 'UDP Flood', desc: 'Excessive UDP traffic consistent with a flood attack.' },
+      syn_flood: { label: 'SYN Flood', desc: 'Excessive half-open TCP connections consistent with a SYN flood attack.' },
+      bad_flags: { label: 'Invalid TCP Flags', desc: 'Packets carry TCP flag combinations that don\'t occur in normal traffic.' },
+      carpet_bombing: { label: 'Carpet-Bombing Pattern', desc: 'Low-rate traffic spread across many destination IPs, a DDoS evasion technique.' },
+      dns_reflection: { label: 'DNS Reflection', desc: 'Traffic pattern consistent with DNS reflection/amplification abuse.' },
+      ntp_reflection: { label: 'NTP Reflection', desc: 'Traffic pattern consistent with NTP reflection/amplification abuse.' },
+      ssdp_reflection: { label: 'SSDP Reflection', desc: 'Traffic pattern consistent with SSDP reflection/amplification abuse.' },
+      cldap_reflection: { label: 'CLDAP Reflection', desc: 'Traffic pattern consistent with CLDAP reflection/amplification abuse.' },
+      memcached_reflection: { label: 'Memcached Reflection', desc: 'Traffic pattern consistent with Memcached reflection/amplification abuse.' },
+      quic_initial_flood: { label: 'QUIC Initial Flood', desc: 'Excessive QUIC connection-initiation packets consistent with a flood attack.' },
+      known_scanner: { label: 'Known Scanner (Threat Intel)', desc: 'This IP is flagged as a scanner by external threat-intelligence sources.' },
+      high_threat_score: { label: 'High Threat Score', desc: 'This IP has an elevated threat score from threat-intelligence sources.' },
+      tor_node: { label: 'Tor Exit Node', desc: 'Traffic originates from a known Tor exit node.' },
+      vpn_proxy: { label: 'VPN / Proxy Service', desc: 'Traffic originates from a known VPN or proxy service IP range.' },
+    };
+
+    function signalLabel(type) {
+      return (SIGNAL_INFO[type] && SIGNAL_INFO[type].label) || String(type).replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+    }
+
+    function signalDesc(type) {
+      return (SIGNAL_INFO[type] && SIGNAL_INFO[type].desc) || '';
+    }
+
+    // Human-readable labels + descriptions for bot categories and verification status.
+    const CATEGORY_INFO = {
+      unknown: { label: 'Unknown', desc: 'Not enough signals yet to classify this client.' },
+      ai_crawler_verified: { label: 'AI Crawler (Verified)', desc: 'Confirmed AI crawler (e.g. GPTBot, ClaudeBot) via DNS/PTR or trusted-ASN verification.' },
+      ai_crawler_unknown: { label: 'AI Crawler (Unverified)', desc: 'Claims to be an AI crawler by User-Agent, but identity could not be verified.' },
+      search_engine: { label: 'Search Engine (Verified)', desc: 'Confirmed search engine crawler (e.g. Googlebot, Bingbot) via DNS/PTR verification.' },
+      search_unknown: { label: 'Search Engine (Unverified)', desc: 'Claims to be a search engine crawler by User-Agent, but identity could not be verified.' },
+      monitoring: { label: 'Monitoring Service', desc: 'Recognized uptime/monitoring service traffic.' },
+      scanner: { label: 'Security Scanner', desc: 'Behavior consistent with a vulnerability/security scanner (port scans, excessive 404/403s, known-scanner threat intel).' },
+      script: { label: 'Automated Script', desc: 'Behavior consistent with a plain script/HTTP client (curl, wget, python-requests) rather than a browser or known crawler.' },
+      scraper: { label: 'Content Scraper', desc: 'Behavior consistent with automated content scraping: sequential/enumerated paths, repetitive access, or fingerprint rotation, generally corroborated by a bot-like signal.' },
+      ddos: { label: 'DDoS Pattern', desc: 'Flood-level traffic pattern (SYN/UDP/ICMP flood, high frequency, or connection abuse) consistent with a denial-of-service attempt.' },
+      browser: { label: 'Browser', desc: 'Fingerprint and headers are consistent with a real browser client.' },
+      legitimate: { label: 'Legitimate Bot', desc: 'Verified, non-browser service that is intentionally allowed (e.g. a trusted integration or monitored bot).' },
+      malicious: { label: 'Malicious', desc: 'Confirmed malicious activity: honeypot hit, known-bad fingerprint, or other high-confidence attack signal.' },
+    };
+
+    const VERIFICATION_INFO = {
+      unknown: 'Verification not attempted or inconclusive.',
+      verified: 'Identity confirmed via forward/reverse DNS (PTR) lookup or trusted ASN match.',
+      failed: 'Verification was attempted (e.g. PTR lookup for a claimed crawler) but did not match - identity claim is not trustworthy.',
+      skipped: 'Verification does not apply to this type of client.',
+    };
+
+    function categoryLabel(cat) {
+      return (CATEGORY_INFO[cat] && CATEGORY_INFO[cat].label) || String(cat || 'unknown');
+    }
+
+    function categoryTitle(cat) {
+      return (CATEGORY_INFO[cat] && CATEGORY_INFO[cat].desc) || '';
+    }
+
+    function verificationTitle(status) {
+      return VERIFICATION_INFO[status] || '';
+    }
+
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text == null ? '' : text;
+      return div.innerHTML;
+    }
+
+    // Builds a short, scannable "why flagged" line from a detection's top
+    // signals, e.g. "Numeric ID Sequence, No Cookies Sent, +2 more".
+    function topSignalsSummary(det, limit) {
+      limit = limit || 2;
+      const breakdown = det.signal_breakdown || {};
+      const types = Object.keys(breakdown).sort((a, b) => (breakdown[b] || 0) - (breakdown[a] || 0));
+      if (types.length === 0) return '';
+      const shown = types.slice(0, limit).map(signalLabel);
+      const extra = types.length - shown.length;
+      return shown.join(', ') + (extra > 0 ? `, +${extra} more` : '');
+    }
+
     // Theme toggle function
     const ICON_MOON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:1.1rem;height:1.1rem;"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>';
     const ICON_SUN = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:1.1rem;height:1.1rem;"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>';
@@ -1583,10 +1713,10 @@
           <td><input type="checkbox" data-ip="${det.ip}" ${isSelected ? 'checked' : ''} onchange="toggleDetectionSelect(this, '${det.ip}')" onclick="event.stopPropagation()"></td>
           <td><strong>${det.ip || ''}</strong></td>
           <td>${det.asn || ''}</td>
-          <td title="${org}">${orgShort}</td>
-          <td><span class="badge badge-${category}">${category}</span>${statusBadge}</td>
+          <td title="${escapeHtml(org)}">${orgShort}</td>
+          <td><span class="badge badge-${category}" title="${escapeHtml(categoryTitle(category))}">${categoryLabel(category)}</span>${statusBadge}</td>
           <td>${det.confidence != null ? (det.confidence * 100).toFixed(0) + '%' : ''}</td>
-          <td>${det.signal_count || 0}</td>
+          <td title="${escapeHtml(topSignalsSummary(det, 3))}">${det.signal_count || 0}</td>
           <td>${time ? time.toLocaleTimeString() : ''}</td>
         `;
         tr.onclick = (e) => {
@@ -1628,18 +1758,23 @@
         return;
       }
       
-      // Helper to escape HTML
-      const escapeHtml = (text) => {
-        const div = document.createElement('div');
-        div.textContent = text;
-        return div.innerHTML;
-      };
-      
       let html = `
         <div class="detail-section">
           <div class="detail-title">Source IP</div>
           <div class="detail-value">${det.ip}</div>
           <div style="color: var(--text-muted);">${det.asn} - ${det.org}</div>
+        </div>
+
+        <div class="detail-section">
+          <div class="detail-title">Category &amp; Verdict</div>
+          <span class="badge badge-${det.bot_category}" title="${escapeHtml(categoryTitle(det.bot_category))}">${categoryLabel(det.bot_category)}</span>
+          <span class="badge badge-${det.verification_status || 'unknown'}" style="margin-left: 0.5rem;" title="${escapeHtml(verificationTitle(det.verification_status))}">verification: ${det.verification_status || 'unknown'}</span>
+          <div style="color: var(--text-muted); font-size: 0.8rem; margin-top: 0.35rem;">${escapeHtml(categoryTitle(det.bot_category))}</div>
+        </div>
+
+        <div class="detail-section">
+          <div class="detail-title">${det.would_block ? 'Why It Would Be Blocked' : 'Why It Was Flagged (Not Blocking)'}</div>
+          <div style="background: var(--surface-alt); padding: 0.75rem; border-radius: 0.375rem; border: 1px solid var(--border);">${escapeHtml(det.block_reason) || 'N/A'}</div>
         </div>
 
         <div class="detail-section">
@@ -1721,25 +1856,14 @@
         </div>
         
         <div class="detail-section">
-          <div class="detail-title">Category</div>
-          <span class="badge badge-${det.bot_category}">${det.bot_category}</span>
-          <span class="badge badge-${det.verification_status || 'unknown'}" style="margin-left: 0.5rem;" title="Identity verification result (e.g. DNS/PTR or trusted-ASN check for claimed crawlers)">verification: ${det.verification_status || 'unknown'}</span>
-        </div>
-        
-        <div class="detail-section">
-          <div class="detail-title">${det.would_block ? 'Block Reason' : 'Detection Reason (Not Blocking)'}</div>
-          <div>${det.block_reason || 'N/A'}</div>
-        </div>
-        
-        <div class="detail-section">
           <div class="detail-title">Signal Breakdown</div>
       `;
       
       for (const [type, count] of Object.entries(det.signal_breakdown || {})) {
         html += `
-          <div class="signal-item">
+          <div class="signal-item" title="${escapeHtml(signalDesc(type))}">
             <div class="signal-header">
-              <span class="signal-type">${type.replace(/_/g, ' ')}</span>
+              <span class="signal-type">${escapeHtml(signalLabel(type))}</span>
               <span class="signal-count">${count}</span>
             </div>
           </div>
@@ -1757,12 +1881,14 @@
         
         det.signals.forEach((signal, idx) => {
           const signalId = `signal-${idx}`;
+          const desc = signalDesc(signal.type);
           html += `
-            <div class="signal-item" id="${signalId}" onclick="toggleSignalDetail(event, '${signalId}')">
+            <div class="signal-item" id="${signalId}" onclick="toggleSignalDetail(event, '${signalId}')" title="${escapeHtml(desc)}">
               <div class="signal-header">
-                <span class="signal-type">${signal.type.replace(/_/g, ' ')}</span>
+                <span class="signal-type">${escapeHtml(signalLabel(signal.type))}</span>
                 <span style="font-size: 0.875rem; color: var(--text-muted);">▼</span>
               </div>
+              ${desc ? `<div style="font-size: 0.75rem; color: var(--text-muted); padding: 0 0.25rem 0.25rem;">${escapeHtml(desc)}</div>` : ''}
               <div class="signal-metadata" id="${signalId}-meta" style="display: none;">
           `;
           
@@ -2818,7 +2944,7 @@
             <td style="text-align: right; font-weight: 700; color: ${blockColor};">${blockRate}%</td>
             <td style="text-align: right;">${verifiedRate}%</td>
             <td style="text-align: right;">${avgConfidence}%</td>
-            <td><span class="badge badge-${topCategory}">${topCategory}</span></td>
+            <td><span class="badge badge-${topCategory}" title="${escapeHtml(categoryTitle(topCategory))}">${categoryLabel(topCategory)}</span></td>
           </tr>
         `;
       });
@@ -2948,12 +3074,13 @@
       tbody.innerHTML = '';
       
       if (!detections || detections.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="8" style="text-align: center; color: var(--text-muted); padding: 2rem;">No detections in the last 6 hours</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="9" style="text-align: center; color: var(--text-muted); padding: 2rem;">No detections in the last 6 hours</td></tr>';
         return;
       }
       
       detections.forEach(det => {
         const tr = document.createElement('tr');
+        tr.style.cursor = 'pointer';
         const time = det.detection_time ? new Date(det.detection_time) : null;
         const category = det.bot_category || 'unknown';
         const verification = det.verification_status || 'unknown';
@@ -2963,20 +3090,51 @@
         const statusBadge = det.would_block 
           ? '<span class="badge" style="background: var(--danger-soft-bg); color: var(--danger-soft-text); margin-left: 0.5rem;">BLOCK</span>'
           : '';
+
+        const why = topSignalsSummary(det, 2);
+        const whyCell = why
+          ? `<span title="${escapeHtml(det.block_reason || '')}">${escapeHtml(why)}</span>`
+          : `<span style="color: var(--text-muted); font-style: italic;">${det.signal_count || 0} signal(s)</span>`;
         
         tr.innerHTML = `
           <td><small>${time ? time.toLocaleString() : ''}</small></td>
           <td style="font-family: monospace; font-weight: 600;">${det.ip || ''}</td>
           <td>${det.asn || ''}</td>
-          <td title="${org}">${orgShort}</td>
-          <td><span class="badge badge-${category}">${category}</span>${statusBadge}</td>
-          <td><span class="badge badge-${verification}">${verification}</span></td>
+          <td title="${escapeHtml(org)}">${orgShort}</td>
+          <td><span class="badge badge-${category}" title="${escapeHtml(categoryTitle(category))}">${categoryLabel(category)}</span>${statusBadge}</td>
+          <td><span class="badge badge-${verification}" title="${escapeHtml(verificationTitle(verification))}">${verification}</span></td>
           <td>${det.confidence != null ? (det.confidence * 100).toFixed(0) + '%' : ''}</td>
-          <td>${det.signal_count || 0}</td>
+          <td>${whyCell}</td>
+          <td><button class="btn btn-sm" onclick="event.stopPropagation(); viewHistoryDetail('${det.ip}')">Details</button></td>
         `;
+        tr.onclick = () => viewHistoryDetail(det.ip);
         
         tbody.appendChild(tr);
       });
+    }
+
+    // Opens the full drill-down for a history row by switching to the Live
+    // Detections tab and loading the same rich detail panel used there, so
+    // "why was this flagged" is always one click away from any table.
+    async function viewHistoryDetail(ip) {
+      if (!ip) return;
+      document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+      document.querySelectorAll('.container').forEach(cont => cont.classList.remove('active'));
+      document.querySelector('[onclick*="detections"]').classList.add('active');
+      document.getElementById('detectionsTab').classList.add('active');
+
+      try {
+        const res = await fetch(`/api/ip/${encodeURIComponent(ip)}`);
+        const data = await res.json();
+        currentDetection = data.detection;
+        selectedDetections.clear();
+        document.getElementById('selectAll').checked = false;
+        renderDetails(data);
+        updateActionBar();
+      } catch (e) {
+        console.error('Failed to fetch history detail:', e);
+        alert('Error loading detail: ' + e.message);
+      }
     }
 
     // Verified Bots
