@@ -842,6 +842,13 @@ func registerInspectorHandlers(a *Analyzer, mux *http.ServeMux) {
 		methods := make(map[string]int)
 		userAgents := make(map[string]int)
 		asns := make(map[string]int)
+		// countryKey -> {code, name, count}
+		type countryAgg struct {
+			Code  string
+			Name  string
+			Count int
+		}
+		countries := make(map[string]*countryAgg)
 
 		for _, det := range history {
 			if det.Hostname != "" {
@@ -863,6 +870,14 @@ func registerInspectorHandlers(a *Analyzer, mux *http.ServeMux) {
 			}
 			if det.ASN != "" {
 				asns[det.ASN]++
+			}
+			if det.CountryCode != "" && det.CountryCode != "unknown" {
+				agg, ok := countries[det.CountryCode]
+				if !ok {
+					agg = &countryAgg{Code: det.CountryCode, Name: det.Country}
+					countries[det.CountryCode] = agg
+				}
+				agg.Count++
 			}
 		}
 
@@ -924,12 +939,29 @@ func registerInspectorHandlers(a *Analyzer, mux *http.ServeMux) {
 			topASNs = topASNs[:20]
 		}
 
+		type countryItem struct {
+			Code  string `json:"code"`
+			Name  string `json:"name"`
+			Count int    `json:"count"`
+		}
+		topCountries := make([]countryItem, 0, len(countries))
+		for _, agg := range countries {
+			topCountries = append(topCountries, countryItem{Code: agg.Code, Name: agg.Name, Count: agg.Count})
+		}
+		sort.Slice(topCountries, func(i, j int) bool {
+			return topCountries[i].Count > topCountries[j].Count
+		})
+		if len(topCountries) > 20 {
+			topCountries = topCountries[:20]
+		}
+
 		writeJSON(w, map[string]interface{}{
 			"hostnames":      topHosts,
 			"paths":          topPaths,
 			"methods":        topMethods,
 			"user_agents":    topUAs,
 			"asns":           topASNs,
+			"countries":      topCountries,
 			"total_requests": len(history),
 		})
 	})
@@ -997,6 +1029,8 @@ type detectionDTO struct {
 	JA4T               string                           `json:"ja4t,omitempty"`
 	ASN                string                           `json:"asn,omitempty"`
 	Org                string                           `json:"org,omitempty"`
+	Country            string                           `json:"country,omitempty"`
+	CountryCode        string                           `json:"country_code,omitempty"`
 	UserAgent          string                           `json:"user_agent,omitempty"`
 	SignalCount        int                              `json:"signal_count"`
 	DetectionTime      string                           `json:"detection_time"`
@@ -1043,6 +1077,8 @@ func formatDetection(det *aidetection.DetectionEvent) detectionDTO {
 		JA4T:               det.JA4T,
 		ASN:                det.ASN,
 		Org:                det.Org,
+		Country:            det.Country,
+		CountryCode:        det.CountryCode,
 		UserAgent:          det.UserAgent,
 		SignalCount:        det.SignalCount,
 		DetectionTime:      det.DetectionTime.Format(time.RFC3339),
