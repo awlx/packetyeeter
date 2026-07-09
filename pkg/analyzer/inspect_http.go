@@ -287,11 +287,13 @@ func registerInspectorHandlers(a *Analyzer, mux *http.ServeMux) {
 
 	mux.HandleFunc("/api/feedback/stats", func(w http.ResponseWriter, r *http.Request) {
 		stats := a.AIEngine.GetFeedbackStats()
+		addMLModelStatus(a, stats)
 		writeJSON(w, stats)
 	})
 
 	mux.HandleFunc("/api/feedback/statistics", func(w http.ResponseWriter, r *http.Request) {
 		stats := a.AIEngine.GetFeedbackStats()
+		addMLModelStatus(a, stats)
 		writeJSON(w, stats)
 	})
 
@@ -303,16 +305,7 @@ func registerInspectorHandlers(a *Analyzer, mux *http.ServeMux) {
 
 	// ML model metrics (hybrid model stats)
 	mux.HandleFunc("/api/ml/metrics", func(w http.ResponseWriter, r *http.Request) {
-		// Get ML model from engine
-		if hybridModel, ok := a.AIEngine.GetMLModel().(*ml.HybridModel); ok {
-			metrics := hybridModel.GetMetrics()
-			writeJSON(w, metrics)
-		} else {
-			writeJSON(w, map[string]interface{}{
-				"model_type": "statistical",
-				"has_onnx":   false,
-			})
-		}
+		writeJSON(w, mlModelStatus(a))
 	})
 
 	// Session recordings for ML training (from disk)
@@ -1004,6 +997,60 @@ func writeJSON(w http.ResponseWriter, v interface{}) {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	_ = enc.Encode(v)
+}
+
+func addMLModelStatus(a *Analyzer, stats map[string]interface{}) {
+	for k, v := range mlModelStatus(a) {
+		stats[k] = v
+	}
+}
+
+func mlModelStatus(a *Analyzer) map[string]interface{} {
+	status := map[string]interface{}{
+		"ml_model_path_configured": false,
+		"ml_onnx_configured":       false,
+		"ml_onnx_loaded":           false,
+		"ml_pattern_checker":       false,
+		"ml_model_type":            "none",
+		"ml_model_mode":            "none",
+		"ml_enforcement_role":      "rule_blend",
+	}
+	if a == nil || a.AIEngine == nil {
+		return status
+	}
+
+	if a.Config.MLModelPath != "" {
+		status["ml_model_path_configured"] = true
+		status["ml_onnx_configured"] = true
+	}
+
+	switch model := a.AIEngine.GetMLModel().(type) {
+	case *ml.HybridModel:
+		metrics := model.GetMetrics()
+		hasONNX, _ := metrics["has_onnx"].(bool)
+		hasPatternChecker, _ := metrics["has_pattern_checker"].(bool)
+		status["ml_model_type"] = "hybrid"
+		status["ml_onnx_loaded"] = hasONNX
+		status["ml_pattern_checker"] = hasPatternChecker
+		if hasONNX {
+			status["ml_model_mode"] = "hybrid_onnx"
+		} else {
+			status["ml_model_mode"] = "hybrid_statistical_fallback"
+		}
+		for k, v := range metrics {
+			status["ml_"+k] = v
+		}
+	case *ml.SimpleThresholdModel:
+		status["ml_model_type"] = "statistical"
+		status["ml_model_mode"] = "statistical_fallback"
+	default:
+		if model != nil {
+			status["ml_model_type"] = fmt.Sprintf("%T", model)
+			status["ml_model_mode"] = "custom"
+		}
+	}
+
+	return status
 }
 
 // saveLabeledDetection appends a labeled detection to the training dataset
