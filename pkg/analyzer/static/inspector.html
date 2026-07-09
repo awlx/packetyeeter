@@ -323,8 +323,14 @@
           border: 1px solid;
         }
     
-        .badge-scraper { background: rgba(217, 119, 6, 0.1); color: #d99a41; border-color: rgba(217, 119, 6, 0.3); }
-        .badge-ddos { background: rgba(220, 38, 38, 0.1); color: #e77c7c; border-color: rgba(220, 38, 38, 0.3); }
+        .badge-group {
+          display: flex;
+          align-items: center;
+          gap: 0.4rem;
+          flex-wrap: wrap;
+        }
+    
+        .badge-scraper { background: rgba(217, 119, 6, 0.1); color: #d99a41; border-color: rgba(217, 119, 6, 0.3); }        .badge-ddos { background: rgba(220, 38, 38, 0.1); color: #e77c7c; border-color: rgba(220, 38, 38, 0.3); }
         .badge-crawler { background: rgba(147, 51, 234, 0.1); color: #b083e0; border-color: rgba(147, 51, 234, 0.3); }
         .badge-unknown { background: rgba(148, 163, 184, 0.1); color: #b0b9c7; border-color: rgba(148, 163, 184, 0.3); }
         .badge-legitimate { background: rgba(5, 150, 105, 0.1); color: #4cad8f; border-color: rgba(5, 150, 105, 0.3); }
@@ -429,8 +435,8 @@
       border: 1px solid var(--border);
       margin-bottom: 0.75rem;
       display: flex;
-      justify-content: space-between;
-      align-items: center;
+      flex-direction: column;
+      align-items: stretch;
       cursor: pointer;
       transition: background-color 0.15s ease, border-color 0.15s ease;
     }
@@ -441,8 +447,6 @@
     }
     
     .signal-item.expanded {
-      flex-direction: column;
-      align-items: flex-start;
       background: rgba(99, 102, 241, 0.15);
       border-color: rgba(99, 102, 241, 0.4);
     }
@@ -452,6 +456,21 @@
       justify-content: space-between;
       align-items: center;
       width: 100%;
+    }
+    
+    .signal-desc {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      padding-top: 0.35rem;
+      line-height: 1.4;
+    }
+    
+    .signal-time-range {
+      font-size: 0.7rem;
+      color: var(--text-muted);
+      opacity: 0.8;
+      display: block;
+      margin-top: 0.15rem;
     }
     
     .signal-metadata {
@@ -977,6 +996,7 @@
                 <th>ASN</th>
                 <th>Organization</th>
                 <th>Category</th>
+                <th>Status</th>
                 <th>Confidence</th>
                 <th>Signals</th>
                 <th>Time</th>
@@ -1450,8 +1470,15 @@
       vpn_proxy: { label: 'VPN / Proxy Service', desc: 'Traffic originates from a known VPN or proxy service IP range.' },
     };
 
+    // Common technical acronyms that should stay uppercase when a signal type
+    // has no explicit SIGNAL_INFO entry and falls back to auto-formatting.
+    const ACRONYMS = new Set(['tcp', 'udp', 'dns', 'ntp', 'ja4', 'ja4h', 'ja4t', 'icmp', 'syn', 'ttl', 'vpn', 'ua', 'id', 'ids', 'tls', 'ssdp', 'cldap', 'http', 'https']);
+
     function signalLabel(type) {
-      return (SIGNAL_INFO[type] && SIGNAL_INFO[type].label) || String(type).replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+      if (SIGNAL_INFO[type] && SIGNAL_INFO[type].label) return SIGNAL_INFO[type].label;
+      return String(type).replace(/_/g, ' ').replace(/\b\w+/g, word =>
+        ACRONYMS.has(word.toLowerCase()) ? word.toUpperCase() : word.charAt(0).toUpperCase() + word.slice(1)
+      );
     }
 
     function signalDesc(type) {
@@ -1706,15 +1733,16 @@
         }
         
         const statusBadge = det.would_block 
-          ? '<span class="badge" style="background: #ef4444; color: white; font-size: 0.75rem; margin-left: 0.5rem;">BLOCKING</span>'
-          : '<span class="badge" style="background: #f59e0b; color: white; font-size: 0.75rem; margin-left: 0.5rem;">SUSPICIOUS</span>';
+          ? '<span class="badge" style="background: #ef4444; color: white; font-size: 0.75rem;">BLOCKING</span>'
+          : '<span class="badge" style="background: #f59e0b; color: white; font-size: 0.75rem;">SUSPICIOUS</span>';
         
         tr.innerHTML = `
           <td><input type="checkbox" data-ip="${det.ip}" ${isSelected ? 'checked' : ''} onchange="toggleDetectionSelect(this, '${det.ip}')" onclick="event.stopPropagation()"></td>
           <td><strong>${det.ip || ''}</strong></td>
           <td>${det.asn || ''}</td>
           <td title="${escapeHtml(org)}">${orgShort}</td>
-          <td><span class="badge badge-${category}" title="${escapeHtml(categoryTitle(category))}">${categoryLabel(category)}</span>${statusBadge}</td>
+          <td><span class="badge badge-${category}" title="${escapeHtml(categoryTitle(category))}">${categoryLabel(category)}</span></td>
+          <td>${statusBadge}</td>
           <td>${det.confidence != null ? (det.confidence * 100).toFixed(0) + '%' : ''}</td>
           <td title="${escapeHtml(topSignalsSummary(det, 3))}">${det.signal_count || 0}</td>
           <td>${time ? time.toLocaleTimeString() : ''}</td>
@@ -1767,8 +1795,10 @@
 
         <div class="detail-section">
           <div class="detail-title">Category &amp; Verdict</div>
-          <span class="badge badge-${det.bot_category}">${categoryLabel(det.bot_category)}</span>
-          <span class="badge badge-${det.verification_status || 'unknown'}" style="margin-left: 0.5rem;" title="${escapeHtml(verificationTitle(det.verification_status))}">verification: ${det.verification_status || 'unknown'}</span>
+          <div class="badge-group">
+            <span class="badge badge-${det.bot_category}">${categoryLabel(det.bot_category)}</span>
+            <span class="badge badge-${det.verification_status || 'unknown'}" title="${escapeHtml(verificationTitle(det.verification_status))}">verification: ${det.verification_status || 'unknown'}</span>
+          </div>
           <div style="color: var(--text-muted); font-size: 0.8rem; margin-top: 0.35rem;">${escapeHtml(categoryTitle(det.bot_category))}</div>
         </div>
 
@@ -1948,7 +1978,7 @@
         const desc = signalDesc(type);
         const groupId = `siggroup-${idx}`;
         const timeRange = (g.first && g.last && g.first !== g.last)
-          ? `<span style="font-size: 0.7rem; color: var(--text-muted);">${new Date(g.first).toLocaleTimeString()} - ${new Date(g.last).toLocaleTimeString()}</span>`
+          ? `<span class="signal-time-range">First: ${new Date(g.first).toLocaleTimeString()} · Last: ${new Date(g.last).toLocaleTimeString()}</span>`
           : '';
 
         html += `
@@ -1957,7 +1987,7 @@
               <span class="signal-type">${escapeHtml(signalLabel(type))}</span>
               <span class="signal-count" title="occurred ${g.count} time(s) in this window">${g.count > 1 ? '×' + g.count : g.count}</span>
             </div>
-            ${desc ? `<div style="font-size: 0.75rem; color: var(--text-muted); padding: 0 0.25rem 0.25rem;">${escapeHtml(desc)} ${timeRange}</div>` : ''}
+            ${desc ? `<div class="signal-desc">${escapeHtml(desc)}${timeRange}</div>` : ''}
             <div class="signal-metadata" id="${groupId}-meta" style="display: none;">
         `;
 
@@ -3130,7 +3160,7 @@
         const orgShort = org.length > 30 ? org.substring(0, 27) + '...' : org;
         
         const statusBadge = det.would_block 
-          ? '<span class="badge" style="background: var(--danger-soft-bg); color: var(--danger-soft-text); margin-left: 0.5rem;">BLOCK</span>'
+          ? '<span class="badge" style="background: var(--danger-soft-bg); color: var(--danger-soft-text);">BLOCK</span>'
           : '';
 
         const why = topSignalsSummary(det, 2);
@@ -3143,7 +3173,7 @@
           <td style="font-family: monospace; font-weight: 600;">${det.ip || ''}</td>
           <td>${det.asn || ''}</td>
           <td title="${escapeHtml(org)}">${orgShort}</td>
-          <td><span class="badge badge-${category}" title="${escapeHtml(categoryTitle(category))}">${categoryLabel(category)}</span>${statusBadge}</td>
+          <td><div class="badge-group"><span class="badge badge-${category}" title="${escapeHtml(categoryTitle(category))}">${categoryLabel(category)}</span>${statusBadge}</div></td>
           <td><span class="badge badge-${verification}" title="${escapeHtml(verificationTitle(verification))}">${verification}</span></td>
           <td>${det.confidence != null ? (det.confidence * 100).toFixed(0) + '%' : ''}</td>
           <td>${whyCell}</td>
