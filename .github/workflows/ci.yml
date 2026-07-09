@@ -10,6 +10,10 @@ on:
 
 jobs:
   build-test:
+    # Tags are only ever created from an already-green main commit (see
+    # release process), so re-running the full test/build matrix on tag
+    # push would just re-verify the exact same commit a second time.
+    if: github.ref_type != 'tag'
     runs-on: ubuntu-latest
 
     steps:
@@ -58,13 +62,33 @@ jobs:
       - name: Build collector
         run: make collector
 
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
       - name: Build analyzer Docker image
-        run: docker build --target analyzer -t packetyeeter-analyzer:ci .
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: analyzer
+          tags: packetyeeter-analyzer:ci
+          push: false
+          cache-from: type=gha,scope=analyzer
+          cache-to: type=gha,mode=max,scope=analyzer
 
       - name: Build collector Docker image
-        run: docker build --target collector -t packetyeeter-collector:ci .
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: collector
+          tags: packetyeeter-collector:ci
+          push: false
+          cache-from: type=gha,scope=collector
+          cache-to: type=gha,mode=max,scope=collector
 
   e2e-haproxy:
+    # See build-test's comment: tags are cut from already-tested main
+    # commits, so skip re-running e2e suites on tag push.
+    if: github.ref_type != 'tag'
     runs-on: ubuntu-latest
 
     steps:
@@ -95,6 +119,9 @@ jobs:
     # since GitHub-hosted runner kernels/permissions can vary; a failure
     # here should not block the rest of CI, but should be investigated.
     continue-on-error: true
+    # See build-test's comment: tags are cut from already-tested main
+    # commits, so skip re-running e2e suites on tag push.
+    if: github.ref_type != 'tag'
 
     steps:
       - name: Checkout
@@ -126,7 +153,15 @@ jobs:
   # they're pure Go.
   release:
     needs: build-test
-    if: github.event_name == 'push'
+    # build-test is skipped (not failed) on tag pushes by design (see its
+    # comment), so allow release to proceed either when build-test passed
+    # (main branch push) or was skipped (tag push on an already-tested
+    # commit). Explicit always() is required because a skipped `needs` job
+    # would otherwise cascade-skip this job under the default condition.
+    if: |
+      github.event_name == 'push' &&
+      always() &&
+      (needs.build-test.result == 'success' || needs.build-test.result == 'skipped')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -211,6 +246,8 @@ jobs:
           target: analyzer
           push: true
           tags: ${{ steps.tags.outputs.analyzer_tags }}
+          cache-from: type=gha,scope=analyzer
+          cache-to: type=gha,mode=max,scope=analyzer
 
       - name: Build and push collector image
         uses: docker/build-push-action@v6
@@ -219,6 +256,8 @@ jobs:
           target: collector
           push: true
           tags: ${{ steps.tags.outputs.collector_tags }}
+          cache-from: type=gha,scope=collector
+          cache-to: type=gha,mode=max,scope=collector
 
       - name: Create GitHub Release
         if: github.ref_type == 'tag'
