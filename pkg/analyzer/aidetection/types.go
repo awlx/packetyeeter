@@ -11,20 +11,22 @@ type SignalType string
 
 const (
 	// HTTP/L7 Signals
-	SignalSuspiciousUA        SignalType = "ua_suspicious"
-	SignalMissingAcceptLang   SignalType = "missing_accept_language"
-	SignalMissingAcceptEnc    SignalType = "missing_accept_encoding"
-	SignalNoCookies           SignalType = "no_cookies"
-	SignalNoReferer           SignalType = "no_referer"
-	SignalMissingJA4H         SignalType = "missing_ja4h"
-	SignalHoneypot            SignalType = "honeypot"
-	SignalNumericSequence     SignalType = "numeric_seq"
-	SignalAlphaSequence       SignalType = "alpha_seq"
-	SignalProxyLag            SignalType = "proxy_lag"
-	SignalBotUA               SignalType = "bot_ua"
-	SignalUserAgentBotKeyword SignalType = "user_agent_bot_keyword"
-	SignalJA4HBotMatch        SignalType = "ja4h_bot_match"
-	SignalBrowserDetected     SignalType = "browser_detected"
+	SignalSuspiciousUA         SignalType = "ua_suspicious"
+	SignalMissingAcceptLang    SignalType = "missing_accept_language"
+	SignalMissingAcceptEnc     SignalType = "missing_accept_encoding"
+	SignalNoCookies            SignalType = "no_cookies"
+	SignalNoReferer            SignalType = "no_referer"
+	SignalMissingJA4H          SignalType = "missing_ja4h"
+	SignalHoneypot             SignalType = "honeypot"
+	SignalNumericSequence      SignalType = "numeric_seq"
+	SignalAlphaSequence        SignalType = "alpha_seq"
+	SignalRequestTimingRegular SignalType = "request_timing_regular" // Metronomic inter-request timing (low-variance polling/crawling cadence)
+	SignalJA4Rotation          SignalType = "ja4_rotation"           // Multiple distinct JA4/JA4H fingerprints from one IP claiming a consistent browser identity
+	SignalProxyLag             SignalType = "proxy_lag"
+	SignalBotUA                SignalType = "bot_ua"
+	SignalUserAgentBotKeyword  SignalType = "user_agent_bot_keyword"
+	SignalJA4HBotMatch         SignalType = "ja4h_bot_match"
+	SignalBrowserDetected      SignalType = "browser_detected"
 
 	// L4/L3 Signals
 	SignalHighLatency     SignalType = "high_latency"
@@ -209,7 +211,15 @@ type MLFeatures struct {
 	// Network features
 	HasASN     bool
 	HasJA4H    bool
-	GeoCountry string
+	GeoCountry string // Note: currently populated with the ASN string, not a real geo country (see extractMLFeatures)
+
+	// Raw identifiers used by the hybrid model's pattern-matching fast path
+	// (HybridModel.Predict -> PatternChecker.CheckPattern). Kept separate
+	// from the anonymized/aggregate features above since it's only needed
+	// for exact-match lookups against learned patterns, not as a model
+	// input. JA4/JA4H/JA4T below serve a similar "raw identifier" purpose
+	// for fingerprint-based feature extraction.
+	UserAgent string
 
 	// Behavioral features
 	RequestRate      float64

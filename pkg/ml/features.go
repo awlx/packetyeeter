@@ -233,7 +233,7 @@ func (afe *AdvancedFeatureExtractor) ExtractPathFeatures(snapshot aidetection.Ev
 	features[1] = pathDiversity
 	features[2] = hasNumericEnum
 	features[3] = hasAlphaEnum
-	features[4] = 0 // sequential_numeric (simplified)
+	features[4] = boolToFloat32(aidetection.DetectSequentialPaths(snapshot.Paths)) // sequential_numeric (real detection)
 	features[5] = avgDepth
 	features[6] = stdDepth
 	features[7] = entropy

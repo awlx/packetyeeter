@@ -210,6 +210,10 @@ func formatSignalTypeName(sig SignalType) string {
 		return "no cookies"
 	case SignalNoReferer:
 		return "no referer"
+	case SignalRequestTimingRegular:
+		return "regular request timing"
+	case SignalJA4Rotation:
+		return "JA4 fingerprint rotation"
 	case SignalMissingJA4H:
 		return "missing JA4H"
 	case SignalHoneypot:

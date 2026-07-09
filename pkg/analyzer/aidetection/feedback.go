@@ -445,21 +445,27 @@ type LearningData struct {
 	SignalTypes []string
 }
 
-// detectPathCrawlPattern checks if paths show crawler/scraper behavior
+// detectPathCrawlPattern checks if paths show crawler/scraper behavior.
+// It first looks for real sequential-ID/pagination walking (the strongest,
+// lowest-false-positive signal); if none is found it falls back to a broad
+// "many unique paths" heuristic for other systematic crawling that doesn't
+// follow a numeric sequence (e.g. sitemap-driven or breadth-first crawls).
 func detectPathCrawlPattern(paths map[string]bool) bool {
 	if len(paths) < 5 {
 		return false
 	}
 
-	// Look for patterns like /1, /2, /3 or /page/1, /page/2
-	// Or /a, /b, /c, or /api/users, /api/posts, /api/comments
 	pathList := make([]string, 0, len(paths))
 	for p := range paths {
 		pathList = append(pathList, p)
 	}
 
-	// Simple heuristic: many unique paths = likely scraping
-	// More sophisticated: check for sequential patterns
+	if DetectSequentialPaths(pathList) {
+		return true
+	}
+
+	// Broad fallback: many unique paths = likely scraping even without a
+	// detectable numeric/pagination sequence.
 	return len(paths) > 10
 }
 

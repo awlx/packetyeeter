@@ -36,6 +36,55 @@ func TestCategorizeBotBrowserInfo(t *testing.T) {
 	}
 }
 
+// TestCategorizeBotRequestTimingRegularRequiresBotSignal verifies that
+// metronomic request timing alone (no other bot indicators) is NOT enough
+// to categorize traffic as a scraper - a legitimate regular-polling client
+// (e.g. a status-page widget) shouldn't be flagged on timing regularity by
+// itself. It must combine with a bot-ish UA/header anomaly signal.
+func TestCategorizeBotRequestTimingRegularRequiresBotSignal(t *testing.T) {
+	v := NewCrawlerVerifier(nil)
+
+	// Timing regularity alone: no scraper category.
+	cat := v.CategorizeBot("", "", "", "", "", map[SignalType]int{
+		SignalRequestTimingRegular: 5,
+	}, map[SignalSource]int{}, VerificationUnknown)
+	if cat == BotCategoryScraper {
+		t.Fatalf("expected timing regularity alone to NOT trigger scraper category, got %v", cat)
+	}
+
+	// Timing regularity + bot UA: scraper category.
+	cat = v.CategorizeBot("", "", "", "", "", map[SignalType]int{
+		SignalRequestTimingRegular: 5,
+		SignalBotUA:                1,
+	}, map[SignalSource]int{}, VerificationUnknown)
+	if cat != BotCategoryScraper {
+		t.Fatalf("expected timing regularity + bot UA to trigger scraper category, got %v", cat)
+	}
+}
+
+// TestCategorizeBotJA4RotationRequiresHeaderAnomaly verifies JA4/JA4H
+// fingerprint rotation alone (which can be explained by a shared NAT/proxy
+// IP with multiple genuine browsers) doesn't trigger scraper categorization
+// without an accompanying header-order/missing-header anomaly.
+func TestCategorizeBotJA4RotationRequiresHeaderAnomaly(t *testing.T) {
+	v := NewCrawlerVerifier(nil)
+
+	cat := v.CategorizeBot("", "", "", "", "", map[SignalType]int{
+		SignalJA4Rotation: 3,
+	}, map[SignalSource]int{}, VerificationUnknown)
+	if cat == BotCategoryScraper {
+		t.Fatalf("expected JA4 rotation alone to NOT trigger scraper category, got %v", cat)
+	}
+
+	cat = v.CategorizeBot("", "", "", "", "", map[SignalType]int{
+		SignalJA4Rotation:        3,
+		SignalHeaderOrderAnomaly: 1,
+	}, map[SignalSource]int{}, VerificationUnknown)
+	if cat != BotCategoryScraper {
+		t.Fatalf("expected JA4 rotation + header order anomaly to trigger scraper category, got %v", cat)
+	}
+}
+
 func TestIsBrowserInfo(t *testing.T) {
 	if !IsBrowserInfo("chrome 120 [verified]") {
 		t.Fatalf("expected chrome to be browser info")

@@ -62,6 +62,42 @@ func (b *SignalBuilder) EmitMissingHeader(ip net.IP, asn, org string, signalType
 	})
 }
 
+// EmitTimingRegularity emits a signal for metronomic (low-variance)
+// inter-request timing, indicating scripted polling/crawling rather than
+// human browsing.
+func (b *SignalBuilder) EmitTimingRegularity(ip net.IP, asn, org, userAgent string, weight float64, sampleCount int) {
+	b.Emit(Signal{
+		IP:     ip,
+		Type:   SignalRequestTimingRegular,
+		Source: SourceSPOE,
+		ASN:    asn,
+		Org:    org,
+		Weight: weight,
+		Metadata: map[string]interface{}{
+			"user_agent":   userAgent,
+			"sample_count": sampleCount,
+		},
+	})
+}
+
+// EmitJA4Rotation emits a signal when an IP presents multiple distinct
+// JA4/JA4H fingerprints while claiming a consistent browser identity.
+func (b *SignalBuilder) EmitJA4Rotation(ip net.IP, asn, org, userAgent string, weight float64, ja4Count, ja4hCount int) {
+	b.Emit(Signal{
+		IP:     ip,
+		Type:   SignalJA4Rotation,
+		Source: SourceSPOE,
+		ASN:    asn,
+		Org:    org,
+		Weight: weight,
+		Metadata: map[string]interface{}{
+			"user_agent": userAgent,
+			"ja4_count":  ja4Count,
+			"ja4h_count": ja4hCount,
+		},
+	})
+}
+
 // EmitProxyLag emits a proxy lag anomaly signal
 func (b *SignalBuilder) EmitProxyLag(ip net.IP, asn, org string, proxyLagMs, rttMs, ewma, threshold float64, userAgent string) {
 	b.Emit(Signal{

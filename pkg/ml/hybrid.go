@@ -68,10 +68,13 @@ func (h *HybridModel) SetPatternChecker(pc PatternChecker) {
 // Predict implements intelligent routing:
 // Pattern match → ONNX → Statistical fallback
 func (h *HybridModel) Predict(features aidetection.MLFeatures) aidetection.MLPredictionResult {
-	// Extract identifiers for pattern matching
-	userAgent := extractUserAgent(features)
-	asn := features.GeoCountry // TODO: Extract actual ASN
-	ja4h := ""                 // TODO: Extract from features
+	// Extract identifiers for pattern matching. UserAgent/JA4H come straight
+	// from the detection's signals (see Engine.extractMLFeatures); ASN is
+	// carried in GeoCountry, which extractMLFeatures populates with the
+	// actual ASN string (no separate geo-country database is wired up).
+	userAgent := features.UserAgent
+	asn := features.GeoCountry
+	ja4h := features.JA4H
 
 	// 1. Check learned patterns first (fastest path)
 	if h.patternChecker != nil {
@@ -181,11 +184,6 @@ func (h *HybridModel) Close() error {
 }
 
 // Helper functions
-
-func extractUserAgent(features aidetection.MLFeatures) string {
-	// TODO: Extract from features metadata if available
-	return ""
-}
 
 func inferCategoryFromLabel(label string, features aidetection.MLFeatures) aidetection.BotCategory {
 	if label == "legitimate" {
