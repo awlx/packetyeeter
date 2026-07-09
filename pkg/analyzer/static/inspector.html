@@ -1263,7 +1263,7 @@
     
     <div class="panel">
       <div class="panel-header">
-        <div class="panel-title">ML Tier Distribution</div>
+        <div class="panel-title">ML Model Status & Tier Distribution</div>
         <button class="btn btn-primary btn-sm" onclick="fetchStatistics()">Refresh</button>
       </div>
       <div class="panel-body">
@@ -2820,8 +2820,44 @@
     }
 
     function renderStatistics(stats) {
+      const modeLabel = {
+        none: 'No model',
+        statistical_fallback: 'Statistical fallback',
+        hybrid_statistical_fallback: 'Hybrid fallback only',
+        hybrid_onnx: 'Hybrid + ONNX',
+        custom: 'Custom model'
+      }[stats.ml_model_mode] || (stats.ml_model_mode || 'Unknown');
+      const onnxLoaded = !!stats.ml_onnx_loaded;
+      const onnxConfigured = !!stats.ml_onnx_configured;
+      const modelModeColor = onnxLoaded ? '#10b981' : (onnxConfigured ? '#ef4444' : '#f59e0b');
+      const modelModeText = onnxLoaded
+        ? 'ONNX model loaded and receiving eligible unknown-pattern inference.'
+        : (onnxConfigured
+          ? 'ONNX path configured but model is not loaded; analyzer is using statistical fallback.'
+          : 'No ONNX model path configured; analyzer is rules + statistical fallback only.');
+
       // ML Tier Distribution
       const mlTierHTML = `
+        <div class="stat-card">
+          <div class="stat-label">Model Mode</div>
+          <div class="stat-value" style="color: ${modelModeColor}; font-size: 1.25rem;">${escapeHtml(modeLabel)}</div>
+          <div class="stat-subtext">${escapeHtml(modelModeText)}</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">ONNX Loaded</div>
+          <div class="stat-value" style="color: ${onnxLoaded ? '#10b981' : '#f59e0b'};">${onnxLoaded ? 'Yes' : 'No'}</div>
+          <div class="stat-subtext">${onnxConfigured ? 'Path configured' : 'No model path configured'}</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Pattern Checker</div>
+          <div class="stat-value" style="color: ${stats.ml_pattern_checker ? '#10b981' : '#f59e0b'};">${stats.ml_pattern_checker ? 'Connected' : 'Not connected'}</div>
+          <div class="stat-subtext">Learned traffic-pattern shortcut before model inference</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Decision Role</div>
+          <div class="stat-value" style="font-size: 1.25rem;">Rule blend</div>
+          <div class="stat-subtext">Rule confidence remains a decision input; ML can cap or raise it when sufficiently confident</div>
+        </div>
         <div class="stat-card">
           <div class="stat-label">Pattern Matches</div>
           <div class="stat-value" style="color: #10b981;">${stats.ml_tier_pattern || 0}</div>
@@ -2838,11 +2874,11 @@
           <div class="stat-subtext">${(stats.ml_tier_statistical_pct || 0).toFixed(1)}% - Threshold-based</div>
         </div>
         <div class="stat-card">
-          <div class="stat-label">Efficiency</div>
-          <div class="stat-value" style="color: ${(stats.ml_tier_pattern_pct || 0) > 50 ? '#10b981' : '#f59e0b'};">
+          <div class="stat-label">Non-Fallback Coverage</div>
+          <div class="stat-value" style="color: ${((stats.ml_tier_pattern_pct || 0) + (stats.ml_tier_onnx_pct || 0)) > 50 ? '#10b981' : '#f59e0b'};">
             ${((stats.ml_tier_pattern_pct || 0) + (stats.ml_tier_onnx_pct || 0)).toFixed(1)}%
           </div>
-          <div class="stat-subtext">Pattern + ML coverage (last 1000)</div>
+          <div class="stat-subtext">Pattern + ONNX coverage (last 1000)</div>
         </div>
       `;
       document.getElementById('mlTierStats').innerHTML = mlTierHTML;
