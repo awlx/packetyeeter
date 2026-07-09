@@ -155,6 +155,8 @@ type DetectionEvent struct {
 	JA4T               string
 	ASN                string
 	Org                string
+	Country            string // Full country name (requires GeoIP Country/City DB, "unknown" otherwise)
+	CountryCode        string // ISO 3166-1 alpha-2 country code (requires GeoIP Country/City DB, "unknown" otherwise)
 	UserAgent          string // Extracted from HTTP signals
 	Signals            []Signal
 	SignalCount        int

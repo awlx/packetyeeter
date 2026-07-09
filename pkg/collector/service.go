@@ -135,7 +135,7 @@ func New(cfg Config, logger *logrus.Logger) (*Collector, error) {
 
 	// Load GeoIP database
 	if cfg.GeoIPASNPath != "" {
-		geoIPProvider, err := geoip.New(cfg.GeoIPASNPath)
+		geoIPProvider, err := geoip.New(cfg.GeoIPASNPath, "")
 		if err != nil {
 			logger.WithError(err).Warn("Failed to load GeoIP database")
 		} else {

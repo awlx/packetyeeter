@@ -2320,6 +2320,11 @@ func (e *Engine) handleDetection(key string, signals []Signal, ewmaBaseline, con
 		}
 	}
 
+	country, countryCode := "unknown", "unknown"
+	if e.geoip != nil && firstSignal.IP != nil {
+		countryCode, country = e.geoip.LookupCountry(firstSignal.IP)
+	}
+
 	event := DetectionEvent{
 		IP:                 firstSignal.IP,
 		DestIP:             destIP,
@@ -2331,6 +2336,8 @@ func (e *Engine) handleDetection(key string, signals []Signal, ewmaBaseline, con
 		JA4T:               firstSignal.JA4T,
 		ASN:                firstSignal.ASN,
 		Org:                firstSignal.Org,
+		Country:            country,
+		CountryCode:        countryCode,
 		UserAgent:          userAgent,
 		Signals:            signals,
 		SignalCount:        len(signals),

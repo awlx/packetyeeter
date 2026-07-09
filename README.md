@@ -61,8 +61,8 @@ PacketYeeter is a high-performance, eBPF-based DDoS protection and traffic filte
         *   Metrics: `packetyeeter_high_latency_handshakes_total` (Counter), `packetyeeter_high_latency_max_ms` (Gauge), `packetyeeter_latency_ewma_by_asn_ms` (GaugeVec).
 
 7.  **GeoIP / ASN Intelligence**
-    *   **Enrichment**: Integrates with MaxMind GeoLite2 ASN databases to tag metrics with Autonomous System (ASN) and Organization data.
-    *   **Insights**: Break down latency, abuse events, and traffic anomalies by Provider (e.g., "Google Cloud", "DigitalOcean").
+    *   **Enrichment**: Integrates with MaxMind GeoLite2 ASN databases to tag metrics with Autonomous System (ASN) and Organization data. Optionally also loads a GeoLite2-Country/City database (`-geoip-country`) for country-level enrichment, surfaced in the Inspector's "Threats by Country" panel.
+    *   **Insights**: Break down latency, abuse events, and traffic anomalies by Provider (e.g., "Google Cloud", "DigitalOcean") or by country.
     *   **Metrics**:
         *   `packetyeeter_latency_by_asn_seconds` (Histogram): Latency distribution per ASN.
         *   `packetyeeter_abuse_by_asn_total` (Counter): Anomalies and blocks grouped by ASN.
@@ -306,6 +306,7 @@ sudo ./packetyeeter-collector -i eth0 -analyzer-addr 127.0.0.1:9090
 | `-metrics-addr` | `:9091` | Prometheus metrics HTTP listen address. |
 | `-inspect-addr` | `127.0.0.1:9092` | Read-only HTTP inspector UI address. |
 | `-geoip-asn` | `""` | Path to `GeoLite2-ASN.mmdb` for ASN enrichment. |
+| `-geoip-country` | `""` | Path to `GeoLite2-Country.mmdb` or `GeoLite2-City.mmdb` (optional). Enables country-level enrichment and the Inspector's "Threats by Country" panel; without it, country fields report "unknown". |
 | `-reputation-threshold` | `75.0` | Reputation score at which an entity is treated as a bad actor. |
 | `-reputation-max-entries` | `500000` | Max tracked reputation entries. |
 | `-reputation-max-age` | `24h` | Max age before a reputation entry is evicted. |

@@ -48,6 +48,7 @@ type Config struct {
 	MetricsAddr                  string
 	InspectorAddr                string
 	GeoIPASNPath                 string
+	GeoIPCountryPath             string
 	ReputationThreshold          float64
 	ReputationMaxEntries         int
 	ReputationMaxAge             time.Duration
@@ -290,8 +291,8 @@ func (a *Analyzer) Start() error {
 	}
 
 	// Initialize GeoIP
-	if a.Config.GeoIPASNPath != "" {
-		a.GeoIP, err = geoip.New(a.Config.GeoIPASNPath)
+	if a.Config.GeoIPASNPath != "" || a.Config.GeoIPCountryPath != "" {
+		a.GeoIP, err = geoip.New(a.Config.GeoIPASNPath, a.Config.GeoIPCountryPath)
 		if err != nil {
 			logrus.WithError(err).Warn("Failed to load GeoIP DB")
 		} else {

@@ -1159,6 +1159,18 @@
 
     <div class="panel" style="margin-top: 1.5rem;">
       <div class="panel-header">
+        <div class="panel-title">Threats by Country</div>
+      </div>
+      <div class="panel-body" id="topCountries" style="padding: 0;">
+        <div class="empty-state">
+          <div class="empty-state-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8l1.4-4.3A2 2 0 0 1 6.3 2h11.4a2 2 0 0 1 1.9 1.7L21 8M3 8v10a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V8M3 8h18M8 12h8"/></svg></div>
+          <div>Loading analytics...</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-top: 1.5rem;">
+      <div class="panel-header">
         <div class="panel-title">ASN Risk Rollup</div>
         <span style="color: var(--text-muted); font-size: 0.8125rem;">Aggregated from currently loaded detections - spot systemic false-positive/block patterns per network</span>
       </div>
@@ -1469,6 +1481,17 @@
       tor_node: { label: 'Tor Exit Node', desc: 'Traffic originates from a known Tor exit node.' },
       vpn_proxy: { label: 'VPN / Proxy Service', desc: 'Traffic originates from a known VPN or proxy service IP range.' },
     };
+
+    // Converts an ISO 3166-1 alpha-2 country code (e.g. "DE") into its flag
+    // emoji using Regional Indicator Symbol code points. Falls back to a
+    // generic globe icon for "unknown"/invalid codes.
+    function countryFlagEmoji(code) {
+      if (!code || code.length !== 2 || code.toLowerCase() === 'unknown') return '\u{1F310}';
+      const upper = code.toUpperCase();
+      const codePoints = [...upper].map(c => 0x1F1E6 + (c.charCodeAt(0) - 65));
+      if (codePoints.some(cp => cp < 0x1F1E6 || cp > 0x1F1FF)) return '\u{1F310}';
+      return String.fromCodePoint(...codePoints);
+    }
 
     // Common technical acronyms that should stay uppercase when a signal type
     // has no explicit SIGNAL_INFO entry and falls back to auto-formatting.
@@ -3138,6 +3161,35 @@
         });
         html += '</tbody></table>';
         asnsEl.innerHTML = html;
+      }
+
+      // Render threats by country
+      const countriesEl = document.getElementById('topCountries');
+      if (!data.countries || data.countries.length === 0) {
+        countriesEl.innerHTML = '<div class="empty-state"><div class="empty-state-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8l1.4-4.3A2 2 0 0 1 6.3 2h11.4a2 2 0 0 1 1.9 1.7L21 8M3 8v10a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V8M3 8h18M8 12h8"/></svg></div><div>No country data (GeoIP country database not configured, or no matching detections yet)</div></div>';
+      } else {
+        const maxCount = Math.max(...data.countries.map(c => c.count));
+        let html = '<div style="padding: 1rem 1.5rem;">';
+        data.countries.forEach(item => {
+          const pct = ((item.count / data.total_requests) * 100).toFixed(1);
+          const barPct = maxCount > 0 ? ((item.count / maxCount) * 100).toFixed(1) : 0;
+          html += `
+            <div style="display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.75rem;">
+              <div style="width: 2rem; font-size: 1.25rem; text-align: center; flex-shrink: 0;" title="${escapeHtml(item.code)}">${countryFlagEmoji(item.code)}</div>
+              <div style="flex: 1; min-width: 0;">
+                <div style="display: flex; justify-content: space-between; font-size: 0.875rem; margin-bottom: 0.25rem;">
+                  <span style="font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escapeHtml(item.name)}</span>
+                  <span style="color: var(--text-muted); white-space: nowrap; margin-left: 0.5rem;">${item.count} <span style="font-size: 0.75rem;">(${pct}%)</span></span>
+                </div>
+                <div style="background: rgba(15, 23, 42, 0.4); border-radius: 999px; height: 0.5rem; overflow: hidden;">
+                  <div style="background: var(--danger); height: 100%; width: ${barPct}%; border-radius: 999px;"></div>
+                </div>
+              </div>
+            </div>
+          `;
+        });
+        html += '</div>';
+        countriesEl.innerHTML = html;
       }
     }
 

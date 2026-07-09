@@ -11,6 +11,12 @@ METRICS_ADDR=:9091
 # GeoIP ASN database path
 GEOIP_ASN_PATH=/var/lib/GeoIP/GeoLite2-ASN.mmdb
 
+# Optional: GeoLite2-Country.mmdb or GeoLite2-City.mmdb for country-level
+# enrichment (powers the Inspector's "Threats by Country" panel). Not set by
+# default since it requires a separate MaxMind download; add it via
+# EXTRA_ARGS below if you have one, e.g.:
+#   EXTRA_ARGS=-geoip-country /var/lib/GeoIP/GeoLite2-Country.mmdb
+
 # Threat intelligence uses the free, keyless Shodan InternetDB API (no API key required)
 
 # All optional/conditional analyzer flags go through EXTRA_ARGS. The unit
