@@ -6,8 +6,10 @@ import (
 
 // CalculateConfidence computes a rule-based confidence score (0.0-1.0) for display purposes.
 //
-// NOTE: This function is now used ONLY for display/debugging ("Pattern" confidence in UI).
-// ML confidence is the ONLY confidence used for blocking decisions.
+// NOTE: This is the rule/pattern confidence. handleDetection blends this with
+// ML output when an ML model is configured, then uses the blended confidence
+// for block-candidate decisions. It is therefore intentionally conservative:
+// weak, ambiguous signals must be capped before they can reach enforcement.
 //
 // This calculates a simple heuristic confidence based on:
 //   - Signal diversity

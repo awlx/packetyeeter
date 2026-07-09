@@ -526,7 +526,21 @@ func (v *CrawlerVerifier) CategorizeBot(userAgent, ja4, ja4h, ja4t, ja4Info stri
 	if floodSignals >= 1 || signalTypes[SignalHighFrequency] > 0 || signalTypes[SignalIncompleteHandshake] > 50 {
 		return BotCategoryDDoS
 	}
-	if signalTypes[SignalHeaderOrderAnomaly] > 0 || signalTypes[SignalMissingSecCH] > 0 || signalTypes[SignalPathEntropyLow] > 0 || signalTypes[SignalPathSeqIDs] > 0 || signalTypes[SignalAlphaSequence] > 0 || signalTypes[SignalBotUA] > 0 {
+	browserShapeAnomaly := signalTypes[SignalHeaderOrderAnomaly] > 0 ||
+		signalTypes[SignalMissingSecCH] > 0 ||
+		signalTypes[SignalMissingSecFetch] > 0 ||
+		signalTypes[SignalAcceptMismatch] > 0 ||
+		signalTypes[SignalTLSVersionMismatch] > 0
+	botCorroboration := signalTypes[SignalBotUA] > 0 ||
+		signalTypes[SignalSuspiciousUA] > 0 ||
+		signalTypes[SignalRequestTimingRegular] > 0 ||
+		signalTypes[SignalPathEntropyLow] > 0 ||
+		signalTypes[SignalPathSeqIDs] > 0 ||
+		signalTypes[SignalJA4Rotation] > 0
+	if signalTypes[SignalPathEntropyLow] > 0 || signalTypes[SignalPathSeqIDs] > 0 || signalTypes[SignalAlphaSequence] > 0 || signalTypes[SignalBotUA] > 0 {
+		return BotCategoryScraper
+	}
+	if browserShapeAnomaly && botCorroboration {
 		return BotCategoryScraper
 	}
 

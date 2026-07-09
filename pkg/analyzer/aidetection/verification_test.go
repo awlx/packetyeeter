@@ -85,6 +85,27 @@ func TestCategorizeBotJA4RotationRequiresHeaderAnomaly(t *testing.T) {
 	}
 }
 
+func TestCategorizeBotBrowserShapeAnomalyRequiresCorroboration(t *testing.T) {
+	v := NewCrawlerVerifier(nil)
+
+	cat := v.CategorizeBot("", "", "", "", "", map[SignalType]int{
+		SignalMissingSecCH:    1,
+		SignalMissingSecFetch: 1,
+		SignalAcceptMismatch:  1,
+	}, map[SignalSource]int{}, VerificationUnknown)
+	if cat == BotCategoryScraper {
+		t.Fatalf("expected browser-shape anomalies without corroboration to NOT trigger scraper category, got %v", cat)
+	}
+
+	cat = v.CategorizeBot("", "", "", "", "", map[SignalType]int{
+		SignalMissingSecFetch:      1,
+		SignalRequestTimingRegular: 3,
+	}, map[SignalSource]int{}, VerificationUnknown)
+	if cat != BotCategoryScraper {
+		t.Fatalf("expected browser-shape anomaly plus timing corroboration to trigger scraper category, got %v", cat)
+	}
+}
+
 func TestIsBrowserInfo(t *testing.T) {
 	if !IsBrowserInfo("chrome 120 [verified]") {
 		t.Fatalf("expected chrome to be browser info")

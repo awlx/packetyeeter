@@ -1166,6 +1166,26 @@ func toUint32(v interface{}) (uint32, bool) {
 	}
 }
 
+var weakBrowserHeaderSignals = map[SignalType]bool{
+	SignalMissingAcceptLang: true,
+	SignalMissingAcceptEnc:  true,
+	SignalNoCookies:         true,
+	SignalNoReferer:         true,
+	SignalTCPMetadata:       true,
+}
+
+func hasOnlyWeakBrowserHeaderEvidence(signalTypes map[SignalType]int) bool {
+	if len(signalTypes) == 0 {
+		return false
+	}
+	for signalType := range signalTypes {
+		if !weakBrowserHeaderSignals[signalType] {
+			return false
+		}
+	}
+	return true
+}
+
 func (e *Engine) processSignal(signal Signal, windowSignals map[string][]Signal) {
 	start := time.Now()
 	defer func() {
@@ -1607,9 +1627,13 @@ func (e *Engine) evaluateWindow(windowSignals map[string][]Signal) {
 		SignalBrowserDetected:     true,
 		SignalTCPMetadata:         true,
 		SignalMissingAcceptLang:   true,
+		SignalMissingAcceptEnc:    true,
+		SignalNoCookies:           true,
+		SignalNoReferer:           true,
 		SignalMissingSecFetch:     true,
 		SignalAcceptMismatch:      true,
 	}
+
 	highSeverity := map[SignalType]bool{
 		SignalHoneypot:          true,
 		SignalNumericSequence:   true,
@@ -2067,6 +2091,9 @@ func (e *Engine) handleDetection(key string, signals []Signal, ewmaBaseline, con
 			SignalProxyLag:            true,
 			SignalTCPMetadata:         true,
 			SignalMissingAcceptLang:   true,
+			SignalMissingAcceptEnc:    true,
+			SignalNoCookies:           true,
+			SignalNoReferer:           true,
 		}
 		for st := range signalTypes {
 			if !low[st] {
@@ -2109,6 +2136,8 @@ func (e *Engine) handleDetection(key string, signals []Signal, ewmaBaseline, con
 		SignalIncompleteHandshake: 6,
 		SignalMissingAcceptLang:   1,
 		SignalMissingAcceptEnc:    1,
+		SignalNoCookies:           1,
+		SignalNoReferer:           1,
 		SignalTCPMetadata:         1,
 		SignalWindowAnomaly:       5,
 		SignalLatencyMismatch:     2,
@@ -2256,6 +2285,10 @@ func (e *Engine) handleDetection(key string, signals []Signal, ewmaBaseline, con
 		if prediction.IsBot {
 			metrics.MLBotDetections.Inc()
 		}
+	}
+
+	if hasOnlyWeakBrowserHeaderEvidence(signalTypes) && confidence >= e.confidenceThreshold {
+		confidence = math.Nextafter(e.confidenceThreshold, 0)
 	}
 
 	// Ensure category is not unknown when this detection actually crosses the

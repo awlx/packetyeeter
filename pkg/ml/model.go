@@ -97,8 +97,8 @@ func NewSimpleThresholdModel() *SimpleThresholdModel {
 	return m
 }
 
-// Predict implements the Model interface (returns PredictionResult for internal use)
-// Note: This implements aidetection.MLModel interface via type conversion
+// Predict implements aidetection.MLModel with the built-in statistical
+// fallback model.
 func (m *SimpleThresholdModel) Predict(features aidetection.MLFeatures) aidetection.MLPredictionResult {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -125,6 +125,7 @@ func (m *SimpleThresholdModel) Predict(features aidetection.MLFeatures) aidetect
 		Confidence:     botProbability,
 		BotProbability: botProbability,
 		Category:       category,
+		ModelTier:      "statistical",
 	}
 }
 
