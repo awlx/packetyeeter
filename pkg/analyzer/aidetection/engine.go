@@ -1073,18 +1073,20 @@ func (e *Engine) stateSaveLoop() {
 // score. Declared once at package scope instead of allocated fresh on
 // every processSignal call.
 var lowSeverityASNSignals = map[SignalType]bool{
-	SignalMissingAcceptLang:   true,
-	SignalMissingAcceptEnc:    true,
-	SignalNoCookies:           true,
-	SignalNoReferer:           true,
-	SignalProxyLag:            true,
-	SignalHighLatency:         true,
-	SignalLatencyMismatch:     true,
-	SignalIncompleteHandshake: true,
-	SignalHeaderOrderAnomaly:  true,
-	SignalMissingSecCH:        true,
-	SignalMissingSecFetch:     true,
-	SignalAcceptMismatch:      true,
+	SignalMissingAcceptLang:    true,
+	SignalMissingAcceptEnc:     true,
+	SignalNoCookies:            true,
+	SignalNoReferer:            true,
+	SignalProxyLag:             true,
+	SignalHighLatency:          true,
+	SignalLatencyMismatch:      true,
+	SignalIncompleteHandshake:  true,
+	SignalHeaderOrderAnomaly:   true,
+	SignalMissingSecCH:         true,
+	SignalMissingSecFetch:      true,
+	SignalAcceptMismatch:       true,
+	SignalRequestTimingRegular: true,
+	SignalJA4Rotation:          true,
 }
 
 // asnBaselineTrustMultiplier is the multiplier applied to a signal's
@@ -2959,16 +2961,37 @@ func (e *Engine) extractMLFeatures(
 	hasASN := false
 	hasJA4H := false
 	geoCountry := ""
+	ja4 := ""
+	ja4h := ""
+	ja4t := ""
 	var firstIP net.IP
 
 	if len(signals) > 0 {
 		hasASN = signals[0].ASN != ""
 		hasJA4H = signals[0].JA4H != ""
+		ja4 = signals[0].JA4
+		ja4h = signals[0].JA4H
+		ja4t = signals[0].JA4T
 		firstIP = signals[0].IP
 		// GeoIP provider only returns ASN, not country
 		// Country would require separate GeoIP2 country database
 		if hasASN {
 			geoCountry = signals[0].ASN // Use ASN as proxy for now
+		}
+	}
+
+	// Recover the raw user agent from signal metadata (same lookup pattern
+	// used elsewhere in the engine) so the hybrid model's pattern-matching
+	// fast path can do exact-match lookups against learned patterns instead
+	// of always seeing an empty string.
+	userAgent := ""
+	for _, sig := range signals {
+		if sig.Metadata == nil {
+			continue
+		}
+		if ua, ok := sig.Metadata["user_agent"].(string); ok && ua != "" {
+			userAgent = ua
+			break
 		}
 	}
 
@@ -3013,6 +3036,10 @@ func (e *Engine) extractMLFeatures(
 		HasASN:             hasASN,
 		HasJA4H:            hasJA4H,
 		GeoCountry:         geoCountry,
+		UserAgent:          userAgent,
+		JA4:                ja4,
+		JA4H:               ja4h,
+		JA4T:               ja4t,
 		RequestRate:        requestRate,
 		DetectionHistory:   detectionHistory,
 		ReputationScore:    reputationScore,

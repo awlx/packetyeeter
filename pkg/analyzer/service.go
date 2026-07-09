@@ -88,6 +88,8 @@ type pathWindow struct {
 	LastAlpha      int64
 	HasLastAlpha   bool
 	AlphaSeqStreak int
+	JA4Set         map[string]bool
+	JA4HSet        map[string]bool
 }
 
 // HTTP error tracking for scanner/crawler detection
@@ -1333,11 +1335,11 @@ func (a *Analyzer) shouldEmitLatencyAnomaly(ip net.IP) bool {
 	return true
 }
 
-func (a *Analyzer) updatePathEntropy(ip net.IP, path string) (float64, bool, bool, int, int) {
+func (a *Analyzer) updatePathEntropy(ip net.IP, path string) (float64, bool, bool, int, int, bool) {
 	const window = 5 * time.Minute
 	const maxEvents = 200
 	if ip == nil || path == "" {
-		return 0, false, false, 0, 0
+		return 0, false, false, 0, 0, false
 	}
 	key := ip.String()
 	a.pathMu.Lock()
@@ -1428,8 +1430,75 @@ func (a *Analyzer) updatePathEntropy(ip net.IP, path string) (float64, bool, boo
 		pw.HasLastAlpha = false
 	}
 
+	// Request timing regularity: real users click/browse with irregular,
+	// human-paced gaps between requests. A script polling or crawling on a
+	// fixed interval produces inter-request gaps with very low variance
+	// relative to the mean (coefficient of variation). We require a slower
+	// mean gap (>50ms) so this doesn't overlap with flood/high-frequency
+	// detection, which already covers very fast, tight bursts.
+	timingRegular := false
+	if len(pw.Events) >= 8 {
+		gaps := make([]float64, 0, len(pw.Events)-1)
+		for i := 1; i < len(pw.Events); i++ {
+			gaps = append(gaps, pw.Events[i].Ts.Sub(pw.Events[i-1].Ts).Seconds())
+		}
+		var sum float64
+		for _, g := range gaps {
+			sum += g
+		}
+		avgGap := sum / float64(len(gaps))
+		if avgGap > 0.05 {
+			var sumSq float64
+			for _, g := range gaps {
+				d := g - avgGap
+				sumSq += d * d
+			}
+			stdDev := math.Sqrt(sumSq / float64(len(gaps)))
+			if stdDev/avgGap < 0.15 {
+				timingRegular = true
+			}
+		}
+	}
+
 	a.pathMu.Unlock()
-	return entropy, seqNum, seqAlpha, unique, pw.Total
+	return entropy, seqNum, seqAlpha, unique, pw.Total, timingRegular
+}
+
+// checkJA4Consistency tracks distinct JA4 (TLS) and JA4H (HTTP) fingerprints
+// observed from a single IP within the same rolling window used for path
+// tracking. A genuine browser instance's TLS/HTTP client stack is
+// deterministic, so it always presents the same JA4/JA4H for the lifetime of
+// a session; seeing several distinct fingerprints from one IP while it
+// keeps claiming the same browser identity is a strong indicator of
+// automated tooling (e.g. a proxy/rotator pool or fingerprint-spoofing
+// scraper cycling through TLS client profiles to evade fingerprint-based
+// blocking). Returns the number of distinct JA4 and JA4H values observed so
+// far in the window.
+func (a *Analyzer) checkJA4Consistency(ip net.IP, ja4, ja4h string) (int, int) {
+	if ip == nil {
+		return 0, 0
+	}
+	key := ip.String()
+	a.pathMu.Lock()
+	defer a.pathMu.Unlock()
+	pw := a.pathWindows[key]
+	if pw == nil {
+		pw = &pathWindow{Counts: make(map[string]int)}
+		a.pathWindows[key] = pw
+	}
+	if pw.JA4Set == nil {
+		pw.JA4Set = make(map[string]bool)
+	}
+	if pw.JA4HSet == nil {
+		pw.JA4HSet = make(map[string]bool)
+	}
+	if ja4 != "" {
+		pw.JA4Set[ja4] = true
+	}
+	if ja4h != "" {
+		pw.JA4HSet[ja4h] = true
+	}
+	return len(pw.JA4Set), len(pw.JA4HSet)
 }
 
 // trackHTTPErrors tracks 404 and 403 errors to detect scanners and vulnerability probers

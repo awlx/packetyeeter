@@ -530,6 +530,24 @@ func (v *CrawlerVerifier) CategorizeBot(userAgent, ja4, ja4h, ja4t, ja4Info stri
 		return BotCategoryScraper
 	}
 
+	// Metronomic request timing alone is weak (some legitimate polling
+	// clients are regular too), so require it alongside a bot-ish UA
+	// signal rather than letting it trigger scraper categorization by
+	// itself.
+	if signalTypes[SignalRequestTimingRegular] > 0 &&
+		(signalTypes[SignalBotUA] > 0 || signalTypes[SignalSuspiciousUA] > 0 || signalTypes[SignalMissingSecCH] > 0 || signalTypes[SignalMissingSecFetch] > 0) {
+		return BotCategoryScraper
+	}
+
+	// JA4/JA4H rotation alone can be explained by shared NAT/corporate
+	// egress IPs with multiple genuine users, so require it alongside
+	// header-order or missing-header anomalies (which a shared-IP
+	// population of real browsers wouldn't collectively produce).
+	if signalTypes[SignalJA4Rotation] > 0 &&
+		(signalTypes[SignalHeaderOrderAnomaly] > 0 || signalTypes[SignalMissingSecCH] > 0 || signalTypes[SignalMissingSecFetch] > 0) {
+		return BotCategoryScraper
+	}
+
 	// Path alpha sequences strongly indicate systematic AI crawling (aa/ab/ac)
 	if signalTypes[SignalAlphaSequence] > 0 {
 		return BotCategoryAICrawlerUnknown

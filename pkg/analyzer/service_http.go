@@ -200,7 +200,7 @@ func (a *Analyzer) processHTTPRequest(sig *apiv1.Signal, ip net.IP, asn string, 
 
 	// Path entropy tracking
 	if ctx.Path != "" {
-		entropy, seqNum, seqAlpha, unique, total := a.updatePathEntropy(ip, ctx.Path)
+		entropy, seqNum, seqAlpha, unique, total, timingRegular := a.updatePathEntropy(ip, ctx.Path)
 		if metrics.IsHighCardinalityEnabled() {
 			metrics.PathEntropyByIP.WithLabelValues(ip.String()).Set(entropy)
 		}
@@ -220,6 +220,12 @@ func (a *Analyzer) processHTTPRequest(sig *apiv1.Signal, ip net.IP, asn string, 
 			metrics.PathEntropySignals.WithLabelValues("alpha_seq").Inc()
 			if a.SignalBuilder != nil {
 				a.SignalBuilder.EmitSequentialPath(ip, asn, org, ctx.Path, aidetection.SignalAlphaSequence, 3.0)
+			}
+		}
+		if timingRegular {
+			metrics.PathEntropySignals.WithLabelValues("timing_regular").Inc()
+			if a.SignalBuilder != nil {
+				a.SignalBuilder.EmitTimingRegularity(ip, asn, org, userAgent, 3.0, unique)
 			}
 		}
 	}
@@ -301,6 +307,18 @@ func (a *Analyzer) processHTTPRequest(sig *apiv1.Signal, ip net.IP, asn string, 
 	}
 	chromeUA := isChromeFamilyUA(userAgent)
 	blinkUA := isBlinkEngineUA(userAgent)
+
+	// JA4/JA4H fingerprint rotation check: only meaningful for requests
+	// claiming a specific, deterministic browser TLS/HTTP stack. Requires
+	// at least 3 distinct fingerprints in-window before firing, to tolerate
+	// a couple of real users briefly sharing a NAT/proxy IP.
+	if (chromeUA || blinkUA) && (sig.Ja4S != "" || sig.Ja4H != "") {
+		ja4Count, ja4hCount := a.checkJA4Consistency(ip, sig.Ja4S, sig.Ja4H)
+		if (ja4Count >= 3 || ja4hCount >= 3) && a.SignalBuilder != nil {
+			a.SignalBuilder.EmitJA4Rotation(ip, asn, org, userAgent, 6.0, ja4Count, ja4hCount)
+		}
+	}
+
 	if headerOrder != "" {
 		parts := strings.Split(headerOrder, ",")
 		if len(parts) < 5 && a.SignalBuilder != nil {
@@ -586,6 +604,25 @@ func (a *Analyzer) processHTTPRequest(sig *apiv1.Signal, ip net.IP, asn string, 
 			a.SignalBuilder.EmitMissingHeader(ip, asn, org, aidetection.SignalMissingAcceptLang, userAgent, 0.5, createHTTPMetadata(nil))
 		}
 		metrics.AISignalsByType.WithLabelValues("missing_accept_language").Inc()
+	}
+
+	// No-cookies / no-referer heuristics: these are individually very weak
+	// (most first-time page loads, bookmarked visits, and legitimate API
+	// clients legitimately have neither), so they're emitted with a low
+	// weight and are only ever load-bearing in verification.go's
+	// categorization routes where they're required *alongside* a bot-like
+	// UA, suspicious UA, or honeypot hit - never as a standalone trigger.
+	if !ctx.HasCookies {
+		if a.SignalBuilder != nil {
+			a.SignalBuilder.EmitMissingHeader(ip, asn, org, aidetection.SignalNoCookies, userAgent, 0.5, createHTTPMetadata(nil))
+		}
+		metrics.AISignalsByType.WithLabelValues("no_cookies").Inc()
+	}
+	if ctx.Referer == "" {
+		if a.SignalBuilder != nil {
+			a.SignalBuilder.EmitMissingHeader(ip, asn, org, aidetection.SignalNoReferer, userAgent, 0.5, createHTTPMetadata(nil))
+		}
+		metrics.AISignalsByType.WithLabelValues("no_referer").Inc()
 	}
 
 	// Threat intelligence enrichment
