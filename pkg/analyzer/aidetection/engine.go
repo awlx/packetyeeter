@@ -2258,8 +2258,19 @@ func (e *Engine) handleDetection(key string, signals []Signal, ewmaBaseline, con
 		}
 	}
 
-	// Ensure category is not unknown when blocking (derive from signals)
-	if botCategory == BotCategoryUnknown {
+	// Ensure category is not unknown when this detection actually crosses the
+	// block confidence threshold (derive from signals). CategorizeBot() above
+	// already applies careful, combination-based rules and intentionally
+	// returns BotCategoryUnknown for weak/ambiguous signal sets (e.g. a DoH
+	// client missing browser-only headers). InferCategoryFromSignals is a
+	// blunt "any signal present" fallback whose only job is to avoid
+	// reporting "unknown" in a block reason for traffic we're about to
+	// enforce against. Applying it unconditionally - as before - mislabeled
+	// large volumes of legitimate low-signal, non-blocking traffic as
+	// "malicious" purely for display purposes. Gate it on the same
+	// confidence threshold used for the actual block decision so
+	// dry-run/monitoring-only detections keep their honest Unknown category.
+	if botCategory == BotCategoryUnknown && confidence >= e.confidenceThreshold {
 		if derived := InferCategoryFromSignals(signalTypes); derived != BotCategoryUnknown {
 			botCategory = derived
 		}
