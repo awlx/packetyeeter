@@ -137,12 +137,32 @@ func isTLSVersionMismatch(chromeUA bool, tlsVersion string) bool {
 	return tlsVersion == "TLSv1.0" || tlsVersion == "TLSv1.1" || tlsVersion == "SSLv3"
 }
 
-func isBrowserHeaderOptionalRequest(method, path, accept, userAgent string) bool {
+func hasStaticAssetSuffix(pathLower string) bool {
+	staticSuffixes := []string{
+		".css", ".js", ".mjs", ".map", ".wasm",
+		".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", ".webp",
+		".woff", ".woff2", ".ttf", ".otf",
+		".wav", ".mp3", ".mp4", ".webm",
+	}
+	for _, suffix := range staticSuffixes {
+		if strings.HasSuffix(pathLower, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+func isProtocolOrBackgroundRequest(method, host, path, accept, userAgent string) bool {
+	hostLower := strings.ToLower(host)
 	pathLower := strings.ToLower(path)
 	uaLower := strings.ToLower(userAgent)
 	acceptLower := strings.ToLower(strings.TrimSpace(accept))
 
 	if pathLower == "/dns-query" || strings.HasPrefix(pathLower, "/dns-query?") {
+		return true
+	}
+	if (strings.HasPrefix(hostLower, "doh.") || strings.HasPrefix(hostLower, "dot.") || strings.HasPrefix(hostLower, "dns.")) &&
+		(pathLower == "/query" || strings.HasPrefix(pathLower, "/query?") || pathLower == "/resolve" || strings.HasPrefix(pathLower, "/resolve?")) {
 		return true
 	}
 	if strings.Contains(uaLower, "dnscrypt-proxy") {
@@ -154,7 +174,13 @@ func isBrowserHeaderOptionalRequest(method, path, accept, userAgent string) bool
 	if strings.Contains(pathLower, "websocket") {
 		return true
 	}
-	if strings.HasSuffix(pathLower, ".json") || strings.HasSuffix(pathLower, ".xml") {
+	if strings.HasPrefix(pathLower, "/api/") || strings.HasSuffix(pathLower, ".json") || strings.HasSuffix(pathLower, ".xml") {
+		return true
+	}
+	if strings.Contains(pathLower, "/lib/exe/taskrunner.php") || strings.HasSuffix(pathLower, "/taskrunner.php") {
+		return true
+	}
+	if hasStaticAssetSuffix(pathLower) {
 		return true
 	}
 	if strings.EqualFold(method, "POST") && acceptLower == "*/*" {
@@ -162,6 +188,10 @@ func isBrowserHeaderOptionalRequest(method, path, accept, userAgent string) bool
 	}
 
 	return false
+}
+
+func isBrowserHeaderOptionalRequest(method, host, path, accept, userAgent string) bool {
+	return isProtocolOrBackgroundRequest(method, host, path, accept, userAgent)
 }
 
 func (a *Analyzer) processHTTPRequest(sig *apiv1.Signal, ip net.IP, asn string, cs *collectorStream) {
@@ -225,13 +255,15 @@ func (a *Analyzer) processHTTPRequest(sig *apiv1.Signal, ip net.IP, asn string, 
 		metrics.HTTPRequestRateByASN.WithLabelValues(asn, org).Set(asnRate)
 	}
 
+	protocolOrBackground := isProtocolOrBackgroundRequest(ctx.Method, ctx.Host, ctx.Path, ctx.Accept, userAgent)
+
 	// Path entropy tracking
 	if ctx.Path != "" {
 		entropy, seqNum, seqAlpha, unique, total, timingRegular := a.updatePathEntropy(ip, ctx.Path)
 		if metrics.IsHighCardinalityEnabled() {
 			metrics.PathEntropyByIP.WithLabelValues(ip.String()).Set(entropy)
 		}
-		if entropy > 0 && entropy < 1.5 && unique > 1 && total >= 20 {
+		if !protocolOrBackground && entropy > 0 && entropy < 1.5 && unique > 1 && total >= 20 {
 			metrics.PathEntropySignals.WithLabelValues("low_entropy").Inc()
 			if a.SignalBuilder != nil {
 				a.SignalBuilder.EmitPathEntropy(ip, asn, org, ctx.Path, entropy, unique, total)
@@ -249,7 +281,7 @@ func (a *Analyzer) processHTTPRequest(sig *apiv1.Signal, ip net.IP, asn string, 
 				a.SignalBuilder.EmitSequentialPath(ip, asn, org, ctx.Path, aidetection.SignalAlphaSequence, 3.0)
 			}
 		}
-		if timingRegular {
+		if !protocolOrBackground && timingRegular {
 			metrics.PathEntropySignals.WithLabelValues("timing_regular").Inc()
 			if a.SignalBuilder != nil {
 				a.SignalBuilder.EmitTimingRegularity(ip, asn, org, userAgent, 3.0, unique)
@@ -620,7 +652,7 @@ func (a *Analyzer) processHTTPRequest(sig *apiv1.Signal, ip net.IP, asn string, 
 		}
 	}
 
-	browserHeadersOptional := isBrowserHeaderOptionalRequest(ctx.Method, ctx.Path, ctx.Accept, userAgent)
+	browserHeadersOptional := isBrowserHeaderOptionalRequest(ctx.Method, ctx.Host, ctx.Path, ctx.Accept, userAgent)
 
 	// Check for missing headers (suspicious). These browser-header absence
 	// signals are intentionally skipped for API/protocol requests where
