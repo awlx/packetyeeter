@@ -3165,15 +3165,16 @@
 
       // Render threats by country
       const countriesEl = document.getElementById('topCountries');
-      if (!data.countries || data.countries.length === 0) {
-        countriesEl.innerHTML = '<div class="empty-state"><div class="empty-state-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8l1.4-4.3A2 2 0 0 1 6.3 2h11.4a2 2 0 0 1 1.9 1.7L21 8M3 8v10a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V8M3 8h18M8 12h8"/></svg></div><div>No country data (GeoIP country database not configured, or no matching detections yet)</div></div>';
-      } else {
-        const maxCount = Math.max(...data.countries.map(c => c.count));
-        let html = '<div style="padding: 1rem 1.5rem;">';
-        data.countries.forEach(item => {
-          const pct = ((item.count / data.total_requests) * 100).toFixed(1);
+      const renderCountryList = (items, emptyText, color) => {
+        if (!items || items.length === 0) {
+          return `<div style="color: var(--text-muted); font-size: 0.875rem; padding: 0.5rem 0;">${emptyText}</div>`;
+        }
+        const total = items.reduce((sum, item) => sum + item.count, 0);
+        const maxCount = Math.max(...items.map(c => c.count));
+        return items.map(item => {
+          const pct = total > 0 ? ((item.count / total) * 100).toFixed(1) : '0.0';
           const barPct = maxCount > 0 ? ((item.count / maxCount) * 100).toFixed(1) : 0;
-          html += `
+          return `
             <div style="display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.75rem;">
               <div style="width: 2rem; font-size: 1.25rem; text-align: center; flex-shrink: 0;" title="${escapeHtml(item.code)}">${countryFlagEmoji(item.code)}</div>
               <div style="flex: 1; min-width: 0;">
@@ -3182,12 +3183,27 @@
                   <span style="color: var(--text-muted); white-space: nowrap; margin-left: 0.5rem;">${item.count} <span style="font-size: 0.75rem;">(${pct}%)</span></span>
                 </div>
                 <div style="background: rgba(15, 23, 42, 0.4); border-radius: 999px; height: 0.5rem; overflow: hidden;">
-                  <div style="background: var(--danger); height: 100%; width: ${barPct}%; border-radius: 999px;"></div>
+                  <div style="background: ${color}; height: 100%; width: ${barPct}%; border-radius: 999px;"></div>
                 </div>
               </div>
             </div>
           `;
-        });
+        }).join('');
+      };
+
+      if ((!data.countries || data.countries.length === 0) &&
+          (!data.countries_block_candidates || data.countries_block_candidates.length === 0) &&
+          (!data.countries_suspicious || data.countries_suspicious.length === 0)) {
+        countriesEl.innerHTML = '<div class="empty-state"><div class="empty-state-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8l1.4-4.3A2 2 0 0 1 6.3 2h11.4a2 2 0 0 1 1.9 1.7L21 8M3 8v10a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V8M3 8h18M8 12h8"/></svg></div><div>No country data (GeoIP country database not configured, or no matching detections yet)</div></div>';
+      } else {
+        let html = '<div style="padding: 1rem 1.5rem;">';
+        html += '<div style="font-size: 0.8125rem; color: var(--text-muted); margin-bottom: 1rem;">Separated by decision scope so noisy observations do not look like confirmed threats.</div>';
+        html += '<div style="font-weight: 700; margin-bottom: 0.5rem;">Block candidates</div>';
+        html += renderCountryList(data.countries_block_candidates, 'No block candidates with country data.', 'var(--danger)');
+        html += '<div style="font-weight: 700; margin: 1rem 0 0.5rem;">Suspicious categories</div>';
+        html += renderCountryList(data.countries_suspicious, 'No suspicious categories with country data.', 'var(--warning)');
+        html += '<div style="font-weight: 700; margin: 1rem 0 0.5rem;">All detections</div>';
+        html += renderCountryList(data.countries, 'No detections with country data.', 'var(--info)');
         html += '</div>';
         countriesEl.innerHTML = html;
       }

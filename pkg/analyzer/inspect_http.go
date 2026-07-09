@@ -849,6 +849,33 @@ func registerInspectorHandlers(a *Analyzer, mux *http.ServeMux) {
 			Count int
 		}
 		countries := make(map[string]*countryAgg)
+		blockCandidateCountries := make(map[string]*countryAgg)
+		suspiciousCountries := make(map[string]*countryAgg)
+		addCountry := func(dst map[string]*countryAgg, det *aidetection.DetectionEvent) {
+			if det.CountryCode == "" || det.CountryCode == "unknown" {
+				return
+			}
+			agg, ok := dst[det.CountryCode]
+			if !ok {
+				agg = &countryAgg{Code: det.CountryCode, Name: det.Country}
+				dst[det.CountryCode] = agg
+			}
+			agg.Count++
+		}
+		isSuspiciousCategory := func(category aidetection.BotCategory) bool {
+			switch category {
+			case aidetection.BotCategoryMalicious,
+				aidetection.BotCategoryScanner,
+				aidetection.BotCategoryDDoS,
+				aidetection.BotCategoryScraper,
+				aidetection.BotCategoryScript,
+				aidetection.BotCategoryAICrawlerUnknown,
+				aidetection.BotCategorySearchUnknown:
+				return true
+			default:
+				return false
+			}
+		}
 
 		for _, det := range history {
 			if det.Hostname != "" {
@@ -871,13 +898,12 @@ func registerInspectorHandlers(a *Analyzer, mux *http.ServeMux) {
 			if det.ASN != "" {
 				asns[det.ASN]++
 			}
-			if det.CountryCode != "" && det.CountryCode != "unknown" {
-				agg, ok := countries[det.CountryCode]
-				if !ok {
-					agg = &countryAgg{Code: det.CountryCode, Name: det.Country}
-					countries[det.CountryCode] = agg
-				}
-				agg.Count++
+			addCountry(countries, det)
+			if det.WouldBlock {
+				addCountry(blockCandidateCountries, det)
+			}
+			if isSuspiciousCategory(det.BotCategory) {
+				addCountry(suspiciousCountries, det)
 			}
 		}
 
@@ -944,25 +970,31 @@ func registerInspectorHandlers(a *Analyzer, mux *http.ServeMux) {
 			Name  string `json:"name"`
 			Count int    `json:"count"`
 		}
-		topCountries := make([]countryItem, 0, len(countries))
-		for _, agg := range countries {
-			topCountries = append(topCountries, countryItem{Code: agg.Code, Name: agg.Name, Count: agg.Count})
+		topCountryItems := func(src map[string]*countryAgg) []countryItem {
+			items := make([]countryItem, 0, len(src))
+			for _, agg := range src {
+				items = append(items, countryItem{Code: agg.Code, Name: agg.Name, Count: agg.Count})
+			}
+			sort.Slice(items, func(i, j int) bool {
+				return items[i].Count > items[j].Count
+			})
+			if len(items) > 20 {
+				items = items[:20]
+			}
+			return items
 		}
-		sort.Slice(topCountries, func(i, j int) bool {
-			return topCountries[i].Count > topCountries[j].Count
-		})
-		if len(topCountries) > 20 {
-			topCountries = topCountries[:20]
-		}
+		topCountries := topCountryItems(countries)
 
 		writeJSON(w, map[string]interface{}{
-			"hostnames":      topHosts,
-			"paths":          topPaths,
-			"methods":        topMethods,
-			"user_agents":    topUAs,
-			"asns":           topASNs,
-			"countries":      topCountries,
-			"total_requests": len(history),
+			"hostnames":                  topHosts,
+			"paths":                      topPaths,
+			"methods":                    topMethods,
+			"user_agents":                topUAs,
+			"asns":                       topASNs,
+			"countries":                  topCountries,
+			"countries_block_candidates": topCountryItems(blockCandidateCountries),
+			"countries_suspicious":       topCountryItems(suspiciousCountries),
+			"total_requests":             len(history),
 		})
 	})
 }

@@ -137,6 +137,33 @@ func isTLSVersionMismatch(chromeUA bool, tlsVersion string) bool {
 	return tlsVersion == "TLSv1.0" || tlsVersion == "TLSv1.1" || tlsVersion == "SSLv3"
 }
 
+func isBrowserHeaderOptionalRequest(method, path, accept, userAgent string) bool {
+	pathLower := strings.ToLower(path)
+	uaLower := strings.ToLower(userAgent)
+	acceptLower := strings.ToLower(strings.TrimSpace(accept))
+
+	if pathLower == "/dns-query" || strings.HasPrefix(pathLower, "/dns-query?") {
+		return true
+	}
+	if strings.Contains(uaLower, "dnscrypt-proxy") {
+		return true
+	}
+	if strings.HasPrefix(pathLower, "/health") || strings.Contains(pathLower, "healthcheck") {
+		return true
+	}
+	if strings.Contains(pathLower, "websocket") {
+		return true
+	}
+	if strings.HasSuffix(pathLower, ".json") || strings.HasSuffix(pathLower, ".xml") {
+		return true
+	}
+	if strings.EqualFold(method, "POST") && acceptLower == "*/*" {
+		return true
+	}
+
+	return false
+}
+
 func (a *Analyzer) processHTTPRequest(sig *apiv1.Signal, ip net.IP, asn string, cs *collectorStream) {
 	ctx := sig.HttpContext
 	userAgent := ctx.UserAgent
@@ -593,8 +620,12 @@ func (a *Analyzer) processHTTPRequest(sig *apiv1.Signal, ip net.IP, asn string, 
 		}
 	}
 
-	// Check for missing headers (suspicious)
-	if ctx.AcceptLanguage == "" {
+	browserHeadersOptional := isBrowserHeaderOptionalRequest(ctx.Method, ctx.Path, ctx.Accept, userAgent)
+
+	// Check for missing headers (suspicious). These browser-header absence
+	// signals are intentionally skipped for API/protocol requests where
+	// browser navigation headers are not expected in the first place.
+	if ctx.AcceptLanguage == "" && !browserHeadersOptional {
 		logrus.WithFields(logrus.Fields{
 			"ip":   ip.String(),
 			"host": ctx.Host,
@@ -612,13 +643,13 @@ func (a *Analyzer) processHTTPRequest(sig *apiv1.Signal, ip net.IP, asn string, 
 	// weight and are only ever load-bearing in verification.go's
 	// categorization routes where they're required *alongside* a bot-like
 	// UA, suspicious UA, or honeypot hit - never as a standalone trigger.
-	if !ctx.HasCookies {
+	if !ctx.HasCookies && !browserHeadersOptional {
 		if a.SignalBuilder != nil {
 			a.SignalBuilder.EmitMissingHeader(ip, asn, org, aidetection.SignalNoCookies, userAgent, 0.5, createHTTPMetadata(nil))
 		}
 		metrics.AISignalsByType.WithLabelValues("no_cookies").Inc()
 	}
-	if ctx.Referer == "" {
+	if ctx.Referer == "" && !browserHeadersOptional {
 		if a.SignalBuilder != nil {
 			a.SignalBuilder.EmitMissingHeader(ip, asn, org, aidetection.SignalNoReferer, userAgent, 0.5, createHTTPMetadata(nil))
 		}

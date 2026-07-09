@@ -103,3 +103,37 @@ func TestNewHAProxySignalsAreLowSeverityAndCapped(t *testing.T) {
 	case <-time.After(200 * time.Millisecond):
 	}
 }
+
+func TestWeakBrowserHeaderOnlyEvidenceCannotWouldBlock(t *testing.T) {
+	e := New(Config{Workers: 1, BufferSize: 100, WarmupPeriod: time.Nanosecond, StaticThreshold: 3, ConfidenceThreshold: 0.8})
+	ch := make(chan DetectionEvent, 1)
+	e.RegisterDetectionHandler(testHandler{ch})
+	time.Sleep(5 * time.Millisecond)
+
+	ip := net.ParseIP("203.0.113.80")
+	key := "ip:" + ip.String()
+
+	var signals []Signal
+	for i := 0; i < 25; i++ {
+		signals = append(signals,
+			Signal{Type: SignalMissingAcceptLang, Source: SourceSPOE, Weight: 0.5, IP: ip},
+			Signal{Type: SignalNoCookies, Source: SourceSPOE, Weight: 0.5, IP: ip},
+			Signal{Type: SignalNoReferer, Source: SourceSPOE, Weight: 0.5, IP: ip},
+		)
+	}
+	signals = append(signals, Signal{Type: SignalTCPMetadata, Source: SourceTCP, Weight: 1, IP: ip})
+
+	e.handleDetection(key, signals, 0, 0.95, 0)
+
+	select {
+	case ev := <-ch:
+		if ev.WouldBlock {
+			t.Fatalf("weak browser-header-only evidence must not become a block candidate: %+v", ev)
+		}
+		if ev.Confidence >= e.confidenceThreshold {
+			t.Fatalf("weak browser-header-only confidence should be capped below threshold, got %.6f", ev.Confidence)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatalf("expected detection event for visibility, but not a block candidate")
+	}
+}
