@@ -21,13 +21,14 @@ func TestHighCardinalityStateRemainsBounded(t *testing.T) {
 	engine.campaigns.cfg.MaxCampaigns = 100
 
 	window := make(map[string][]Signal)
+	summaries := make(map[string]*signalWindowSummary)
 	for i := 0; i < 1000; i++ {
 		engine.processSignal(Signal{
 			Type:      SignalTCPMetadata,
 			Source:    SourceTCP,
 			IP:        net.ParseIP(fmt.Sprintf("2001:db8::%x", i+1)),
 			Timestamp: time.Now(),
-		}, window)
+		}, window, summaries)
 	}
 
 	if got := len(engine.metricsLastSeen); got > engine.metricsMaxEntities {
