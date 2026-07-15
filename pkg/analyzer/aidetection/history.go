@@ -125,25 +125,36 @@ type EventHistorySnapshot struct {
 // HistoryManager manages event histories for all tracked IPs
 type HistoryManager struct {
 	mu           sync.RWMutex
-	histories    map[string]*EventHistory
+	histories    map[string]*historyEntry
 	maxEvents    int
 	maxAge       time.Duration
 	cleanupInt   time.Duration
 	lastCleanup  time.Time
 	maxHistories int
-	activeAdds   map[string]int
+}
+
+type historyEntry struct {
+	history *EventHistory
+	active  int
+	// generation prevents cleanup from acting on an expiry observation made before an add completed.
+	generation uint64
+}
+
+type historyCandidate struct {
+	ip         string
+	entry      *historyEntry
+	generation uint64
 }
 
 // NewHistoryManager creates a new history manager
 func NewHistoryManager(maxEvents int, maxAge time.Duration, cleanupInterval time.Duration) *HistoryManager {
 	return &HistoryManager{
-		histories:    make(map[string]*EventHistory),
+		histories:    make(map[string]*historyEntry),
 		maxEvents:    maxEvents,
 		maxAge:       maxAge,
 		cleanupInt:   cleanupInterval,
 		lastCleanup:  time.Now(),
 		maxHistories: 20000,
-		activeAdds:   make(map[string]int),
 	}
 }
 
@@ -152,31 +163,26 @@ func (hm *HistoryManager) AddEvent(ip string, event SignalEvent) {
 	now := time.Now()
 	hm.mu.Lock()
 
-	// Get or create history
-	history, exists := hm.histories[ip]
+	entry, exists := hm.histories[ip]
 	if !exists {
 		if len(hm.histories) >= hm.maxHistories {
 			hm.mu.Unlock()
 			return
 		}
-		history = NewEventHistory(hm.maxEvents, hm.maxAge)
-		hm.histories[ip] = history
+		entry = &historyEntry{history: NewEventHistory(hm.maxEvents, hm.maxAge)}
+		hm.histories[ip] = entry
 	}
-	hm.activeAdds[ip]++
+	entry.active++
 	shouldCleanup := now.Sub(hm.lastCleanup) > hm.cleanupInt
 	if shouldCleanup {
 		hm.lastCleanup = now
 	}
 	hm.mu.Unlock()
 
-	history.AddEvent(event)
-
-	hm.mu.Lock()
-	hm.activeAdds[ip]--
-	if hm.activeAdds[ip] == 0 {
-		delete(hm.activeAdds, ip)
-	}
-	hm.mu.Unlock()
+	func() {
+		defer hm.finishAdd(entry)
+		entry.history.AddEvent(event)
+	}()
 
 	// Periodic cleanup of expired histories
 	if shouldCleanup {
@@ -184,35 +190,65 @@ func (hm *HistoryManager) AddEvent(ip string, event SignalEvent) {
 	}
 }
 
+func (hm *HistoryManager) finishAdd(entry *historyEntry) {
+	hm.mu.Lock()
+	entry.generation++
+	entry.active--
+	hm.mu.Unlock()
+}
+
 // GetHistory returns event history for an IP
 func (hm *HistoryManager) GetHistory(ip string) (*EventHistory, bool) {
 	hm.mu.RLock()
 	defer hm.mu.RUnlock()
-	history, exists := hm.histories[ip]
-	return history, exists
+	entry, exists := hm.histories[ip]
+	if !exists {
+		return nil, false
+	}
+	return entry.history, true
 }
 
 // Cleanup removes histories for IPs with no recent activity.
 func (hm *HistoryManager) Cleanup(now time.Time) {
+	cutoff := now.Add(-hm.maxAge)
+
+	hm.mu.RLock()
+	candidates := make([]historyCandidate, 0, len(hm.histories))
+	for ip, entry := range hm.histories {
+		candidates = append(candidates, historyCandidate{
+			ip:         ip,
+			entry:      entry,
+			generation: entry.generation,
+		})
+	}
+	hm.mu.RUnlock()
+
+	for _, candidate := range candidates {
+		candidate.entry.history.mu.RLock()
+		expired := candidate.entry.history.lastSeen.Before(cutoff)
+		candidate.entry.history.mu.RUnlock()
+		if !expired {
+			continue
+		}
+		hm.deleteExpired(candidate)
+	}
+
+	hm.mu.Lock()
+	hm.lastCleanup = now
+	hm.mu.Unlock()
+}
+
+func (hm *HistoryManager) deleteExpired(candidate historyCandidate) {
 	hm.mu.Lock()
 	defer hm.mu.Unlock()
 
-	cutoff := now.Add(-hm.maxAge)
-
-	for ip, history := range hm.histories {
-		if hm.activeAdds[ip] > 0 {
-			continue
-		}
-		history.mu.RLock()
-		lastSeen := history.lastSeen
-		history.mu.RUnlock()
-
-		if lastSeen.Before(cutoff) {
-			delete(hm.histories, ip)
-		}
+	current, exists := hm.histories[candidate.ip]
+	if exists &&
+		current == candidate.entry &&
+		current.active == 0 &&
+		current.generation == candidate.generation {
+		delete(hm.histories, candidate.ip)
 	}
-
-	hm.lastCleanup = now
 }
 
 // Count returns number of tracked IPs
