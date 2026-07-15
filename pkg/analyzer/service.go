@@ -223,6 +223,9 @@ type collectorStream struct {
 }
 
 func mapProtoSignalType(t apiv1.SignalType) aidetection.SignalType {
+	if _, known := apiv1.SignalType_name[int32(t)]; !known {
+		return aidetection.SignalType("unknown")
+	}
 	switch t {
 	case apiv1.SignalType_SIGNAL_ICMP_FLOOD:
 		return aidetection.SignalICMPFlood

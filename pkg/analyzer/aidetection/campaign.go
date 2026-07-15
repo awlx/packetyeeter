@@ -337,6 +337,9 @@ func (a *CampaignAggregator) ActiveCampaigns(now time.Time) int {
 
 func (a *CampaignAggregator) pruneCampaignLocked(c *attackCampaign, now time.Time) {
 	cutoff := now.Add(-a.cfg.Window)
+	if len(c.events) == 0 || !c.firstSeen.Before(cutoff) {
+		return
+	}
 	kept := c.events[:0]
 	for _, ev := range c.events {
 		if !ev.timestamp.Before(cutoff) {

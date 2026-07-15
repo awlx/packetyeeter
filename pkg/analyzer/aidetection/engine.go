@@ -671,7 +671,13 @@ func (e *Engine) queueDepthLoop() {
 		case <-e.stop:
 			return
 		case <-ticker.C:
-			metrics.AIEngineQueueDepth.Set(float64(e.totalQueueDepth()))
+			total := 0
+			for shard, queue := range e.signalChans {
+				depth := len(queue)
+				total += depth
+				metrics.AIEngineQueueDepthByShard.WithLabelValues(strconv.Itoa(shard)).Set(float64(depth))
+			}
+			metrics.AIEngineQueueDepth.Set(float64(total))
 		}
 	}
 }
@@ -765,6 +771,8 @@ func (e *Engine) EmitSignal(signal Signal) {
 	if signal.Timestamp.IsZero() {
 		signal.Timestamp = time.Now()
 	}
+	signal.Type = CanonicalizeSignalType(signal.Type)
+	metrics.AIEngineSignalIngressByType.WithLabelValues(string(signal.Type)).Inc()
 
 	idx := 0
 	if n := len(e.signalChans); n > 1 {
@@ -777,6 +785,7 @@ func (e *Engine) EmitSignal(signal Signal) {
 	case e.signalChans[idx] <- signal:
 	default:
 		metrics.AIEngineQueueDrops.Inc()
+		metrics.AIEngineQueueDropsByShard.WithLabelValues(strconv.Itoa(idx)).Inc()
 		// Rate-limit buffer full warnings to once per 5 seconds
 		e.bufferWarningMu.Lock()
 		now := time.Now()
@@ -801,6 +810,8 @@ func (e *Engine) EmitSignal(signal Signal) {
 // per-key totals rather than an arbitrary fragment of them.
 func (e *Engine) worker(id int) {
 	windowSignals := make(map[string][]Signal)
+	windowSummaries := make(map[string]*signalWindowSummary)
+	processingLatency := metrics.AISignalProcessingLatencyByShard.WithLabelValues(strconv.Itoa(id))
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 
@@ -810,11 +821,14 @@ func (e *Engine) worker(id int) {
 			return
 
 		case signal := <-e.signalChans[id]:
-			e.processSignal(signal, windowSignals)
+			start := time.Now()
+			e.processSignal(signal, windowSignals, windowSummaries)
+			processingLatency.Observe(time.Since(start).Seconds())
 
 		case <-ticker.C:
 			e.evaluateWindow(windowSignals)
 			windowSignals = make(map[string][]Signal)
+			windowSummaries = make(map[string]*signalWindowSummary)
 		}
 	}
 }
@@ -1222,7 +1236,12 @@ func hasOnlyWeakBrowserHeaderEvidence(signalTypes map[SignalType]int) bool {
 	return true
 }
 
-func (e *Engine) processSignal(signal Signal, windowSignals map[string][]Signal) {
+type signalWindowSummary struct {
+	types   map[SignalType]bool
+	sources map[SignalSource]bool
+}
+
+func (e *Engine) processSignal(signal Signal, windowSignals map[string][]Signal, windowSummaries map[string]*signalWindowSummary) {
 	start := time.Now()
 	defer func() {
 		metrics.AISignalProcessingLatency.Observe(time.Since(start).Seconds())
@@ -1260,7 +1279,6 @@ func (e *Engine) processSignal(signal Signal, windowSignals map[string][]Signal)
 
 	if e.campaigns != nil {
 		e.campaigns.Record(signal)
-		metrics.ActiveAttackCampaigns.Set(float64(e.campaigns.ActiveCampaigns(time.Now())))
 	}
 
 	// Add signal to event history for advanced feature extraction
@@ -1389,14 +1407,17 @@ func (e *Engine) processSignal(signal Signal, windowSignals map[string][]Signal)
 
 	windowSignals[key] = append(windowSignals[key], signal)
 
-	// Update behavioral profile
-	signalTypes := make(map[SignalType]bool)
-	sources := make(map[SignalSource]bool)
-	for _, s := range windowSignals[key] {
-		signalTypes[s.Type] = true
-		sources[s.Source] = true
+	summary := windowSummaries[key]
+	if summary == nil {
+		summary = &signalWindowSummary{
+			types:   make(map[SignalType]bool),
+			sources: make(map[SignalSource]bool),
+		}
+		windowSummaries[key] = summary
 	}
-	e.updateBehavioralProfile(key, signal, signalTypes, sources)
+	summary.types[signal.Type] = true
+	summary.sources[signal.Source] = true
+	e.updateBehavioralProfile(key, signal, summary.types, summary.sources)
 
 	// logrus.WithFields builds and allocates a Fields map/Entry unconditionally
 	// even when Debug-level logging is disabled (the level check only happens

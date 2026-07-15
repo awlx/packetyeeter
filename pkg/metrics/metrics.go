@@ -344,11 +344,32 @@ var (
 		Help: "Total number of signals dropped due to full queue",
 	})
 
+	AIEngineQueueDepthByShard = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "packetyeeter_ai_engine_queue_depth_by_shard",
+		Help: "Current AI detection signal queue depth by worker shard",
+	}, []string{"shard"})
+
+	AIEngineQueueDropsByShard = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "packetyeeter_ai_engine_queue_drops_by_shard_total",
+		Help: "AI detection signals dropped due to a full queue by worker shard",
+	}, []string{"shard"})
+
+	AIEngineSignalIngressByType = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "packetyeeter_ai_engine_signal_ingress_by_type_total",
+		Help: "AI detection signal enqueue attempts by signal type, including signals dropped due to queue pressure",
+	}, []string{"type"})
+
 	AISignalProcessingLatency = promauto.NewHistogram(prometheus.HistogramOpts{
 		Name:    "packetyeeter_ai_signal_processing_latency_seconds",
 		Help:    "Time to process an AI signal",
 		Buckets: prometheus.DefBuckets,
 	})
+
+	AISignalProcessingLatencyByShard = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "packetyeeter_ai_signal_processing_latency_by_shard_seconds",
+		Help:    "Time to process an AI signal by worker shard",
+		Buckets: prometheus.DefBuckets,
+	}, []string{"shard"})
 
 	// Bot/AI Detection Metrics (unified)
 	AIDetectionsByBotCategory = promauto.NewCounterVec(prometheus.CounterOpts{

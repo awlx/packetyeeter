@@ -124,6 +124,10 @@ behavior) alongside `Tau` and `AnomalyMultiplier`.
   `packetyeeter_bot_detections_by_category_total`,
   `packetyeeter_bot_verification_*`, `packetyeeter_ja4db_*`.
 - **AI engine**: `packetyeeter_ai_signals_by_*`,
+  `packetyeeter_ai_engine_signal_ingress_by_type_total`,
+  `packetyeeter_ai_engine_queue_depth_by_shard`,
+  `packetyeeter_ai_engine_queue_drops_by_shard_total`,
+  `packetyeeter_ai_signal_processing_latency_by_shard_seconds`,
   `packetyeeter_ai_signal_ewma_by_*`,
   `packetyeeter_ai_state_entries`,
   `packetyeeter_ai_confidence_threshold`,
@@ -135,6 +139,12 @@ behavior) alongside `Tau` and `AnomalyMultiplier`.
 for components such as behavioral profiles, EWMA baselines, event histories,
 latest detections, and compact detection history. The `component` label is a
 fixed low-cardinality set and is safe for default dashboards and alerts.
+
+The AI-engine shard metrics use the fixed worker-shard number as their only
+label. Compare ingress by signal type with per-shard depth, drops, and latency
+to distinguish aggregate overload from hash-skew or hot-entity head-of-line
+blocking without enabling high-cardinality IP metrics.
+
 - **Entropy and patterns**: `packetyeeter_payload_entropy_*`,
   `packetyeeter_pattern_tracker_profiles`,
   `packetyeeter_pattern_detections_total`.
