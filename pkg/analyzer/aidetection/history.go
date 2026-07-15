@@ -131,6 +131,7 @@ type HistoryManager struct {
 	cleanupInt   time.Duration
 	lastCleanup  time.Time
 	maxHistories int
+	activeAdds   map[string]int
 }
 
 // NewHistoryManager creates a new history manager
@@ -142,6 +143,7 @@ func NewHistoryManager(maxEvents int, maxAge time.Duration, cleanupInterval time
 		cleanupInt:   cleanupInterval,
 		lastCleanup:  time.Now(),
 		maxHistories: 20000,
+		activeAdds:   make(map[string]int),
 	}
 }
 
@@ -160,14 +162,20 @@ func (hm *HistoryManager) AddEvent(ip string, event SignalEvent) {
 		history = NewEventHistory(hm.maxEvents, hm.maxAge)
 		hm.histories[ip] = history
 	}
+	hm.activeAdds[ip]++
 	shouldCleanup := now.Sub(hm.lastCleanup) > hm.cleanupInt
 	if shouldCleanup {
 		hm.lastCleanup = now
 	}
+	hm.mu.Unlock()
 
-	// Keep the manager lock until lastSeen is updated so cleanup cannot detach
-	// a history while an event is being added to it.
 	history.AddEvent(event)
+
+	hm.mu.Lock()
+	hm.activeAdds[ip]--
+	if hm.activeAdds[ip] == 0 {
+		delete(hm.activeAdds, ip)
+	}
 	hm.mu.Unlock()
 
 	// Periodic cleanup of expired histories
@@ -192,6 +200,9 @@ func (hm *HistoryManager) Cleanup(now time.Time) {
 	cutoff := now.Add(-hm.maxAge)
 
 	for ip, history := range hm.histories {
+		if hm.activeAdds[ip] > 0 {
+			continue
+		}
 		history.mu.RLock()
 		lastSeen := history.lastSeen
 		history.mu.RUnlock()
