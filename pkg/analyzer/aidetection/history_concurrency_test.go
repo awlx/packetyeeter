@@ -85,12 +85,73 @@ func TestHistoryManagerCleanupDoesNotDetachActiveAdd(t *testing.T) {
 	}
 }
 
+func TestHistoryManagerCleanupCandidateCannotDeleteCompletedAdd(t *testing.T) {
+	manager := NewHistoryManager(10, time.Minute, time.Hour)
+	const ip = "active"
+	manager.AddEvent(ip, SignalEvent{Timestamp: time.Now()})
+
+	manager.mu.RLock()
+	entry := manager.histories[ip]
+	candidate := historyCandidate{
+		ip:         ip,
+		entry:      entry,
+		generation: entry.generation,
+	}
+	manager.mu.RUnlock()
+
+	entry.history.mu.Lock()
+	entry.history.lastSeen = time.Now().Add(-2 * time.Minute)
+	entry.history.mu.Unlock()
+
+	manager.AddEvent(ip, SignalEvent{Timestamp: time.Now()})
+	manager.deleteExpired(candidate)
+
+	current, ok := manager.GetHistory(ip)
+	if !ok || current != entry.history {
+		t.Fatal("stale cleanup candidate detached a history after an add completed")
+	}
+	if got := current.Size(); got != 2 {
+		t.Fatalf("history retained %d events, want 2", got)
+	}
+}
+
+func TestHistoryManagerCleanupCandidateCannotDeleteReplacement(t *testing.T) {
+	manager := NewHistoryManager(10, time.Minute, time.Hour)
+	const ip = "replacement"
+	manager.AddEvent(ip, SignalEvent{Timestamp: time.Now()})
+
+	manager.mu.Lock()
+	oldEntry := manager.histories[ip]
+	candidate := historyCandidate{
+		ip:         ip,
+		entry:      oldEntry,
+		generation: oldEntry.generation,
+	}
+	delete(manager.histories, ip)
+	manager.mu.Unlock()
+
+	manager.AddEvent(ip, SignalEvent{Timestamp: time.Now()})
+	manager.deleteExpired(candidate)
+
+	current, ok := manager.GetHistory(ip)
+	if !ok || current == oldEntry.history {
+		t.Fatal("stale cleanup candidate deleted the replacement history")
+	}
+	if got := current.Size(); got != 1 {
+		t.Fatalf("replacement history retained %d events, want 1", got)
+	}
+}
+
 func waitForActiveHistoryAdd(t *testing.T, manager *HistoryManager, ip string) {
 	t.Helper()
 	deadline := time.Now().Add(time.Second)
 	for {
 		manager.mu.RLock()
-		active := manager.activeAdds[ip]
+		entry := manager.histories[ip]
+		active := 0
+		if entry != nil {
+			active = entry.active
+		}
 		manager.mu.RUnlock()
 		if active > 0 {
 			return

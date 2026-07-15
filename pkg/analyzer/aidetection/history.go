@@ -143,6 +143,7 @@ type historyEntry struct {
 type historyCandidate struct {
 	ip         string
 	entry      *historyEntry
+	active     int
 	generation uint64
 }
 
@@ -218,12 +219,16 @@ func (hm *HistoryManager) Cleanup(now time.Time) {
 		candidates = append(candidates, historyCandidate{
 			ip:         ip,
 			entry:      entry,
+			active:     entry.active,
 			generation: entry.generation,
 		})
 	}
 	hm.mu.RUnlock()
 
 	for _, candidate := range candidates {
+		if candidate.active > 0 {
+			continue
+		}
 		candidate.entry.history.mu.RLock()
 		expired := candidate.entry.history.lastSeen.Before(cutoff)
 		candidate.entry.history.mu.RUnlock()
