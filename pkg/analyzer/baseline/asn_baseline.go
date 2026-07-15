@@ -75,6 +75,7 @@ type BaselineCalibrator struct {
 	retentionPeriod time.Duration // How long to keep baselines (default: 7 days)
 
 	cleanupInterval time.Duration
+	maxBaselines    int
 }
 
 // shardFor returns the shard responsible for the given ASN. Using a hash
@@ -113,6 +114,7 @@ func NewBaselineCalibrator(cfg Config) *BaselineCalibrator {
 		minObservations: cfg.MinObservations,
 		retentionPeriod: cfg.RetentionPeriod,
 		cleanupInterval: cfg.CleanupInterval,
+		maxBaselines:    100000,
 	}
 	for i := range bc.shards {
 		bc.shards[i] = &baselineShard{baselines: make(map[string]*ASNBaseline)}
@@ -140,6 +142,10 @@ func (bc *BaselineCalibrator) RecordObservation(asn string, obs ObservationData)
 
 	baseline, ok := shard.baselines[asn]
 	if !ok {
+		perShardMax := bc.maxBaselines / numBaselineShards
+		if perShardMax < 1 || len(shard.baselines) >= perShardMax {
+			return
+		}
 		baseline = &ASNBaseline{
 			ASN:       asn,
 			FirstSeen: obs.Timestamp,

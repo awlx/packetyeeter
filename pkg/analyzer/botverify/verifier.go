@@ -97,13 +97,14 @@ type GeoIPProvider interface {
 
 // Verifier handles bot verification with caching
 type Verifier struct {
-	mu             sync.RWMutex
-	cache          map[string]*VerificationResult // IP -> result
-	cacheTTL       time.Duration
-	patterns       []BotPattern
-	dnsTimeout     time.Duration
-	verifyInFlight map[string]*sync.Mutex // Prevent duplicate verifications
-	geoIP          GeoIPProvider          // GeoIP for ASN/org-based fallback verification
+	mu              sync.RWMutex
+	cache           map[string]*VerificationResult // IP -> result
+	cacheTTL        time.Duration
+	patterns        []BotPattern
+	dnsTimeout      time.Duration
+	verifyInFlight  map[string]*sync.Mutex // Prevent duplicate verifications
+	geoIP           GeoIPProvider          // GeoIP for ASN/org-based fallback verification
+	maxCacheEntries int
 }
 
 // NewVerifier creates a new bot verifier
@@ -121,12 +122,13 @@ func NewVerifierWithGeoIP(cacheTTL, dnsTimeout time.Duration, geoIP GeoIPProvide
 	}
 
 	v := &Verifier{
-		cache:          make(map[string]*VerificationResult),
-		cacheTTL:       cacheTTL,
-		patterns:       KnownBots,
-		dnsTimeout:     dnsTimeout,
-		verifyInFlight: make(map[string]*sync.Mutex),
-		geoIP:          geoIP,
+		cache:           make(map[string]*VerificationResult),
+		cacheTTL:        cacheTTL,
+		patterns:        KnownBots,
+		dnsTimeout:      dnsTimeout,
+		verifyInFlight:  make(map[string]*sync.Mutex),
+		geoIP:           geoIP,
+		maxCacheEntries: 50000,
 	}
 
 	// Start cache cleanup goroutine
@@ -176,7 +178,14 @@ func (v *Verifier) Verify(ip net.IP, userAgent string) *VerificationResult {
 
 	// Lock for this IP's verification
 	mu.Lock()
-	defer mu.Unlock()
+	defer func() {
+		mu.Unlock()
+		v.mu.Lock()
+		if v.verifyInFlight[ipStr] == mu {
+			delete(v.verifyInFlight, ipStr)
+		}
+		v.mu.Unlock()
+	}()
 
 	// Double-check cache after acquiring lock
 	v.mu.RLock()
@@ -191,9 +200,9 @@ func (v *Verifier) Verify(ip net.IP, userAgent string) *VerificationResult {
 
 	// Cache result
 	v.mu.Lock()
-	v.cache[ipStr] = result
-	// Clean up in-flight tracker
-	delete(v.verifyInFlight, ipStr)
+	if _, exists := v.cache[ipStr]; exists || len(v.cache) < v.maxCacheEntries {
+		v.cache[ipStr] = result
+	}
 	v.mu.Unlock()
 
 	return result

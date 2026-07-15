@@ -25,8 +25,11 @@ import (
 
 // Engine is the central AI detection engine that receives signals from multiple sources
 type Engine struct {
-	mu   sync.RWMutex
-	stop chan struct{}
+	mu            sync.RWMutex
+	stop          chan struct{}
+	stopOnce      sync.Once
+	stateSaveDone chan struct{}
+	workerWG      sync.WaitGroup
 	// signalChans is a per-worker shard of the signal queue. Signals are
 	// routed to a shard by hashing their correlation key (IP or JA4H), so a
 	// given key is always handled by the same worker. This is required for
@@ -90,10 +93,15 @@ type Engine struct {
 	signalSourcesByIP   map[string]map[string]uint64 // IP -> source -> count
 	signalSourcesByASN  map[string]map[string]uint64 // ASN -> source -> count
 	signalSourcesByJA4H map[string]map[string]uint64 // JA4H -> source -> count
+	metricsLastSeen     map[string]time.Time
+	metricsMaxEntities  int
+	metricsTTL          time.Duration
 
 	// Behavioral profiling
 	behavioralProfiles map[string]*BehavioralProfile // Entity ID -> profile
 	profilesMu         sync.Mutex
+	profilesMaxSize    int
+	profilesTTL        time.Duration
 
 	// ML Tier tracking (last 1000 predictions)
 	mlTierCounts    map[string]int // pattern/onnx/statistical -> count
@@ -104,7 +112,9 @@ type Engine struct {
 	sessionRecordings    map[string]*SessionRecording // IP -> active recording
 	sessionRecordingsMu  sync.Mutex
 	preDetectionBuffers  map[string]*ring.Ring // IP -> last 100 signals
+	preDetectionLastSeen map[string]time.Time
 	preDetectionBufferMu sync.Mutex
+	maxPreDetectionIPs   int
 
 	// Event history for advanced feature extraction (Option 2)
 	historyManager *HistoryManager
@@ -117,8 +127,11 @@ type Engine struct {
 	maxCompletedRecordings int // Max recordings to keep before export
 
 	// Latest detections cache for UI display
-	latestDetections map[string]*DetectionEvent // Entity ID -> latest detection
-	detectionsMu     sync.Mutex
+	latestDetections    map[string]*DetectionEvent // Entity ID -> latest detection
+	latestDetectionKeys map[*DetectionEvent]map[string]struct{}
+	detectionsMu        sync.Mutex
+	latestMaxEvents     int
+	latestTTL           time.Duration
 
 	// Detection history for last 6 hours
 	detectionHistory []*DetectionEvent
@@ -143,6 +156,8 @@ type Engine struct {
 	// Log throttling
 	logThrottle   map[string]time.Time
 	logThrottleMu sync.Mutex
+
+	stateCleanupInterval time.Duration
 }
 
 // Config holds the configuration for the AI detection engine
@@ -320,12 +335,20 @@ func New(cfg Config) *Engine {
 		signalSourcesByIP:   make(map[string]map[string]uint64),
 		signalSourcesByASN:  make(map[string]map[string]uint64),
 		signalSourcesByJA4H: make(map[string]map[string]uint64),
+		metricsLastSeen:     make(map[string]time.Time),
+		metricsMaxEntities:  50000,
+		metricsTTL:          30 * time.Minute,
 
 		behavioralProfiles:     make(map[string]*BehavioralProfile),
+		profilesMaxSize:        20000,
+		profilesTTL:            30 * time.Minute,
 		latestDetections:       make(map[string]*DetectionEvent),
-		detectionHistory:       make([]*DetectionEvent, 0, 10000),
+		latestDetectionKeys:    make(map[*DetectionEvent]map[string]struct{}),
+		latestMaxEvents:        10000,
+		latestTTL:              6 * time.Hour,
+		detectionHistory:       make([]*DetectionEvent, 0, 5000),
 		historyMaxAge:          6 * time.Hour,
-		historyMaxSize:         10000,
+		historyMaxSize:         5000,
 		logThrottle:            make(map[string]time.Time),
 		asnActiveIPs:           make(map[string]map[string]time.Time),
 		asnAbusiveIPs:          make(map[string]map[string]time.Time),
@@ -337,9 +360,12 @@ func New(cfg Config) *Engine {
 		mlTierHistory:          make([]string, 0, 1000),
 		sessionRecordings:      make(map[string]*SessionRecording),
 		preDetectionBuffers:    make(map[string]*ring.Ring),
+		preDetectionLastSeen:   make(map[string]time.Time),
+		maxPreDetectionIPs:     1000,
 		completedRecordings:    make([]*SessionRecording, 0, 1000),
 		maxCompletedRecordings: 1000,
 		historyManager:         NewHistoryManager(200, 10*time.Minute, 1*time.Minute), // 200 events, 10min window
+		stateCleanupInterval:   time.Minute,
 	}
 
 	// Initialize feedback loop for adaptive threshold adjustment
@@ -381,30 +407,8 @@ func (e *Engine) GetDetectionHandlers() []DetectionHandler {
 
 // StoreVerifiedBotObservation stores a verified legitimate bot observation in the detection cache
 func (e *Engine) StoreVerifiedBotObservation(event *DetectionEvent) {
-	e.detectionsMu.Lock()
-	defer e.detectionsMu.Unlock()
-
-	if event.IP != nil {
-		e.latestDetections["ip:"+event.IP.String()] = event
-	}
-	if event.ASN != "" {
-		e.latestDetections["asn:"+event.ASN] = event
-	}
-	if event.JA4H != "" {
-		e.latestDetections["ja4h:"+event.JA4H] = event
-	}
-
-	// Also add to history
-	e.historyMu.Lock()
-	defer e.historyMu.Unlock()
-
-	eventCopy := *event
-	e.detectionHistory = append(e.detectionHistory, &eventCopy)
-
-	// Trim history if too large
-	if len(e.detectionHistory) > e.historyMaxSize {
-		e.detectionHistory = e.detectionHistory[len(e.detectionHistory)-e.historyMaxSize:]
-	}
+	e.cacheDetection(event, detectionEntityKeys(event, ""))
+	e.addDetectionHistory(event)
 }
 
 // SetThreatIntel sets or updates the threat intelligence provider
@@ -426,14 +430,7 @@ func (e *Engine) RecordFalsePositive(ip net.IP, asn string, confidence float64, 
 		// Get the detection to extract its features
 		det := e.GetLatestDetection("ip:" + ip.String())
 		if det != nil {
-			// Extract ML features from the detection
-			mlFeatures := e.extractMLFeatures(
-				det.Signals,
-				det.SignalBreakdown,
-				det.SourceBreakdown,
-				nil, // behavioral profile
-				0,   // reputation score
-			)
+			mlFeatures := e.feedbackFeatures(det)
 			// Train model: this pattern is NOT a bot (label = false)
 			_ = e.mlModel.Train(mlFeatures, false)
 
@@ -458,14 +455,7 @@ func (e *Engine) RecordTruePositive(ip net.IP, asn string, confidence float64, c
 		// Get the detection to extract its features
 		det := e.GetLatestDetection("ip:" + ip.String())
 		if det != nil {
-			// Extract ML features from the detection
-			mlFeatures := e.extractMLFeatures(
-				det.Signals,
-				det.SignalBreakdown,
-				det.SourceBreakdown,
-				nil, // behavioral profile
-				0,   // reputation score
-			)
+			mlFeatures := e.feedbackFeatures(det)
 			// Train model: this pattern IS a bot (label = true)
 			_ = e.mlModel.Train(mlFeatures, true)
 
@@ -620,7 +610,11 @@ func (e *Engine) Start() {
 
 	metrics.AIEngineWarmup.Set(1)
 	for i := 0; i < e.workers; i++ {
-		go e.worker(i)
+		e.workerWG.Add(1)
+		go func(workerID int) {
+			defer e.workerWG.Done()
+			e.worker(workerID)
+		}(i)
 	}
 
 	// Campaign evaluation aggregates state that is shared across all workers
@@ -631,8 +625,12 @@ func (e *Engine) Start() {
 
 	// Start ASN maps cleanup
 	go e.asnCleanupLoop()
+	go e.stateCleanupLoop()
 
 	// Start state save loop
+	e.mu.Lock()
+	e.stateSaveDone = make(chan struct{})
+	e.mu.Unlock()
 	go e.stateSaveLoop()
 
 	// Periodically refresh the queue depth gauge instead of computing it on
@@ -729,8 +727,20 @@ func (e *Engine) totalQueueCapacity() int {
 
 // Stop shuts down the engine
 func (e *Engine) Stop() {
-	close(e.stop)
-	e.saveState()
+	e.stopOnce.Do(func() {
+		if e.feedback != nil {
+			e.feedback.StopCleanup()
+		}
+		close(e.stop)
+		e.mu.RLock()
+		done := e.stateSaveDone
+		e.mu.RUnlock()
+		if done != nil {
+			<-done
+		}
+		e.workerWG.Wait()
+		e.saveState()
+	})
 }
 
 // SetMLModel allows replacing the ML model after initialization
@@ -819,10 +829,15 @@ func (e *Engine) markASNActive(asn, org string, ip net.IP) {
 	defer e.asnMapsMu.Unlock()
 	ipStr := ip.String()
 	if e.asnActiveIPs[asn] == nil {
+		if len(e.asnActiveIPs) >= 5000 {
+			return
+		}
 		e.asnActiveIPs[asn] = make(map[string]time.Time)
 	}
 	e.asnOrg[asn] = org
-	e.asnActiveIPs[asn][ipStr] = time.Now()
+	if _, exists := e.asnActiveIPs[asn][ipStr]; exists || len(e.asnActiveIPs[asn]) < 5000 {
+		e.asnActiveIPs[asn][ipStr] = time.Now()
+	}
 	active := len(e.asnActiveIPs[asn])
 	abusive := len(e.asnAbusiveIPs[asn])
 	ratio := 0.0
@@ -842,16 +857,26 @@ func (e *Engine) markASNAbusive(asn, org string, ip net.IP) {
 	defer e.asnMapsMu.Unlock()
 	ipStr := ip.String()
 	if e.asnAbusiveIPs[asn] == nil {
+		if len(e.asnAbusiveIPs) >= 5000 {
+			return
+		}
 		e.asnAbusiveIPs[asn] = make(map[string]time.Time)
 	}
 	e.asnOrg[asn] = org
-	e.asnAbusiveIPs[asn][ipStr] = time.Now()
+	if _, exists := e.asnAbusiveIPs[asn][ipStr]; exists || len(e.asnAbusiveIPs[asn]) < 5000 {
+		e.asnAbusiveIPs[asn][ipStr] = time.Now()
+	}
 	// Ensure active map also tracks this IP
 	if e.asnActiveIPs[asn] == nil {
+		if len(e.asnActiveIPs) >= 5000 {
+			return
+		}
 		e.asnActiveIPs[asn] = make(map[string]time.Time)
 	}
 	if _, ok := e.asnActiveIPs[asn][ipStr]; !ok {
-		e.asnActiveIPs[asn][ipStr] = time.Now()
+		if len(e.asnActiveIPs[asn]) < 5000 {
+			e.asnActiveIPs[asn][ipStr] = time.Now()
+		}
 	}
 	active := len(e.asnActiveIPs[asn])
 	abusive := len(e.asnAbusiveIPs[asn])
@@ -886,6 +911,9 @@ func (e *Engine) cleanupASNMaps() {
 		}
 		if len(m) == 0 {
 			delete(e.asnActiveIPs, asn)
+			if _, abusive := e.asnAbusiveIPs[asn]; !abusive {
+				delete(e.asnOrg, asn)
+			}
 		}
 	}
 	for asn, m := range e.asnAbusiveIPs {
@@ -896,6 +924,9 @@ func (e *Engine) cleanupASNMaps() {
 		}
 		if len(m) == 0 {
 			delete(e.asnAbusiveIPs, asn)
+			if _, active := e.asnActiveIPs[asn]; !active {
+				delete(e.asnOrg, asn)
+			}
 		}
 	}
 	// Update metrics
@@ -1056,10 +1087,15 @@ func (e *Engine) saveState() {
 func (e *Engine) stateSaveLoop() {
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
+	e.mu.RLock()
+	done := e.stateSaveDone
+	e.mu.RUnlock()
+	if done != nil {
+		defer close(done)
+	}
 	for {
 		select {
 		case <-e.stop:
-			e.saveState()
 			return
 		case <-ticker.C:
 			e.saveState()
@@ -1306,37 +1342,43 @@ func (e *Engine) processSignal(signal Signal, windowSignals map[string][]Signal)
 	e.metricsMu.Lock()
 	if signal.IP != nil {
 		ipStr := signal.IP.String()
-		e.signalsByIP[ipStr]++
-		if e.signalTypesByIP[ipStr] == nil {
-			e.signalTypesByIP[ipStr] = make(map[string]uint64)
+		if e.admitMetricEntityLocked("ip:"+ipStr, e.signalsByIP, ipStr, time.Now()) {
+			e.signalsByIP[ipStr]++
+			if e.signalTypesByIP[ipStr] == nil {
+				e.signalTypesByIP[ipStr] = make(map[string]uint64)
+			}
+			e.signalTypesByIP[ipStr][string(signal.Type)]++
+			if e.signalSourcesByIP[ipStr] == nil {
+				e.signalSourcesByIP[ipStr] = make(map[string]uint64)
+			}
+			e.signalSourcesByIP[ipStr][string(signal.Source)]++
 		}
-		e.signalTypesByIP[ipStr][string(signal.Type)]++
-		if e.signalSourcesByIP[ipStr] == nil {
-			e.signalSourcesByIP[ipStr] = make(map[string]uint64)
-		}
-		e.signalSourcesByIP[ipStr][string(signal.Source)]++
 	}
 	if signal.ASN != "" {
-		e.signalsByASN[signal.ASN]++
-		if e.signalTypesByASN[signal.ASN] == nil {
-			e.signalTypesByASN[signal.ASN] = make(map[string]uint64)
+		if e.admitMetricEntityLocked("asn:"+signal.ASN, e.signalsByASN, signal.ASN, time.Now()) {
+			e.signalsByASN[signal.ASN]++
+			if e.signalTypesByASN[signal.ASN] == nil {
+				e.signalTypesByASN[signal.ASN] = make(map[string]uint64)
+			}
+			e.signalTypesByASN[signal.ASN][string(signal.Type)]++
+			if e.signalSourcesByASN[signal.ASN] == nil {
+				e.signalSourcesByASN[signal.ASN] = make(map[string]uint64)
+			}
+			e.signalSourcesByASN[signal.ASN][string(signal.Source)]++
 		}
-		e.signalTypesByASN[signal.ASN][string(signal.Type)]++
-		if e.signalSourcesByASN[signal.ASN] == nil {
-			e.signalSourcesByASN[signal.ASN] = make(map[string]uint64)
-		}
-		e.signalSourcesByASN[signal.ASN][string(signal.Source)]++
 	}
 	if signal.JA4H != "" {
-		e.signalsByJA4H[signal.JA4H]++
-		if e.signalTypesByJA4H[signal.JA4H] == nil {
-			e.signalTypesByJA4H[signal.JA4H] = make(map[string]uint64)
+		if e.admitMetricEntityLocked("ja4h:"+signal.JA4H, e.signalsByJA4H, signal.JA4H, time.Now()) {
+			e.signalsByJA4H[signal.JA4H]++
+			if e.signalTypesByJA4H[signal.JA4H] == nil {
+				e.signalTypesByJA4H[signal.JA4H] = make(map[string]uint64)
+			}
+			e.signalTypesByJA4H[signal.JA4H][string(signal.Type)]++
+			if e.signalSourcesByJA4H[signal.JA4H] == nil {
+				e.signalSourcesByJA4H[signal.JA4H] = make(map[string]uint64)
+			}
+			e.signalSourcesByJA4H[signal.JA4H][string(signal.Source)]++
 		}
-		e.signalTypesByJA4H[signal.JA4H][string(signal.Type)]++
-		if e.signalSourcesByJA4H[signal.JA4H] == nil {
-			e.signalSourcesByJA4H[signal.JA4H] = make(map[string]uint64)
-		}
-		e.signalSourcesByJA4H[signal.JA4H][string(signal.Source)]++
 	}
 	e.metricsMu.Unlock()
 
@@ -1546,17 +1588,8 @@ func (e *Engine) handleCampaignDetection(detection CampaignDetection) {
 		Metadata:        metadata,
 	}
 
-	e.detectionsMu.Lock()
-	e.latestDetections["campaign:"+detection.ID] = &event
-	e.detectionsMu.Unlock()
-
-	e.historyMu.Lock()
-	eventCopy := event
-	e.detectionHistory = append(e.detectionHistory, &eventCopy)
-	if len(e.detectionHistory) > e.historyMaxSize {
-		e.detectionHistory = e.detectionHistory[len(e.detectionHistory)-e.historyMaxSize:]
-	}
-	e.historyMu.Unlock()
+	e.cacheDetection(&event, detectionEntityKeys(&event, "campaign:"+detection.ID))
+	e.addDetectionHistory(&event)
 
 	logrus.WithFields(logrus.Fields{
 		"component":    "aidetection_engine",
@@ -1885,12 +1918,11 @@ func (e *Engine) checkAdaptiveDetection(key string, currentCount int) (bool, flo
 	e.ewmaMu.Lock()
 	defer e.ewmaMu.Unlock()
 
-	if len(e.ewmaMap) > 20000 {
-		e.ewmaMap = make(map[string]*ewma.State)
-	}
-
 	st := e.ewmaMap[key]
 	if st == nil {
+		if len(e.ewmaMap) >= 20000 {
+			return false, current
+		}
 		st = &ewma.State{Value: current, LastTime: now}
 		e.ewmaMap[key] = st
 	} else {
@@ -1916,6 +1948,11 @@ func (e *Engine) shouldLogDetection(key string) bool {
 		if now.Sub(prev) < ttl {
 			return false
 		}
+		e.logThrottle[key] = now
+		return true
+	}
+	if len(e.logThrottle) >= 20000 {
+		return false
 	}
 	e.logThrottle[key] = now
 	return true
@@ -2244,9 +2281,11 @@ func (e *Engine) handleDetection(key string, signals []Signal, ewmaBaseline, con
 	var mlCategory BotCategory
 	var mlModelTier string     // Track which tier was used: "pattern", "onnx", "statistical"
 	var ruleConfidence float64 // Store rule-based confidence for display only
+	var feedbackFeatures *MLFeatures
 
 	if e.mlModel != nil {
 		mlFeatures := e.extractMLFeatures(signals, signalTypes, sources, behavioralProfile, reputationScore)
+		feedbackFeatures = compactMLFeatures(&mlFeatures)
 
 		// Use ML model for prediction
 		prediction := e.mlModel.Predict(mlFeatures)
@@ -2388,6 +2427,7 @@ func (e *Engine) handleDetection(key string, signals []Signal, ewmaBaseline, con
 		WouldBlock:         wouldBlock,
 		SignalBreakdown:    signalTypes,
 		SourceBreakdown:    sources,
+		FeedbackFeatures:   feedbackFeatures,
 	}
 	if ddosInfo != nil {
 		if b, err := json.Marshal(ddosInfo); err == nil {
@@ -2436,14 +2476,22 @@ func (e *Engine) handleDetection(key string, signals []Signal, ewmaBaseline, con
 	}
 
 	e.metricsMu.Lock()
+	now := time.Now()
 	if event.IP != nil {
-		e.detectionsByIP[event.IP.String()]++
+		ip := event.IP.String()
+		if e.admitMetricEntityLocked("ip:"+ip, e.detectionsByIP, ip, now) {
+			e.detectionsByIP[ip]++
+		}
 	}
 	if event.ASN != "" {
-		e.detectionsByASN[event.ASN]++
+		if e.admitMetricEntityLocked("asn:"+event.ASN, e.detectionsByASN, event.ASN, now) {
+			e.detectionsByASN[event.ASN]++
+		}
 	}
 	if event.JA4H != "" {
-		e.detectionsByJA4H[event.JA4H]++
+		if e.admitMetricEntityLocked("ja4h:"+event.JA4H, e.detectionsByJA4H, event.JA4H, now) {
+			e.detectionsByJA4H[event.JA4H]++
+		}
 	}
 	e.metricsMu.Unlock()
 
@@ -2456,28 +2504,8 @@ func (e *Engine) handleDetection(key string, signals []Signal, ewmaBaseline, con
 	}
 
 	if !skipCache {
-		e.detectionsMu.Lock()
-		if event.IP != nil {
-			e.latestDetections["ip:"+event.IP.String()] = &event
-		}
-		if event.ASN != "" {
-			e.latestDetections["asn:"+event.ASN] = &event
-		}
-		if event.JA4H != "" {
-			e.latestDetections["ja4h:"+event.JA4H] = &event
-		}
-		e.detectionsMu.Unlock()
-
-		// Add to history (make a copy)
-		e.historyMu.Lock()
-		eventCopy := event
-		e.detectionHistory = append(e.detectionHistory, &eventCopy)
-
-		// Trim history if too large
-		if len(e.detectionHistory) > e.historyMaxSize {
-			e.detectionHistory = e.detectionHistory[len(e.detectionHistory)-e.historyMaxSize:]
-		}
-		e.historyMu.Unlock()
+		e.cacheDetection(&event, detectionEntityKeys(&event, ""))
+		e.addDetectionHistory(&event)
 	}
 
 	// Track bot category metrics
@@ -2756,6 +2784,9 @@ func (e *Engine) updateBehavioralProfile(entityID string, signal Signal, signalT
 
 	profile, exists := e.behavioralProfiles[entityID]
 	if !exists {
+		if len(e.behavioralProfiles) >= e.profilesMaxSize {
+			return
+		}
 		profile = &BehavioralProfile{
 			EntityID:    entityID,
 			FirstSeen:   signal.Timestamp,
@@ -3125,8 +3156,12 @@ func (e *Engine) capturePreDetectionEvent(ip string, signal Signal) {
 
 	// Initialize ring buffer if not exists (100 events)
 	if e.preDetectionBuffers[ip] == nil {
+		if len(e.preDetectionBuffers) >= e.maxPreDetectionIPs {
+			return
+		}
 		e.preDetectionBuffers[ip] = ring.New(100)
 	}
+	e.preDetectionLastSeen[ip] = signal.Timestamp
 
 	// Add signal to ring buffer
 	e.preDetectionBuffers[ip].Value = signal
@@ -3226,7 +3261,7 @@ func (e *Engine) StartRecordingForIP(ip string, label string) {
 // Caller must hold sessionRecordingsMu lock
 func (e *Engine) capturePostDetectionEventLocked(ip string, signal Signal) {
 	recording := e.sessionRecordings[ip]
-	if recording != nil {
+	if recording != nil && len(recording.PostEvents) < 500 {
 		recording.PostEvents = append(recording.PostEvents, signal)
 	}
 }

@@ -148,6 +148,10 @@ func (pt *PatternTracker) RecordConnection(ip net.IP, meta ConnectionMetadata) {
 
 	// Port scanning detection
 	if meta.DestPort > 0 {
+		if time.Since(pattern.LastPortTime) > pt.portScanWindow {
+			pattern.PortsAccessed = make(map[uint16]uint64)
+			pattern.PortSequence = pattern.PortSequence[:0]
+		}
 		pattern.PortsAccessed[meta.DestPort]++
 		pattern.PortSequence = append(pattern.PortSequence, meta.DestPort)
 		if len(pattern.PortSequence) > 100 {

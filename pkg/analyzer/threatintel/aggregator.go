@@ -25,6 +25,7 @@ const enrichWorkerCount = 16
 // buffered before new requests are dropped (enrichment is best-effort;
 // dropping is safe and preferable to unbounded growth).
 const enrichQueueSize = 2048
+const maxEnrichmentCacheEntries = 50000
 
 // ThreatIntelligence aggregates multiple threat intelligence sources
 type ThreatIntelligence struct {
@@ -166,7 +167,9 @@ func (t *ThreatIntelligence) performEnrichment(ip net.IP) {
 
 	// Store enriched data
 	t.mu.Lock()
-	t.enrichmentCache[ipStr] = enriched
+	if _, exists := t.enrichmentCache[ipStr]; exists || len(t.enrichmentCache) < maxEnrichmentCacheEntries {
+		t.enrichmentCache[ipStr] = enriched
+	}
 	t.mu.Unlock()
 
 	// Update metrics

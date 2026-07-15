@@ -91,6 +91,7 @@ type pathWindow struct {
 	AlphaSeqStreak int
 	JA4Set         map[string]bool
 	JA4HSet        map[string]bool
+	LastSeen       time.Time
 }
 
 // HTTP error tracking for scanner/crawler detection
@@ -1265,10 +1266,14 @@ func (a *Analyzer) runBaselineCalibrator() {
 
 func (a *Analyzer) updateHTTPRate(ip net.IP, asn string) (float64, float64) {
 	const tau = time.Second
+	const maxEntities = 20000
 	now := time.Now()
 
 	update := func(m map[string]*ewma.State, key string) float64 {
 		if m[key] == nil {
+			if len(m) >= maxEntities {
+				return 0
+			}
 			m[key] = &ewma.State{Value: 1.0, LastTime: now}
 			return 1.0
 		}
@@ -1300,6 +1305,7 @@ func (a *Analyzer) updateHTTPRate(ip net.IP, asn string) (float64, float64) {
 
 func (a *Analyzer) updateProxyLag(asn string, lag float64) float64 {
 	const tau = 30 * time.Second
+	const maxEntities = 5000
 	if asn == "" || asn == "Unknown" {
 		return 0
 	}
@@ -1309,6 +1315,9 @@ func (a *Analyzer) updateProxyLag(asn string, lag float64) float64 {
 
 	now := time.Now()
 	if a.proxyLagByASN[asn] == nil {
+		if len(a.proxyLagByASN) >= maxEntities {
+			return 0
+		}
 		a.proxyLagByASN[asn] = &ewma.State{Value: lag, LastTime: now}
 		return lag
 	}
@@ -1332,6 +1341,9 @@ func (a *Analyzer) shouldEmitLatencyAnomaly(ip net.IP) bool {
 			return false
 		}
 	}
+	if len(a.latencyAnomalyThrottle) >= 20000 {
+		return false
+	}
 	a.latencyAnomalyThrottle[key] = now
 	return true
 }
@@ -1347,9 +1359,14 @@ func (a *Analyzer) updatePathEntropy(ip net.IP, path string) (float64, bool, boo
 	pw := a.pathWindows[key]
 	now := time.Now()
 	if pw == nil {
+		if len(a.pathWindows) >= 20000 {
+			a.pathMu.Unlock()
+			return 0, false, false, 0, 0, false
+		}
 		pw = &pathWindow{Counts: make(map[string]int)}
 		a.pathWindows[key] = pw
 	}
+	pw.LastSeen = now
 	pw.Events = append(pw.Events, pathEvent{Path: path, Ts: now})
 	pw.Counts[path]++
 	pw.Total++
@@ -1484,9 +1501,13 @@ func (a *Analyzer) checkJA4Consistency(ip net.IP, ja4, ja4h string) (int, int) {
 	defer a.pathMu.Unlock()
 	pw := a.pathWindows[key]
 	if pw == nil {
+		if len(a.pathWindows) >= 20000 {
+			return 0, 0
+		}
 		pw = &pathWindow{Counts: make(map[string]int)}
 		a.pathWindows[key] = pw
 	}
+	pw.LastSeen = time.Now()
 	if pw.JA4Set == nil {
 		pw.JA4Set = make(map[string]bool)
 	}
@@ -1520,6 +1541,9 @@ func (a *Analyzer) trackHTTPErrors(ip net.IP, statusCode uint32, path string) (i
 	now := time.Now()
 
 	if w == nil {
+		if len(a.httpErrorWindows) >= 20000 {
+			return 0, 0, 0
+		}
 		w = &httpErrorWindow{}
 		a.httpErrorWindows[key] = w
 	}
@@ -1597,7 +1621,7 @@ func (a *Analyzer) cleanupTrackingMaps() {
 	a.pathMu.Lock()
 	for ip, pw := range a.pathWindows {
 		// Remove if no recent activity
-		if len(pw.Events) == 0 || (len(pw.Events) > 0 && pw.Events[len(pw.Events)-1].Ts.Before(cutoff)) {
+		if pw.LastSeen.Before(cutoff) {
 			delete(a.pathWindows, ip)
 		}
 	}
@@ -1625,6 +1649,11 @@ func (a *Analyzer) cleanupTrackingMaps() {
 	for asn, state := range a.httpRateByASN {
 		if state != nil && time.Since(state.LastTime) > 15*time.Minute {
 			delete(a.httpRateByASN, asn)
+		}
+	}
+	for asn, state := range a.proxyLagByASN {
+		if state != nil && now.Sub(state.LastTime) > 15*time.Minute {
+			delete(a.proxyLagByASN, asn)
 		}
 	}
 	httpRateIPCount := len(a.httpRateByIP)
@@ -1685,6 +1714,9 @@ func (a *Analyzer) cleanupTrackingMaps() {
 func (a *Analyzer) Close() {
 	a.cancel()
 
+	if a.AIEngine != nil {
+		a.AIEngine.Stop()
+	}
 	if a.Reputation != nil {
 		a.Reputation.Stop()
 	}

@@ -176,6 +176,7 @@ type DetectionEvent struct {
 	SourceBreakdown    map[SignalSource]int // Count by source
 	Reasons            []string
 	Metadata           map[string]interface{} // Additional metadata (user labels, etc.)
+	FeedbackFeatures   *MLFeatures            `json:"-"` // Bounded feature snapshot for later operator feedback
 }
 
 // BehavioralProfile tracks behavioral patterns over time for an entity

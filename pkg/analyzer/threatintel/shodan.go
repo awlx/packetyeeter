@@ -14,6 +14,8 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+const maxShodanCacheEntries = 50000
+
 // ShodanInternetDB provides IP intelligence from Shodan's free InternetDB API
 // No API key required, completely free
 type ShodanInternetDB struct {
@@ -117,7 +119,9 @@ func (s *ShodanInternetDB) Lookup(ip net.IP) (*ShodanIPInfo, error) {
 			CachedAt: time.Now(),
 		}
 		s.mu.Lock()
-		s.cache[ipStr] = info
+		if _, exists := s.cache[ipStr]; exists || len(s.cache) < maxShodanCacheEntries {
+			s.cache[ipStr] = info
+		}
 		s.mu.Unlock()
 		return info, nil
 	}
@@ -167,7 +171,9 @@ func (s *ShodanInternetDB) Lookup(ip net.IP) (*ShodanIPInfo, error) {
 
 	// Cache result
 	s.mu.Lock()
-	s.cache[ipStr] = &info
+	if _, exists := s.cache[ipStr]; exists || len(s.cache) < maxShodanCacheEntries {
+		s.cache[ipStr] = &info
+	}
 	s.mu.Unlock()
 
 	logrus.WithFields(logrus.Fields{

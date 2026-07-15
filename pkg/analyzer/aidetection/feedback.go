@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"math"
 	"os"
+	"sort"
 	"sync"
 	"time"
 
@@ -83,6 +84,9 @@ type FeedbackLoop struct {
 	patternsTTL        time.Duration             // Default: never expire (0 = infinite)
 	patternsPath       string                    // Path to save learned patterns
 	patternMaxObserved int                       // Max observations to keep per pattern (default: 1000)
+	maxPatterns        int
+	cleanupStop        chan struct{}
+	cleanupStopOnce    sync.Once
 }
 
 // LearningLabel tracks IPs that should be used for ML training
@@ -196,6 +200,8 @@ func NewFeedbackLoop(cfg FeedbackConfig) *FeedbackLoop {
 		patternsTTL:        cfg.PatternsTTL,
 		patternsPath:       cfg.PatternsPath,
 		patternMaxObserved: cfg.PatternMaxObserved,
+		maxPatterns:        10000,
+		cleanupStop:        make(chan struct{}),
 		lastAdjustment:     time.Now(),
 	}
 
@@ -698,6 +704,22 @@ func (f *FeedbackLoop) Cleanup() {
 	if i > 0 {
 		f.outcomes = f.outcomes[i:]
 	}
+	f.truePositiveIPs = make(map[string]int)
+	f.falsePositiveASNs = make(map[string]int)
+	f.truePositiveASNs = make(map[string]int)
+	for _, outcome := range f.outcomes {
+		switch outcome.Outcome {
+		case OutcomeTruePositive:
+			f.truePositiveIPs[outcome.IP]++
+			if outcome.ASN != "" && outcome.ASN != "Unknown" {
+				f.truePositiveASNs[outcome.ASN]++
+			}
+		case OutcomeFalsePositive:
+			if outcome.ASN != "" && outcome.ASN != "Unknown" {
+				f.falsePositiveASNs[outcome.ASN]++
+			}
+		}
+	}
 
 	// Clean expired allowlist entries
 	for ip, expiry := range f.allowlist {
@@ -750,10 +772,22 @@ func (f *FeedbackLoop) Cleanup() {
 func (f *FeedbackLoop) StartCleanup() {
 	ticker := time.NewTicker(10 * time.Minute)
 	go func() {
-		for range ticker.C {
-			f.Cleanup()
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				f.Cleanup()
+			case <-f.cleanupStop:
+				return
+			}
 		}
 	}()
+}
+
+func (f *FeedbackLoop) StopCleanup() {
+	f.cleanupStopOnce.Do(func() {
+		close(f.cleanupStop)
+	})
 }
 
 // AllowlistEntry represents an IP in the allowlist
@@ -1044,6 +1078,12 @@ func (f *FeedbackLoop) LearnPatternWithBehavior(userAgent, asn, ja4h, label stri
 
 			f.learnedPatterns[key] = existing
 		} else {
+			if len(f.learnedPatterns) >= f.maxPatterns {
+				f.evictOldestAutomaticPatternLocked()
+			}
+			if len(f.learnedPatterns) >= f.maxPatterns {
+				continue
+			}
 			// New pattern
 			f.learnedPatterns[key] = newPattern
 			patternsLearned++
@@ -1062,6 +1102,23 @@ func (f *FeedbackLoop) LearnPatternWithBehavior(userAgent, asn, ja4h, label stri
 
 		// Save patterns to disk
 		go f.savePatterns()
+	}
+}
+
+func (f *FeedbackLoop) evictOldestAutomaticPatternLocked() {
+	var oldestKey string
+	var oldestTime time.Time
+	for key, pattern := range f.learnedPatterns {
+		if pattern.LabeledByUser {
+			continue
+		}
+		if oldestKey == "" || pattern.LastSeen.Before(oldestTime) {
+			oldestKey = key
+			oldestTime = pattern.LastSeen
+		}
+	}
+	if oldestKey != "" {
+		delete(f.learnedPatterns, oldestKey)
 	}
 }
 
@@ -1136,12 +1193,21 @@ func (f *FeedbackLoop) loadPatterns() {
 
 	loaded := 0
 	now := time.Now()
+	sort.SliceStable(patterns, func(i, j int) bool {
+		if patterns[i].LabeledByUser != patterns[j].LabeledByUser {
+			return patterns[i].LabeledByUser
+		}
+		return patterns[i].LastSeen.After(patterns[j].LastSeen)
+	})
 	for _, pattern := range patterns {
 		// Check if pattern has expired (if TTL > 0)
 		if f.patternsTTL > 0 && now.Sub(pattern.LastSeen) > f.patternsTTL {
 			continue // Skip expired patterns
 		}
 
+		if len(f.learnedPatterns) >= f.maxPatterns {
+			break
+		}
 		f.learnedPatterns[pattern.Key] = pattern
 		loaded++
 	}

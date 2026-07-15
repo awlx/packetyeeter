@@ -371,6 +371,11 @@ var (
 		Help: "1 during AI engine warmup, 0 otherwise",
 	})
 
+	AIStateEntries = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "packetyeeter_ai_state_entries",
+		Help: "Current retained analyzer AI state entries by bounded component",
+	}, []string{"component"})
+
 	ASNActiveIPs = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "packetyeeter_asn_active_ips",
 		Help: "Active IPs observed per ASN",
