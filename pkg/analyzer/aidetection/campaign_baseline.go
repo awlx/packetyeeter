@@ -231,8 +231,7 @@ func campaignBaselineKey(vector SignalType, events []campaignSignal, scope strin
 	protocolCounts := make(map[string]int)
 	portCounts := make(map[uint32]int)
 	for _, ev := range events {
-		protocol := serviceProtocol(ev.signal)
-		protocolCounts[protocol]++
+		protocolCounts[ev.protocol]++
 		if ev.dstPort > 0 {
 			portCounts[ev.dstPort]++
 		}

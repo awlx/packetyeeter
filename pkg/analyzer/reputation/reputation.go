@@ -165,6 +165,11 @@ func (e *Engine) SetASNScoreCap(cap float64) {
 				setReputationScore(TypeASN, k[len(prefix):], entry.Score)
 			}
 		}
+		for asn := range sh.asnStats {
+			if _, exists := sh.entries[string(TypeASN)+":"+asn]; !exists {
+				delete(sh.asnStats, asn)
+			}
+		}
 		sh.mu.Unlock()
 	}
 }

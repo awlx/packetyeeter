@@ -93,6 +93,12 @@ func (a *Analyzer) cleanup() {
 	})
 
 	metrics.ClockSkewProfiles.Set(float64(len(a.profiles)))
+
+	a.logMu.Lock()
+	mapcleaner.RemoveEntriesOlderThan(a.logThrottle, cutoff, func(_ string, seen time.Time) time.Time {
+		return seen
+	})
+	a.logMu.Unlock()
 }
 
 // ProcessTimestamp analyzes TCP timestamp for clock skew

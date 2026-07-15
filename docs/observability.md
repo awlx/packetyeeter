@@ -125,10 +125,16 @@ behavior) alongside `Tau` and `AnomalyMultiplier`.
   `packetyeeter_bot_verification_*`, `packetyeeter_ja4db_*`.
 - **AI engine**: `packetyeeter_ai_signals_by_*`,
   `packetyeeter_ai_signal_ewma_by_*`,
+  `packetyeeter_ai_state_entries`,
   `packetyeeter_ai_confidence_threshold`,
   `packetyeeter_ai_detections_action_total`,
   `packetyeeter_ai_detection_confidence_bucket`,
   `packetyeeter_ai_blocks_by_signal_total`.
+
+`packetyeeter_ai_state_entries{component=...}` reports bounded in-memory state
+for components such as behavioral profiles, EWMA baselines, event histories,
+latest detections, and compact detection history. The `component` label is a
+fixed low-cardinality set and is safe for default dashboards and alerts.
 - **Entropy and patterns**: `packetyeeter_payload_entropy_*`,
   `packetyeeter_pattern_tracker_profiles`,
   `packetyeeter_pattern_detections_total`.

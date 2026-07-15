@@ -20,6 +20,8 @@ const (
 	defaultCampaignMinWeakSourceIPs    = 20
 	defaultCampaignWeakSourceMaxWeight = 5.0
 	defaultCampaignWeakSignalMaxWeight = 2.0
+	defaultCampaignMaxCampaigns        = 4096
+	defaultCampaignMaxEvents           = 4096
 )
 
 type CampaignConfig struct {
@@ -32,6 +34,8 @@ type CampaignConfig struct {
 	MinWeakSourceIPs    int
 	WeakSourceMaxWeight float64
 	WeakSignalMaxWeight float64
+	MaxCampaigns        int
+	MaxEvents           int
 	Baseline            CampaignBaselineConfig
 }
 
@@ -46,6 +50,8 @@ func DefaultCampaignConfig() CampaignConfig {
 		MinWeakSourceIPs:    defaultCampaignMinWeakSourceIPs,
 		WeakSourceMaxWeight: defaultCampaignWeakSourceMaxWeight,
 		WeakSignalMaxWeight: defaultCampaignWeakSignalMaxWeight,
+		MaxCampaigns:        defaultCampaignMaxCampaigns,
+		MaxEvents:           defaultCampaignMaxEvents,
 		Baseline:            DefaultCampaignBaselineConfig(),
 	}
 }
@@ -79,6 +85,12 @@ func normalizeCampaignConfig(cfg CampaignConfig) CampaignConfig {
 	if cfg.WeakSignalMaxWeight == 0 {
 		cfg.WeakSignalMaxWeight = def.WeakSignalMaxWeight
 	}
+	if cfg.MaxCampaigns == 0 {
+		cfg.MaxCampaigns = def.MaxCampaigns
+	}
+	if cfg.MaxEvents == 0 {
+		cfg.MaxEvents = def.MaxEvents
+	}
 	cfg.Baseline = normalizeCampaignBaselineConfig(cfg.Baseline)
 	return cfg
 }
@@ -108,7 +120,14 @@ type CampaignDetection struct {
 }
 
 type campaignSignal struct {
-	signal     Signal
+	signalType SignalType
+	source     SignalSource
+	ip         net.IP
+	asn        string
+	org        string
+	weight     float64
+	timestamp  time.Time
+	protocol   string
 	destIP     string
 	destSubnet string
 	dstPort    uint32
@@ -192,6 +211,9 @@ func (a *CampaignAggregator) Record(signal Signal) {
 func (a *CampaignAggregator) recordLocked(key string, signal Signal, destIP, destSubnet string, dstPort uint32, collector string) {
 	c := a.campaigns[key]
 	if c == nil {
+		if len(a.campaigns) >= a.cfg.MaxCampaigns {
+			return
+		}
 		c = &attackCampaign{
 			key:       key,
 			vector:    signal.Type,
@@ -206,13 +228,24 @@ func (a *CampaignAggregator) recordLocked(key string, signal Signal, destIP, des
 		c.lastSeen = signal.Timestamp
 	}
 	c.events = append(c.events, campaignSignal{
-		signal:     signal,
+		signalType: signal.Type,
+		source:     signal.Source,
+		ip:         append(net.IP(nil), signal.IP...),
+		asn:        signal.ASN,
+		org:        signal.Org,
+		weight:     signal.Weight,
+		timestamp:  signal.Timestamp,
+		protocol:   serviceProtocol(signal),
 		destIP:     destIP,
 		destSubnet: destSubnet,
 		dstPort:    dstPort,
 		collector:  collector,
 	})
 	a.pruneCampaignLocked(c, signal.Timestamp)
+	if excess := len(c.events) - a.cfg.MaxEvents; excess > 0 {
+		copy(c.events, c.events[excess:])
+		c.events = c.events[:a.cfg.MaxEvents]
+	}
 }
 
 func (a *CampaignAggregator) Evaluate(now time.Time) []CampaignDetection {
@@ -306,7 +339,7 @@ func (a *CampaignAggregator) pruneCampaignLocked(c *attackCampaign, now time.Tim
 	cutoff := now.Add(-a.cfg.Window)
 	kept := c.events[:0]
 	for _, ev := range c.events {
-		if !ev.signal.Timestamp.Before(cutoff) {
+		if !ev.timestamp.Before(cutoff) {
 			kept = append(kept, ev)
 		}
 	}
@@ -314,14 +347,14 @@ func (a *CampaignAggregator) pruneCampaignLocked(c *attackCampaign, now time.Tim
 	if len(c.events) == 0 {
 		return
 	}
-	c.firstSeen = c.events[0].signal.Timestamp
-	c.lastSeen = c.events[0].signal.Timestamp
+	c.firstSeen = c.events[0].timestamp
+	c.lastSeen = c.events[0].timestamp
 	for _, ev := range c.events[1:] {
-		if ev.signal.Timestamp.Before(c.firstSeen) {
-			c.firstSeen = ev.signal.Timestamp
+		if ev.timestamp.Before(c.firstSeen) {
+			c.firstSeen = ev.timestamp
 		}
-		if ev.signal.Timestamp.After(c.lastSeen) {
-			c.lastSeen = ev.signal.Timestamp
+		if ev.timestamp.After(c.lastSeen) {
+			c.lastSeen = ev.timestamp
 		}
 	}
 }
@@ -347,8 +380,7 @@ func (a *CampaignAggregator) evaluateCampaignLocked(c *attackCampaign) (Campaign
 	var sampleASN, sampleOrg string
 
 	for _, ev := range c.events {
-		sig := ev.signal
-		w := sig.Weight
+		w := ev.weight
 		if w == 0 {
 			w = 1
 		}
@@ -368,27 +400,27 @@ func (a *CampaignAggregator) evaluateCampaignLocked(c *attackCampaign) (Campaign
 				sampleDstPort = ev.dstPort
 			}
 		}
-		if sig.IP != nil {
-			ip := sig.IP.String()
+		if ev.ip != nil {
+			ip := ev.ip.String()
 			sourceIPs[ip] = struct{}{}
 			sourceWeights[ip] += w
 			if sampleIP == nil {
-				sampleIP = sig.IP
+				sampleIP = append(net.IP(nil), ev.ip...)
 			}
 		}
-		if sig.ASN != "" && sig.ASN != "Unknown" {
-			asns[sig.ASN] = struct{}{}
+		if ev.asn != "" && ev.asn != "Unknown" {
+			asns[ev.asn] = struct{}{}
 			if sampleASN == "" {
-				sampleASN = sig.ASN
+				sampleASN = ev.asn
 			}
 		}
-		if sig.Org != "" && sampleOrg == "" {
-			sampleOrg = sig.Org
+		if ev.org != "" && sampleOrg == "" {
+			sampleOrg = ev.org
 		}
 		if ev.collector != "" {
 			collectors[ev.collector] = struct{}{}
 		}
-		sourceKinds[sig.Source] = struct{}{}
+		sourceKinds[ev.source] = struct{}{}
 	}
 
 	// aggregateSubnetKey identifies either of the two cross-subnet rollups
