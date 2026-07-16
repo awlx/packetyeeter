@@ -1,5 +1,6 @@
 # PacketYeeter Changelog
 
+<<<<<<< HEAD
 ## 2026-07-17 - IPv6 flood detection parity
 
 ### Collector: report IPv6 ICMP/UDP floods
@@ -24,6 +25,26 @@ Validated end-to-end on a virtual veth pair (see
 `scripts/xdp_veth_test.sh`): before, an IPv6 flood produced 0 analyzer
 signals; after, the same flood produced IPv6 `SIGNAL_ICMP_FLOOD`/
 `SIGNAL_UDP_FLOOD` at the analyzer while IPv4 behavior was unchanged.
+
+## 2026-07-17 - Reputation per-IP / per-JA4 penalties activated
+=======
+## 2026-07-17 - Reputation per-IP / per-JA4 penalties activated
+>>>>>>> d2f7055 (Default IP and JA4 reputation score caps to uncapped)
+
+**Fix**: The reputation engine's per-IP and per-JA4 score caps defaulted to 0,
+which clamped every IP and JA4 penalty back to 0 inside `penalizeLocked`. As a
+result all per-IP and per-JA4 reputation scoring was a silent no-op (only ASN
+scoring, whose cap defaulted to +Inf, accumulated). The caps now default to
++Inf (uncapped), matching ASN, so IP/JA4 penalties accumulate and can reach the
+ban threshold.
+
+**Enforcement impact**: this re-activates per-IP and per-JA4 reputation
+accumulation that was previously dormant. Sources that repeatedly trip
+detections will now accrue score and can cross `WouldBlock`/ban thresholds where
+before they never did. Stage it: run the analyzer with `-dry-run`, watch
+`packetyeeter_*_blocks_total`, reputation scores, and AI detections, and tune
+allowlists/thresholds before disabling dry-run. Operators who want a ceiling can
+set one explicitly via the score-cap setters.
 
 ## 2026-01-21 - Major Updates
 

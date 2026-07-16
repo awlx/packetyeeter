@@ -122,6 +122,12 @@ func New(decayInterval time.Duration, decayFactor float64, banThreshold float64)
 			asnStats: make(map[string]*asnStats),
 		}
 	}
+	// All per-type score caps default to +Inf (uncapped); operators lower them
+	// via SetIPScoreCap/SetJA4ScoreCap/SetASNScoreCap. Leaving a cap at the
+	// zero value would clamp every penalty of that type back to 0 in
+	// penalizeLocked, silently turning per-IP/JA4 reputation into a no-op.
+	e.ipScoreCapBits.Store(math.Float64bits(math.Inf(1)))
+	e.ja4ScoreCapBits.Store(math.Float64bits(math.Inf(1)))
 	e.asnScoreCapBits.Store(math.Float64bits(math.Inf(1)))
 	e.banThresholdBits.Store(math.Float64bits(banThreshold))
 	e.maxEntries.Store(defaultMaxEntries)
