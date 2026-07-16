@@ -3,13 +3,13 @@ package threatintel
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"sync"
 	"time"
 
 	"PacketYeeter/pkg/metrics"
+	"PacketYeeter/pkg/utils/limitread"
 
 	"github.com/sirupsen/logrus"
 )
@@ -134,7 +134,9 @@ func (s *ShodanInternetDB) Lookup(ip net.IP) (*ShodanIPInfo, error) {
 		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	// InternetDB answers are small JSON objects; bound the read so a
+	// misbehaving upstream cannot drive unbounded allocation.
+	body, err := limitread.ReadAll(resp.Body, 1<<20)
 	if err != nil {
 		if cached != nil {
 			return cached, nil
