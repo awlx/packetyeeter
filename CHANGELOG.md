@@ -1,6 +1,5 @@
 # PacketYeeter Changelog
 
-<<<<<<< HEAD
 ## 2026-07-17 - IPv6 flood detection parity
 
 ### Collector: report IPv6 ICMP/UDP floods
@@ -27,9 +26,6 @@ signals; after, the same flood produced IPv6 `SIGNAL_ICMP_FLOOD`/
 `SIGNAL_UDP_FLOOD` at the analyzer while IPv4 behavior was unchanged.
 
 ## 2026-07-17 - Reputation per-IP / per-JA4 penalties activated
-=======
-## 2026-07-17 - Reputation per-IP / per-JA4 penalties activated
->>>>>>> d2f7055 (Default IP and JA4 reputation score caps to uncapped)
 
 **Fix**: The reputation engine's per-IP and per-JA4 score caps defaulted to 0,
 which clamped every IP and JA4 penalty back to 0 inside `penalizeLocked`. As a
