@@ -576,15 +576,15 @@ func deriveAppCategory(entry JA4Entry) string {
 	if IsBrowserInfo(app) {
 		return "browser"
 	}
-	if contains(app, "scanner") || contains(app, "masscan") || contains(app, "nmap") {
+	if strings.Contains(app, "scanner") || strings.Contains(app, "masscan") || strings.Contains(app, "nmap") {
 		return "scanner"
 	}
-	if contains(app, "scraper") || contains(app, "crawler") || contains(app, "bot") {
+	if strings.Contains(app, "scraper") || strings.Contains(app, "crawler") || strings.Contains(app, "bot") {
 		return "scraper"
 	}
 	scriptKeywords := []string{"curl", "wget", "python", "httpx", "aiohttp", "go-http", "java", "okhttp", "libcurl", "requests", "node-fetch"}
 	for _, kw := range scriptKeywords {
-		if contains(app, kw) {
+		if strings.Contains(app, kw) {
 			return "script"
 		}
 	}
@@ -623,7 +623,7 @@ func (d *Downloader) IsKnownBot(fingerprint string) bool {
 	// Consider it a bot if it has bot-related keywords
 	app := entry.Application + " " + entry.Library + " " + entry.Device
 	for _, keyword := range BotKeywordsBasic {
-		if contains(app, keyword) {
+		if strings.Contains(app, keyword) {
 			metrics.JA4DBKnownBots.Inc()
 			return true
 		}
@@ -666,34 +666,34 @@ func (d *Downloader) FindByHeadersPrefix(headersPrefix string) (string, bool) {
 	d.DB.mu.RLock()
 	defer d.DB.mu.RUnlock()
 
-	// Search through all JA4H entries for matching prefix
-	for fingerprint, entry := range d.DB.EntriesByJA4H {
-		// Check if this fingerprint starts with the headers prefix
-		if strings.HasPrefix(fingerprint, headersPrefix+"_") {
-			d.logger.WithFields(logrus.Fields{
-				"headers_prefix": headersPrefix,
-				"matched_fp":     fingerprint,
-				"application":    entry.Application,
-			}).Debug("JA4H partial match found (same headers)")
-
-			// Format info string
-			info := entry.Application
-			if entry.Library != "" {
-				info += " (" + entry.Library + ")"
-			}
-			if entry.Device != "" {
-				info += " on " + entry.Device
-			}
-			if entry.Verified {
-				info += " [verified]"
-			}
-
-			// Return the first match as a probabilistic indicator
-			return info, true
-		}
+	// EntriesByJA4HPrefix is keyed by exactly this "{protocol}_{headers_hash}"
+	// prefix (first entry per prefix wins at build time). The previous
+	// implementation linear-scanned all of EntriesByJA4H under the read lock
+	// per lookup miss, blocking the updater's map swap.
+	entry, ok := d.DB.EntriesByJA4HPrefix[headersPrefix]
+	if !ok {
+		return "", false
 	}
 
-	return "", false
+	d.logger.WithFields(logrus.Fields{
+		"headers_prefix": headersPrefix,
+		"matched_fp":     entry.JA4HFingerprint,
+		"application":    entry.Application,
+	}).Debug("JA4H partial match found (same headers)")
+
+	info := entry.Application
+	if entry.Library != "" {
+		info += " (" + entry.Library + ")"
+	}
+	if entry.Device != "" {
+		info += " on " + entry.Device
+	}
+	if entry.Verified {
+		info += " [verified]"
+	}
+
+	// Return the first match as a probabilistic indicator
+	return info, true
 }
 
 // loadFromCache loads the database from local cache
@@ -808,17 +808,3 @@ func (d *Downloader) Stats() map[string]interface{} {
 	}
 }
 
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr ||
-		len(s) > len(substr) && (s[:len(substr)] == substr || s[len(s)-len(substr):] == substr ||
-			findSubstring(s, substr)))
-}
-
-func findSubstring(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
-}
