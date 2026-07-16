@@ -548,18 +548,29 @@ func (a *Analyzer) Start() error {
 		}()
 	}
 
-	// Periodic cleanup of tracking maps to prevent memory leaks
+	// Periodic cleanup of tracking maps to prevent memory leaks, plus
+	// periodic publication of the rate-limiter activity gauges. The gauges
+	// used to be set inside checkRateLimit, which paid a GetStats map-lock
+	// round-trip and two gauge writes on every signal from every collector.
 	a.wg.Add(1)
 	go func() {
 		defer a.wg.Done()
-		ticker := time.NewTicker(5 * time.Minute)
-		defer ticker.Stop()
+		cleanupTicker := time.NewTicker(5 * time.Minute)
+		defer cleanupTicker.Stop()
+		gaugeTicker := time.NewTicker(10 * time.Second)
+		defer gaugeTicker.Stop()
 		for {
 			select {
 			case <-a.ctx.Done():
 				return
-			case <-ticker.C:
+			case <-cleanupTicker.C:
 				a.cleanupTrackingMaps()
+			case <-gaugeTicker.C:
+				if a.RateLimiter != nil {
+					ipCnt, asnCnt := a.RateLimiter.GetStats()
+					metrics.RateLimitActiveIPs.Set(float64(ipCnt))
+					metrics.RateLimitActiveASNs.Set(float64(asnCnt))
+				}
 			}
 		}
 	}()

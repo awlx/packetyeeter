@@ -50,11 +50,6 @@ func (a *Analyzer) checkRateLimit(ip net.IP, asn string) bool {
 		return false
 	}
 
-	// Active counts (post-cleanup) reflect recent entities (maxAge=10m)
-	ipCnt, asnCnt := a.RateLimiter.GetStats()
-	metrics.RateLimitActiveIPs.Set(float64(ipCnt))
-	metrics.RateLimitActiveASNs.Set(float64(asnCnt))
-
 	// Enforce limiter
 	allowed := a.RateLimiter.Allow(ip, asn)
 	if !allowed {
