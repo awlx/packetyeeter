@@ -1,5 +1,22 @@
 # PacketYeeter Changelog
 
+## 2026-07-17 - Reputation per-IP / per-JA4 penalties activated
+
+**Fix**: The reputation engine's per-IP and per-JA4 score caps defaulted to 0,
+which clamped every IP and JA4 penalty back to 0 inside `penalizeLocked`. As a
+result all per-IP and per-JA4 reputation scoring was a silent no-op (only ASN
+scoring, whose cap defaulted to +Inf, accumulated). The caps now default to
++Inf (uncapped), matching ASN, so IP/JA4 penalties accumulate and can reach the
+ban threshold.
+
+**Enforcement impact**: this re-activates per-IP and per-JA4 reputation
+accumulation that was previously dormant. Sources that repeatedly trip
+detections will now accrue score and can cross `WouldBlock`/ban thresholds where
+before they never did. Stage it: run the analyzer with `-dry-run`, watch
+`packetyeeter_*_blocks_total`, reputation scores, and AI detections, and tune
+allowlists/thresholds before disabling dry-run. Operators who want a ceiling can
+set one explicitly via the score-cap setters.
+
 ## 2026-01-21 - Major Updates
 
 ### 1. YeetExplorer Pagination Fix
