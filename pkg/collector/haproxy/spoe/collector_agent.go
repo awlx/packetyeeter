@@ -329,6 +329,8 @@ func (a *CollectorAgent) emitSignal(sigType apiv1.SignalType, ip net.IP, ja4h, j
 		}).Debug("Emitting SPOE signal to analyzer")
 	}
 
-	// Dispatch asynchronously to guarantee SPOE handler remains fast
-	go a.callbacks.EmitSignal(sig)
+	// EmitSignal -> sendSignal enqueues via a non-blocking select with
+	// ring-buffer drop, so calling it inline is already fast; a per-request
+	// goroutine here only added scheduler churn and reordered signals.
+	a.callbacks.EmitSignal(sig)
 }
