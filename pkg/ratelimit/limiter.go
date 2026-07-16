@@ -93,8 +93,27 @@ func DefaultConfig() Config {
 
 // NewLimiter creates a new rate limiter
 func NewLimiter(cfg Config) *Limiter {
-	if cfg.IPRate == 0 {
-		cfg = DefaultConfig()
+	// Default each field independently: the old all-or-nothing IPRate==0
+	// check let a partial config reach cleanupLoop with CleanupInterval==0,
+	// where time.NewTicker(0) panics on a background goroutine.
+	defaults := DefaultConfig()
+	if cfg.IPRate <= 0 {
+		cfg.IPRate = defaults.IPRate
+	}
+	if cfg.ASNRate <= 0 {
+		cfg.ASNRate = defaults.ASNRate
+	}
+	if cfg.IPBurst <= 0 {
+		cfg.IPBurst = defaults.IPBurst
+	}
+	if cfg.ASNBurst <= 0 {
+		cfg.ASNBurst = defaults.ASNBurst
+	}
+	if cfg.CleanupInterval <= 0 {
+		cfg.CleanupInterval = defaults.CleanupInterval
+	}
+	if cfg.MaxAge <= 0 {
+		cfg.MaxAge = defaults.MaxAge
 	}
 
 	l := &Limiter{
