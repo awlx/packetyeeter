@@ -464,15 +464,6 @@ func (a *Analyzer) processHTTPRequest(sig *apiv1.Signal, ip net.IP, asn string, 
 			// Update highest proxy lag (gauges don't have Get, just Set)
 			metrics.HighestProxyLagMs.Set(proxyLag)
 
-			// Update EWMA by ASN if available
-			if asn != "" && asn != "Unknown" {
-				org := "unknown"
-				if a.GeoIP != nil {
-					_, org = a.GeoIP.Lookup(ip)
-				}
-				metrics.ProxyLagEWMAByASN.WithLabelValues(asn, org).Set(proxyLag)
-			}
-
 			// Detect anomalies
 			// Adaptive threshold per ASN
 			ewmaLag := a.updateProxyLag(asn, proxyLag)
@@ -492,7 +483,12 @@ func (a *Analyzer) processHTTPRequest(sig *apiv1.Signal, ip net.IP, asn string, 
 				}
 			}
 
-			metrics.ProxyLagEWMAByASN.WithLabelValues(asn, org).Set(ewmaLag)
+			// Single EWMA series per (asn, org); a shadowed org here used to
+			// re-derive the organization via a second GeoIP lookup and emit a
+			// duplicate label-distinct series carrying the raw (non-EWMA) lag.
+			if asn != "" && asn != "Unknown" {
+				metrics.ProxyLagEWMAByASN.WithLabelValues(asn, org).Set(ewmaLag)
+			}
 
 			if isAnomaly && a.shouldEmitLatencyAnomaly(ip) {
 				metrics.SPOEAnomalyEvents.Inc()
