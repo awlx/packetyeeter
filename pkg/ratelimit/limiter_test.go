@@ -2,6 +2,7 @@ package ratelimit
 
 import (
 	"net"
+	"sync"
 	"testing"
 	"time"
 )
@@ -216,5 +217,71 @@ func TestSetASNRate_UpdatesExistingBuckets(t *testing.T) {
 
 	if !l.AllowASN(asn) {
 		t.Fatal("call 3: SetASNRate did not take effect on the already-tracked ASN's bucket")
+	}
+}
+
+func burstTestConfig() Config {
+	return Config{
+		IPRate:          1, // no meaningful refill within test runtime
+		ASNRate:         1,
+		IPBurst:         5,
+		ASNBurst:        50,
+		CleanupInterval: time.Minute,
+		MaxAge:          time.Minute,
+	}
+}
+
+func TestAllowIPDeniesWhenBurstExhausted(t *testing.T) {
+	l := NewLimiter(burstTestConfig())
+	ip := net.ParseIP("192.0.2.1")
+
+	for i := range 5 {
+		if !l.AllowIP(ip) {
+			t.Fatalf("request %d within burst denied", i)
+		}
+	}
+	if l.AllowIP(ip) {
+		t.Fatal("request past burst allowed")
+	}
+}
+
+func TestAllowASNDeniesWhenBurstExhausted(t *testing.T) {
+	l := NewLimiter(burstTestConfig())
+
+	for i := range 50 {
+		if !l.AllowASN("AS64500") {
+			t.Fatalf("request %d within burst denied", i)
+		}
+	}
+	if l.AllowASN("AS64500") {
+		t.Fatal("request past burst allowed")
+	}
+}
+
+func TestAllowNilIPAndEmptyASNAllowed(t *testing.T) {
+	l := NewLimiter(burstTestConfig())
+	if !l.Allow(nil, "") {
+		t.Fatal("nil IP + empty ASN must be allowed")
+	}
+}
+
+func TestAllowConcurrent(t *testing.T) {
+	l := NewLimiter(burstTestConfig())
+	var wg sync.WaitGroup
+	for g := range 8 {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			for i := range 500 {
+				ip := net.IPv4(10, byte(g), byte(i>>8), byte(i))
+				l.Allow(ip, "AS64501")
+			}
+		}(g)
+	}
+	wg.Wait()
+
+	ipCount, asnCount := l.GetStats()
+	if ipCount != 8*500 || asnCount != 1 {
+		t.Fatalf("GetStats = (%d, %d), want (4000, 1)", ipCount, asnCount)
 	}
 }

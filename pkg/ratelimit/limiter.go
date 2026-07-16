@@ -218,16 +218,23 @@ func (l *Limiter) AllowIP(ip net.IP) bool {
 
 	ipStr := ip.String()
 
-	l.mu.Lock()
+	// Fast path: the bucket almost always exists, and every collector
+	// stream funnels through this limiter — take the read lock unless we
+	// actually have to insert.
+	l.mu.RLock()
 	limiter, ok := l.ipLimiters[ipStr]
+	l.mu.RUnlock()
 	if !ok {
-		if len(l.ipLimiters) >= l.maxIPLimiters {
-			evictOldestLocked(l.ipLimiters)
+		l.mu.Lock()
+		if limiter, ok = l.ipLimiters[ipStr]; !ok {
+			if len(l.ipLimiters) >= l.maxIPLimiters {
+				evictOldestLocked(l.ipLimiters)
+			}
+			limiter = NewTokenBucket(l.ipBurst, l.ipRate)
+			l.ipLimiters[ipStr] = limiter
 		}
-		limiter = NewTokenBucket(l.ipBurst, l.ipRate)
-		l.ipLimiters[ipStr] = limiter
+		l.mu.Unlock()
 	}
-	l.mu.Unlock()
 
 	return limiter.Allow()
 }
@@ -243,16 +250,20 @@ func (l *Limiter) AllowASN(asn string) bool {
 		return true
 	}
 
-	l.mu.Lock()
+	l.mu.RLock()
 	limiter, ok := l.asnLimiters[asn]
+	l.mu.RUnlock()
 	if !ok {
-		if len(l.asnLimiters) >= l.maxASNLimiters {
-			evictOldestLocked(l.asnLimiters)
+		l.mu.Lock()
+		if limiter, ok = l.asnLimiters[asn]; !ok {
+			if len(l.asnLimiters) >= l.maxASNLimiters {
+				evictOldestLocked(l.asnLimiters)
+			}
+			limiter = NewTokenBucket(l.asnBurst, l.asnRate)
+			l.asnLimiters[asn] = limiter
 		}
-		limiter = NewTokenBucket(l.asnBurst, l.asnRate)
-		l.asnLimiters[asn] = limiter
+		l.mu.Unlock()
 	}
-	l.mu.Unlock()
 
 	return limiter.Allow()
 }
