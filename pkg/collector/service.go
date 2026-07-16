@@ -60,10 +60,14 @@ type Collector struct {
 	Config Config
 
 	// Components
-	Loader         *ebpf.Loader
-	Maps           *ebpf.Maps
-	GeoIP          *geoip.Provider
-	Logger         *logrus.Logger
+	Loader *ebpf.Loader
+	Maps   *ebpf.Maps
+	GeoIP  *geoip.Provider
+	Logger *logrus.Logger
+	// allowedNetsMu guards allowedNets: executeCommand mutates it on the
+	// command-stream goroutine while checkAllowlist reads it from the map
+	// polling, perf-event, and SPOE goroutines.
+	allowedNetsMu  sync.RWMutex
 	allowedNets    []*net.IPNet
 	policyRules    []ebpf.PolicyRule
 	perfReader     *perf.Reader
@@ -386,6 +390,8 @@ func (c *Collector) checkAllowlist(ip net.IP) bool {
 	if ip.IsLoopback() {
 		return true
 	}
+	c.allowedNetsMu.RLock()
+	defer c.allowedNetsMu.RUnlock()
 	for _, subnet := range c.allowedNets {
 		if subnet.Contains(ip) {
 			return true
@@ -513,7 +519,9 @@ func (c *Collector) executeCommand(cmd *apiv1.Command) {
 		} else {
 			ipNet = &net.IPNet{IP: ip, Mask: net.CIDRMask(128, 128)}
 		}
+		c.allowedNetsMu.Lock()
 		c.allowedNets = append(c.allowedNets, ipNet)
+		c.allowedNetsMu.Unlock()
 		if err := c.Maps.AddAllowlistEntry(ipNet); err != nil {
 			logger.WithError(err).Warn("Failed to add IP to kernel-space allowlist")
 		}
@@ -521,17 +529,23 @@ func (c *Collector) executeCommand(cmd *apiv1.Command) {
 
 	case apiv1.CommandType_COMMAND_REMOVE_ALLOWLIST_IP:
 		// Remove IP from allowlist
+		c.allowedNetsMu.Lock()
 		filtered := make([]*net.IPNet, 0, len(c.allowedNets))
+		removed := make([]*net.IPNet, 0, 1)
 		for _, n := range c.allowedNets {
 			if !n.IP.Equal(ip) {
 				filtered = append(filtered, n)
 				continue
 			}
+			removed = append(removed, n)
+		}
+		c.allowedNets = filtered
+		c.allowedNetsMu.Unlock()
+		for _, n := range removed {
 			if err := c.Maps.RemoveAllowlistEntry(n); err != nil {
 				logger.WithError(err).Warn("Failed to remove IP from kernel-space allowlist")
 			}
 		}
-		c.allowedNets = filtered
 		logger.Info("Removed IP from allowlist by analyzer command")
 
 	default:
