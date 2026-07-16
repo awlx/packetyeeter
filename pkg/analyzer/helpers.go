@@ -87,23 +87,24 @@ func (a *Analyzer) extractMLFeatures(ip net.IP, asn string, reputationScore floa
 		HasASN:          asn != "" && asn != "Unknown",
 	}
 
-	// Get pattern data if available
+	// Get pattern data if available. Use the narrow summary accessor rather
+	// than GetPattern: the feature extractor only needs these four fields, so
+	// there is no reason to deep-copy the pattern's nine slices/maps per signal.
 	if a.PatternTracker != nil {
-		pattern := a.PatternTracker.GetPattern(ip)
-		if pattern != nil {
-			features.SignalCount = int(pattern.ConnectionAttempts)
-			features.SignalDiversity = len(pattern.PortsAccessed)
+		if s, ok := a.PatternTracker.PatternSummary(ip); ok {
+			features.SignalCount = int(s.ConnectionAttempts)
+			features.SignalDiversity = s.PortsAccessed
 
 			// Calculate signal rate
-			if !pattern.FirstSeen.IsZero() {
-				duration := time.Since(pattern.FirstSeen).Seconds()
+			if !s.FirstSeen.IsZero() {
+				duration := time.Since(s.FirstSeen).Seconds()
 				if duration > 0 {
-					features.SignalRate = float64(pattern.ConnectionAttempts) / duration
+					features.SignalRate = float64(s.ConnectionAttempts) / duration
 				}
 			}
 
 			// Check for timing patterns
-			features.IsBursty = len(pattern.PacketTimings) > 5
+			features.IsBursty = s.PacketTimings > 5
 		}
 	}
 

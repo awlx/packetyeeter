@@ -1,8 +1,10 @@
 package patterns
 
 import (
+	"maps"
 	"math"
 	"net"
+	"slices"
 	"sync"
 	"time"
 
@@ -93,7 +95,10 @@ func (pt *PatternTracker) RecordConnection(ip net.IP, meta ConnectionMetadata) {
 	pattern, exists := pt.patterns[ipStr]
 	if !exists {
 		pattern = &ConnectionPattern{
-			IP:            ip,
+			// Copy the caller's slice: net.IP passed in may be backed by a
+			// reused packet/scratch buffer, and pattern.IP is retained for the
+			// pattern's lifetime.
+			IP:            slices.Clone(ip),
 			FirstSeen:     time.Now(),
 			PortsAccessed: make(map[uint16]uint64),
 		}
@@ -683,7 +688,56 @@ func (pt *PatternTracker) GetPattern(ip net.IP) *ConnectionPattern {
 		return nil
 	}
 
-	// Return copy to prevent race conditions
-	patternCopy := *pattern
-	return &patternCopy
+	// Return a deep copy: a plain struct copy would alias the live map and
+	// slice backing arrays, which RecordConnection keeps mutating under
+	// pt.mu after this RLock is released.
+	return pattern.Clone()
+}
+
+// Clone returns a deep copy of the pattern that is safe to read and mutate
+// after the tracker's lock is released: every reference-typed field is copied
+// so the caller can neither observe later mutations of nor corrupt the live
+// pattern. Keep this in sync with the struct — a new slice/map field MUST be
+// cloned here or GetPattern silently starts aliasing it again.
+func (p *ConnectionPattern) Clone() *ConnectionPattern {
+	cp := *p
+	cp.IP = slices.Clone(p.IP)
+	cp.PacketSizes = slices.Clone(p.PacketSizes)
+	cp.PacketTimings = slices.Clone(p.PacketTimings)
+	cp.TTLValues = slices.Clone(p.TTLValues)
+	cp.WindowSizes = slices.Clone(p.WindowSizes)
+	cp.MSSValues = slices.Clone(p.MSSValues)
+	cp.PortsAccessed = maps.Clone(p.PortsAccessed)
+	cp.PortSequence = slices.Clone(p.PortSequence)
+	cp.ConnectionIDs = slices.Clone(p.ConnectionIDs)
+	cp.ReuseTimings = slices.Clone(p.ReuseTimings)
+	return &cp
+}
+
+// PatternSummary is the subset of pattern state the ML feature extractor needs.
+type PatternSummary struct {
+	ConnectionAttempts uint64
+	PortsAccessed      int
+	PacketTimings      int
+	FirstSeen          time.Time
+}
+
+// PatternSummary reads just the ML-feature fields under the lock, without
+// cloning the pattern's slices/maps. ok is false when no pattern is tracked for
+// ip. This keeps the per-signal feature path off the full deep-copy in
+// GetPattern, which the hot caller does not need.
+func (pt *PatternTracker) PatternSummary(ip net.IP) (PatternSummary, bool) {
+	pt.mu.RLock()
+	defer pt.mu.RUnlock()
+
+	pattern, exists := pt.patterns[ip.String()]
+	if !exists {
+		return PatternSummary{}, false
+	}
+	return PatternSummary{
+		ConnectionAttempts: pattern.ConnectionAttempts,
+		PortsAccessed:      len(pattern.PortsAccessed),
+		PacketTimings:      len(pattern.PacketTimings),
+		FirstSeen:          pattern.FirstSeen,
+	}, true
 }
