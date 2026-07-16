@@ -37,7 +37,6 @@ func loadSessionsFromDisk(sessionsDir string) ([]map[string]interface{}, error) 
 		if err != nil {
 			continue
 		}
-		defer f.Close()
 
 		scanner := bufio.NewScanner(f)
 		for scanner.Scan() {
@@ -47,13 +46,21 @@ func loadSessionsFromDisk(sessionsDir string) ([]map[string]interface{}, error) 
 			}
 			sessions = append(sessions, session)
 		}
+		if err := scanner.Err(); err != nil {
+			logrus.WithError(err).WithField("file", file).Warn("Failed to fully read session recording")
+		}
+		// Close per iteration: a deferred close here would hold every
+		// recording file open until the whole scan finishes.
+		f.Close()
 	}
 	return sessions, nil
 }
 
-// deleteSessionFromDisk removes a session recording from disk
+// deleteSessionFromDisk removes a session recording from disk. Recordings are
+// written as recording-*.jsonl (see persistSessionRecording) — the same glob
+// loadSessionsFromDisk reads.
 func deleteSessionFromDisk(sessionsDir, sessionID string) error {
-	files, err := filepath.Glob(filepath.Join(sessionsDir, "sessions_*.jsonl"))
+	files, err := filepath.Glob(filepath.Join(sessionsDir, "recording-*.jsonl"))
 	if err != nil {
 		return err
 	}
@@ -72,7 +79,14 @@ func deleteSessionFromDisk(sessionsDir, sessionID string) error {
 				sessions = append(sessions, session)
 			}
 		}
+		scanErr := scanner.Err()
 		f.Close()
+		if scanErr != nil {
+			// Don't rewrite a file we couldn't fully read - that would drop
+			// the unread sessions.
+			logrus.WithError(scanErr).WithField("file", file).Warn("Skipping partially-read session recording")
+			continue
+		}
 
 		// Filter out the session to delete
 		var filtered []map[string]interface{}
@@ -87,6 +101,12 @@ func deleteSessionFromDisk(sessionsDir, sessionID string) error {
 
 		if !found {
 			continue
+		}
+
+		// Each recording file typically holds one session; remove the file
+		// outright when nothing remains.
+		if len(filtered) == 0 {
+			return os.Remove(file)
 		}
 
 		// Rewrite file without the deleted session
