@@ -21,6 +21,16 @@
 // would otherwise blind the userspace signal pipeline to every new scanner.
 #define BADFLAGS_MAP_SIZE 100000
 
+// IPv6 extension-header next-header values, and the cap on how many we walk
+// before giving up. A packet's real L4 protocol can hide behind these; without
+// walking them, dispatching on ip6->nexthdr alone lets one extension header
+// bypass every IPv6 L4 check (ICMPv6/UDP/fragment/TCP).
+#define IP6_EXT_HOPOPTS   0   // Hop-by-Hop Options
+#define IP6_EXT_ROUTING   43  // Routing
+#define IP6_EXT_FRAGMENT  44  // Fragment (fixed 8 bytes)
+#define IP6_EXT_DSTOPTS   60  // Destination Options
+#define MAX_IPV6_EXT_HEADERS 8
+
 #ifndef IP_MF
 #define IP_MF 0x2000
 #endif
@@ -557,31 +567,50 @@ static __always_inline __u8 estimate_payload_entropy(void *payload_start, void *
 }
 
 // Count IPv6 extension headers
-static __always_inline __u8 count_ipv6_ext_headers(struct ipv6hdr *ip6, void *data_end) {
+// Generic IPv6 extension header: next-header byte + length in 8-octet units
+// (excluding the first 8 octets), matching Hop-by-Hop/Routing/Destination
+// Options. The Fragment header is a fixed 8 bytes and is reported to the caller
+// rather than skipped, so the fragment-drop policy still applies.
+struct ipv6_ext_hdr {
+    __u8 next_hdr;
+    __u8 hdr_ext_len;
+};
+
+// parse_ipv6_l4 walks the IPv6 extension-header chain to find the true
+// upper-layer protocol and the offset of its header. Dispatching on
+// ip6->nexthdr directly lets a single extension header hide the L4 protocol and
+// bypass every IPv6 check, so every L4 decision must run off this result.
+// Returns 0 on success (setting *l4_proto, *l4_hdr, *ext_count), or -1 if the
+// chain is truncated or longer than MAX_IPV6_EXT_HEADERS (fail closed: the
+// caller treats -1 as "cannot inspect"). A Fragment header stops the walk and
+// is returned as the protocol.
+static __always_inline int parse_ipv6_l4(struct ipv6hdr *ip6, void *data_end,
+                                         __u8 *l4_proto, void **l4_hdr, __u8 *ext_count) {
+    __u8 next = ip6->nexthdr;
+    void *cur = (void *)(ip6 + 1);
     __u8 count = 0;
-    __u8 next_hdr = ip6->nexthdr;
-    void *hdr = (void *)(ip6 + 1);
 
-    // Check for common extension headers
-    // 0 = Hop-by-Hop, 43 = Routing, 44 = Fragment, 60 = Destination Options
     #pragma unroll
-    for (int i = 0; i < 4; i++) { // Max 4 extension headers
-        if (hdr + 8 > data_end) {
-            break;
-        }
-
-        if (next_hdr == 0 || next_hdr == 43 || next_hdr == 44 || next_hdr == 60) {
+    for (int i = 0; i < MAX_IPV6_EXT_HEADERS; i++) {
+        if (next == IP6_EXT_HOPOPTS || next == IP6_EXT_ROUTING || next == IP6_EXT_DSTOPTS) {
+            struct ipv6_ext_hdr *eh = cur;
+            if ((void *)(eh + 1) > data_end)
+                return -1;
+            __u32 hdr_len = ((__u32)eh->hdr_ext_len + 1) * 8;
+            next = eh->next_hdr;
+            cur += hdr_len;
+            if (cur > data_end)
+                return -1;
             count++;
-            // Read next header field (first byte of extension header)
-            next_hdr = *(__u8 *)hdr;
-            // Skip to next header (simplified - just move 8 bytes)
-            hdr += 8;
-        } else {
-            break;
+            continue;
         }
+        // Fragment header or a real upper-layer protocol: stop here.
+        *l4_proto = next;
+        *l4_hdr = cur;
+        *ext_count = count;
+        return 0;
     }
-
-    return count;
+    return -1; // chain longer than we walk
 }
 
 // --- XDP Program ---
@@ -758,8 +787,22 @@ int xdp_filter(struct xdp_md *ctx) {
             if (!is_monitor) return XDP_DROP;
         }
 
+        // Resolve the true upper-layer protocol behind any IPv6 extension
+        // headers. Dispatching on ip6->nexthdr alone lets a single extension
+        // header (e.g. Hop-by-Hop) hide the real L4 protocol and bypass every
+        // check below, so all L4 decisions run off this walk.
+        __u8 l4_proto = 0;
+        void *l4_hdr = (void *)(ip6 + 1);
+        __u8 ext_count = 0;
+        if (parse_ipv6_l4(ip6, data_end, &l4_proto, &l4_hdr, &ext_count) < 0) {
+            // Extension-header chain truncated or longer than we walk: we
+            // cannot locate L4 to enforce on it. Pass (consistent with the
+            // program's other unparseable-packet paths).
+            return XDP_PASS;
+        }
+
         // IPv6 ICMPv6 Rate Limit
-        if (ip6->nexthdr == IPPROTO_ICMPV6) {
+        if (l4_proto == IPPROTO_ICMPV6) {
              __u32 key_icmp_limit = 0; // Shared threshold
              __u32 *icmp_thresh = bpf_map_lookup_elem(&config_map, &key_icmp_limit);
              __u32 limit = 100;
@@ -772,10 +815,8 @@ int xdp_filter(struct xdp_md *ctx) {
              }
         }
 
-        // IPv6 UDP Checks
-        // Note: Fragmentation in IPv6 is an extension header (44). 
-        // For simple UDP flood protection, we check if nexthdr is UDP.
-        if (ip6->nexthdr == IPPROTO_UDP) {
+        // IPv6 UDP Rate Limit
+        if (l4_proto == IPPROTO_UDP) {
              __u32 key_udp_limit = 2; // Shared threshold
              __u32 *udp_thresh = bpf_map_lookup_elem(&config_map, &key_udp_limit);
              __u32 limit = 2500;
@@ -787,16 +828,15 @@ int xdp_filter(struct xdp_md *ctx) {
                  if (!is_monitor) return XDP_DROP;
              }
         }
-        // Block IPv6 Fragments
-        if (ip6->nexthdr == 44) {
-            // It is a fragment.
+        // Block IPv6 Fragments (a Fragment extension header in the chain)
+        if (l4_proto == IP6_EXT_FRAGMENT) {
             emit_incident_v6(ctx, &saddr, INCIDENT_UDP_FRAG, now);
             if (!is_monitor) return XDP_DROP;
         }
 
-        // IPv6 TCP Flag Check
-        if (ip6->nexthdr == IPPROTO_TCP) {
-            struct tcphdr *tcp = (void *)(ip6 + 1);
+        // IPv6 TCP Flag Check, on the L4 header located past any extension headers
+        if (l4_proto == IPPROTO_TCP) {
+            struct tcphdr *tcp = l4_hdr;
             if ((void *)(tcp + 1) > data_end) return XDP_PASS;
             int scan_type = check_tcp_flags(tcp);
             if (scan_type != BAD_FLAGS_NONE) {
