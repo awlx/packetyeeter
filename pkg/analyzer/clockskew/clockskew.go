@@ -125,12 +125,12 @@ func (a *Analyzer) ProcessTimestamp(srcIP net.IP, timestamp uint32) {
 		}
 		a.profiles[ipStr] = profile
 
-		// Enforce max profiles
-		if len(a.profiles) > a.maxProfiles {
-			mapcleaner.RemoveOldestEntry(a.profiles, func(_ string, p *Profile) time.Time {
-				return p.LastObservedAt
-			})
-		}
+		// Enforce max profiles. Batch eviction keeps the O(n) oldest-scan off
+		// every new IP — under a spoofed-source flood that scan is per-packet
+		// work serialized behind a.mu.
+		mapcleaner.EnforceMaxSizeBatch(a.profiles, a.maxProfiles, func(_ string, p *Profile) time.Time {
+			return p.LastObservedAt
+		})
 
 		metrics.ClockSkewProfiles.Set(float64(len(a.profiles)))
 		return
