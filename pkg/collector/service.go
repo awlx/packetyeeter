@@ -433,14 +433,10 @@ func (c *Collector) Stop() {
 		}
 	}
 
-	if c.Loader != nil {
-		c.Loader.Close()
-	}
-	if c.GeoIP != nil {
-		c.GeoIP.Close()
-	}
-
-	// Wait for goroutines with timeout
+	// Wait for goroutines with timeout. The map-polling and event goroutines
+	// still use the eBPF maps and the mmapped GeoIP DB, so those must stay
+	// open until the goroutines have drained (closing the GeoIP reader while
+	// a Lookup is in flight munmaps memory under it and segfaults).
 	done := make(chan struct{})
 	go func() {
 		c.wg.Wait()
@@ -452,6 +448,13 @@ func (c *Collector) Stop() {
 		c.Logger.Info("Collector stopped gracefully")
 	case <-time.After(10 * time.Second):
 		c.Logger.Warn("Shutdown timeout waiting for goroutines")
+	}
+
+	if c.Loader != nil {
+		c.Loader.Close()
+	}
+	if c.GeoIP != nil {
+		c.GeoIP.Close()
 	}
 }
 
