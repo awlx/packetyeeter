@@ -151,7 +151,16 @@ func (t *ThreatIntelligence) performEnrichment(ip net.IP) {
 
 	// Query Shodan InternetDB
 	shodanInfo, err := t.shodan.Lookup(ip)
-	if err == nil && shodanInfo != nil {
+	if err != nil {
+		// Rate-limited or failed lookup: caching the empty result would make
+		// the IP read as "clean" for enrichmentTTL and suppress any retry --
+		// under a flood, most lookups trip the client rate limit and the
+		// enrichment signal would silently degrade exactly when it matters.
+		// Leave the cache untouched so a later signal re-queues the IP.
+		logrus.WithError(err).WithField("ip", ipStr).Debug("Enrichment lookup failed; not caching")
+		return
+	}
+	if shodanInfo != nil {
 		enriched.Sources = append(enriched.Sources, "shodan")
 		enriched.IsKnownScanner = shodanInfo.IsScanner
 		enriched.IsCloud = shodanInfo.IsCloud
