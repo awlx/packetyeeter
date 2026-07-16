@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"PacketYeeter/pkg/metrics"
+	"PacketYeeter/pkg/utils/limitread"
 
 	"github.com/sirupsen/logrus"
 )
@@ -40,6 +41,11 @@ const (
 
 	UpdateInterval   = 12 * time.Hour
 	DefaultCachePath = "/var/cache/packetyeeter/ja4db.json"
+
+	// maxFeedBodyBytes caps feed downloads so a hostile or compromised
+	// upstream cannot drive unbounded allocation. The historical JA4DB bulk
+	// export was tens of MB; 128 MiB leaves generous headroom.
+	maxFeedBodyBytes = 128 << 20
 )
 
 // JA4Entry represents a single entry in the JA4 database
@@ -266,7 +272,7 @@ func (d *Downloader) fetchPrimary() ([]JA4Entry, string, error) {
 		return nil, "", &notFoundError{statusCode: resp.StatusCode}
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := limitread.ReadAll(resp.Body, maxFeedBodyBytes)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to read response: %w", err)
 	}
@@ -299,7 +305,7 @@ func (d *Downloader) fetchFallback() ([]JA4Entry, error) {
 		return nil, fmt.Errorf("unexpected fallback status code: %d", resp.StatusCode)
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := limitread.ReadAll(resp.Body, maxFeedBodyBytes)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read fallback response: %w", err)
 	}
