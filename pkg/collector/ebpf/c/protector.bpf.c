@@ -16,6 +16,10 @@
 // Increased map sizes for handling large-scale DDoS
 #define BLOCK_MAP_SIZE 3000000
 #define HANDSHAKES_MAP_SIZE 500000
+// Bad-flags scanners tracked for telemetry. LRU so a spoofed-source scan flood
+// evicts the oldest entry instead of failing inserts (E2BIG) once full, which
+// would otherwise blind the userspace signal pipeline to every new scanner.
+#define BADFLAGS_MAP_SIZE 100000
 
 #ifndef IP_MF
 #define IP_MF 0x2000
@@ -236,15 +240,15 @@ struct {
 // Bad Flags (TCP) - separate because handled by existing logic, but could unify?
 // Keeping existing logical to minimize drift for now.
 struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, 1000);
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, BADFLAGS_MAP_SIZE);
     __type(key, __u32);
     __type(value, struct bad_flags_info);
 } bad_flags SEC(".maps");
 
 struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, 1000);
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, BADFLAGS_MAP_SIZE);
     __type(key, struct in6_addr);
     __type(value, struct bad_flags_info);
 } bad_flags_v6 SEC(".maps");
@@ -302,13 +306,20 @@ struct event_metadata {
 static __always_inline int check_rate_limit(void *map, void *key, __u32 limit, __u64 now) {
     struct rate_limit *rate = bpf_map_lookup_elem(map, key);
     if (rate) {
-        if (now - rate->last_time > 1000000000) { 
+        if (now - rate->last_time > 1000000000) {
+            // New 1s window. A benign race here (two CPUs both resetting, or a
+            // reset racing an increment) only mis-counts by ~1 packet at the
+            // window boundary, so the reset is left as a plain store.
             rate->last_time = now;
             rate->count = 1;
             return 0;
         } else {
-            rate->count++;
-            if (rate->count > limit) {
+            // The value is shared across CPUs for a given source; a plain
+            // read-modify-write loses increments under a same-source flood
+            // spread over RX queues, which lets the flood stay under `limit`.
+            // Increment atomically and test the post-increment value.
+            __u64 count = __sync_fetch_and_add(&rate->count, 1) + 1;
+            if (count > limit) {
                 return 1;
             }
             return 0;
@@ -570,9 +581,9 @@ int xdp_filter(struct xdp_md *ctx) {
     __u16 h_proto = eth->h_proto;
     void *cursor = (void *)(eth + 1);
 
-    // Handle VLANs (up to 2 layers)
+    // Handle VLANs (up to 3 stacked tags)
     #pragma unroll
-    for (int i = 0; i < 2; i++) {
+    for (int i = 0; i < 3; i++) {
         if (h_proto == bpf_htons(ETH_P_8021Q) || h_proto == bpf_htons(ETH_P_8021AD)) {
             struct vlan_hdr *vlan = cursor;
             if ((void *)(vlan + 1) > data_end)
@@ -587,6 +598,15 @@ int xdp_filter(struct xdp_md *ctx) {
     __u32 key_monitor = 1;
     __u32 *monitor_mode = bpf_map_lookup_elem(&config_map, &key_monitor);
     int is_monitor = (monitor_mode && *monitor_mode == 1);
+
+    // Frame stacked deeper than the tags we parse: h_proto is still a VLAN
+    // ethertype, so neither the IPv4 nor IPv6 branch below would match and the
+    // frame would fall through to XDP_PASS uninspected. Fail closed - we cannot
+    // see its L3/L4 to enforce on it - while honoring monitor/dry-run mode.
+    if (h_proto == bpf_htons(ETH_P_8021Q) || h_proto == bpf_htons(ETH_P_8021AD)) {
+        if (!is_monitor)
+            return XDP_DROP;
+    }
 
     if (h_proto == bpf_htons(ETH_P_IP)) {
         struct iphdr *ip = cursor;
@@ -822,7 +842,7 @@ int tc_ingress_syn_monitor(struct __sk_buff *skb) {
             meta.dport = tcp->dest;
             meta.protocol = IPPROTO_TCP;
             meta.type = 1; // JA4T
-            meta.window = tcp->window;
+            meta.window = bpf_ntohs(tcp->window);
             meta.len = pkt_len; 
             meta.rtt_us = 0;
             meta.ttl = ip->ttl;
@@ -918,7 +938,7 @@ int tc_ingress_syn_monitor(struct __sk_buff *skb) {
             // Or use perf_event's raw data which includes IP header.
             meta.type = 1;
             meta.protocol = IPPROTO_TCP;
-            meta.window = tcp->window;
+            meta.window = bpf_ntohs(tcp->window);
             meta.len = pkt_len;
             meta.rtt_us = 0;
             
