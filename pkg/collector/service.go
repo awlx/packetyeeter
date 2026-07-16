@@ -1414,6 +1414,14 @@ func (c *Collector) startCollectorMetricsServer() *http.Server {
 	return &http.Server{
 		Addr:    c.Config.MetricsAddr,
 		Handler: mux,
+		// The default addr binds all interfaces; without timeouts a
+		// slowloris client trickling header bytes pins goroutines and fds
+		// indefinitely.
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 16,
 	}
 }
 

@@ -1778,7 +1778,14 @@ func (a *Analyzer) Close() {
 	}
 }
 
-func startPprof(addr string) {
+// newPprofServer builds the diagnostic pprof server with slowloris-resistant
+// read/idle timeouts and a bounded header size, matching the hardening applied
+// to the metrics and inspector servers. WriteTimeout is deliberately left at 0:
+// /debug/pprof/profile and /debug/pprof/trace stream for a client-specified
+// duration (30s by default, longer on request), and a WriteTimeout would abort
+// those responses mid-capture. The read-side timeouts are what close the
+// slowloris exposure of a bare http.ListenAndServe.
+func newPprofServer(addr string) *http.Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/debug/pprof/", pprof.Index)
 	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
@@ -1786,8 +1793,20 @@ func startPprof(addr string) {
 	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
 	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
 
+	return &http.Server{
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 16,
+	}
+}
+
+func startPprof(addr string) {
+	server := newPprofServer(addr)
 	logrus.WithField("addr", addr).Info("pprof server listening")
-	if err := http.ListenAndServe(addr, mux); err != nil {
+	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		logrus.WithError(err).Warn("pprof server exited")
 	}
 }
