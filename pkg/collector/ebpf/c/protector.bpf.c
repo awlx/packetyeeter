@@ -352,6 +352,23 @@ static __always_inline __u32 tcp_flags_raw(struct tcphdr *tcp) {
         | ((__u32)tcp->cwr << 7);
 }
 
+// ipv4_tcp_header returns a bounds-checked pointer to the TCP header, honoring
+// the IHL field so IP options are skipped. IHL is attacker-controlled, so it is
+// validated (5..15 32-bit words) and the computed offset is bounds-checked
+// before use. Returns NULL if the header cannot be located. Locating TCP at a
+// fixed 20-byte offset (ignoring IHL) reads IP option bytes as TCP flags, which
+// lets a SYN+FIN/Xmas/NULL scan carrying a single IP option evade
+// check_tcp_flags (and corrupts JA4T/timestamp parsing in the TC path).
+static __always_inline struct tcphdr *ipv4_tcp_header(struct iphdr *ip, void *data_end) {
+    __u32 ihl = ip->ihl;
+    if (ihl < 5 || ihl > 15)
+        return 0;
+    struct tcphdr *tcp = (void *)ip + ihl * 4;
+    if ((void *)(tcp + 1) > data_end)
+        return 0;
+    return tcp;
+}
+
 // emit_incident_v4/v6 record a structured incident (source, reason,
 // timestamp) onto the `incidents` perf event array for every XDP_DROP
 // decision made by the collector's own kernel-space enforcement.
@@ -687,9 +704,8 @@ int xdp_filter(struct xdp_md *ctx) {
 
         // 4. TCP Flag Check
         if (ip->protocol == IPPROTO_TCP) {
-             // Standard IP header size for verifier
-             struct tcphdr *tcp = (void *)(ip + 1);
-             if ((void *)(tcp + 1) > data_end) return XDP_PASS;
+             struct tcphdr *tcp = ipv4_tcp_header(ip, data_end);
+             if (!tcp) return XDP_PASS;
              int scan_type = check_tcp_flags(tcp);
              if (scan_type != BAD_FLAGS_NONE) {
                  struct bad_flags_info info = {};
@@ -814,9 +830,8 @@ int tc_ingress_syn_monitor(struct __sk_buff *skb) {
 
         if (ip->protocol != IPPROTO_TCP) return TC_ACT_OK;
 
-        // Standard IP header size for verifier
-        struct tcphdr *tcp = (void *)(ip + 1);
-        if ((void *)(tcp + 1) > data_end) return TC_ACT_OK;
+        struct tcphdr *tcp = ipv4_tcp_header(ip, data_end);
+        if (!tcp) return TC_ACT_OK;
 
         if (tcp->syn && !tcp->ack) {
             struct tcp_session_key key = {};
@@ -1029,9 +1044,8 @@ int tc_egress_synack_monitor(struct __sk_buff *skb) {
 
         if (ip->protocol != IPPROTO_TCP) return TC_ACT_OK;
 
-        // Standard IP header size for verifier
-        struct tcphdr *tcp = (void *)(ip + 1);
-        if ((void *)(tcp + 1) > data_end) return TC_ACT_OK;
+        struct tcphdr *tcp = ipv4_tcp_header(ip, data_end);
+        if (!tcp) return TC_ACT_OK;
 
         if (tcp->syn && tcp->ack) {
             struct tcp_session_key key = {};
