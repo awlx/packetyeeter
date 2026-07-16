@@ -4,6 +4,7 @@ packetyeeter-collector
 packetyeeter-analyzer
 yeetctl
 yeetexplorer
+/bin/
 dist/
 
 # Compiled eBPF objects
