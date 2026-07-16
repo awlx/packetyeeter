@@ -811,6 +811,26 @@ func (c *Collector) cleanupSynCache() {
 	}
 }
 
+// handshakeRTTNanos returns the SYN->SYN-ACK round-trip for a pending handshake
+// and whether it is valid. Entries still awaiting a SYN-ACK have SynAckTime==0,
+// so the unsigned SynAckTime-BeginTime subtraction underflows into a huge value
+// that, cast to int64, poisons the aggregated handshake RTT.
+func handshakeRTTNanos(synAckTime, beginTime uint64) (int64, bool) {
+	if synAckTime <= beginTime {
+		return 0, false
+	}
+	return int64(synAckTime - beginTime), true
+}
+
+// avgRTTNanos averages accumulated handshake RTTs, returning 0 when no handshake
+// in the batch had a valid (completed) RTT rather than dividing by zero.
+func avgRTTNanos(totalRTT int64, rttCount int) int64 {
+	if rttCount <= 0 {
+		return 0
+	}
+	return totalRTT / int64(rttCount)
+}
+
 // sendPendingHandshakes sends incomplete TCP handshakes to analyzer
 // Aggregates by source IP to avoid flooding the analyzer
 func (c *Collector) sendPendingHandshakes() {
@@ -821,6 +841,7 @@ func (c *Collector) sendPendingHandshakes() {
 	// Aggregate by source IP
 	type ipStats struct {
 		count    int
+		rttCount int // handshakes in the batch with a valid (completed) RTT
 		totalRTT int64
 		ports    map[uint16]bool
 	}
@@ -842,7 +863,10 @@ func (c *Collector) sendPendingHandshakes() {
 			ipv4Stats[key.Saddr] = stats
 		}
 		stats.count++
-		stats.totalRTT += int64(val.SynAckTime - val.BeginTime)
+		if rtt, ok := handshakeRTTNanos(val.SynAckTime, val.BeginTime); ok {
+			stats.totalRTT += rtt
+			stats.rttCount++
+		}
 		stats.ports[key.Dport] = true
 	}
 
@@ -881,7 +905,7 @@ func (c *Collector) sendPendingHandshakes() {
 			Weight:    weight, // Use weight to convey count (clamped)
 			TcpContext: &apiv1.TCPContext{
 				SynCount:       uint32(stats.count),
-				HandshakeRttNs: stats.totalRTT / int64(stats.count), // Average RTT
+				HandshakeRttNs: avgRTTNanos(stats.totalRTT, stats.rttCount), // Average RTT over completed handshakes
 			},
 			Metadata: map[string]string{
 				"pending_count": fmt.Sprintf("%d", stats.count),
@@ -922,7 +946,10 @@ func (c *Collector) sendPendingHandshakes() {
 			ipv6Stats[k] = stats
 		}
 		stats.count++
-		stats.totalRTT += int64(val.SynAckTime - val.BeginTime)
+		if rtt, ok := handshakeRTTNanos(val.SynAckTime, val.BeginTime); ok {
+			stats.totalRTT += rtt
+			stats.rttCount++
+		}
 		stats.ports[key6.Dport] = true
 	}
 
@@ -950,7 +977,7 @@ func (c *Collector) sendPendingHandshakes() {
 			Weight:    float64(stats.count),
 			TcpContext: &apiv1.TCPContext{
 				SynCount:       uint32(stats.count),
-				HandshakeRttNs: stats.totalRTT / int64(stats.count),
+				HandshakeRttNs: avgRTTNanos(stats.totalRTT, stats.rttCount),
 			},
 			Metadata: map[string]string{
 				"pending_count": fmt.Sprintf("%d", stats.count),
