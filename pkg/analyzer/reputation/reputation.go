@@ -762,7 +762,13 @@ func (e *Engine) pruneIfNeededLocked(sh *repShard) {
 		return
 	}
 
-	excess := int64(len(sh.entries)) - perShardBudget
+	// Evict a batch (down to ~90% of budget) instead of exactly the excess:
+	// pruning to the budget means the very next new-key Penalize is over
+	// budget again, so a distinct-IP flood pays this full-shard sort on
+	// every signal (~1.5ms and ~365KB per insert at the default budget)
+	// while holding the shard write lock. Batching amortizes the sort to
+	// once per ~budget/10 inserts.
+	excess := int64(len(sh.entries)) - perShardBudget + perShardBudget/10
 	type kv struct {
 		key      string
 		lastSeen time.Time
