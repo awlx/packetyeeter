@@ -379,10 +379,61 @@ static __always_inline struct tcphdr *ipv4_tcp_header(struct iphdr *ip, void *da
     return tcp;
 }
 
+// Per-CPU emission budgets. Under a multi-Mpps flood the program would
+// otherwise call bpf_perf_event_output once per dropped packet (incidents) and
+// once per SYN (events), saturating the perf ring - which drops events for
+// everyone and burns CPU on the per-event copy and wakeup - exactly when the
+// host is most loaded. These cap telemetry emits per CPU per 1s window;
+// enforcement (the XDP_DROP itself, and the handshake tracking) is unaffected,
+// only the audit/telemetry stream is sampled. Per-CPU so there is no
+// cross-core contention on the counter.
+#define MAX_EMITS_PER_SEC_PER_CPU 1000
+
+struct emit_budget {
+    __u64 window_start;
+    __u64 count;
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, struct emit_budget);
+} incident_budget SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, struct emit_budget);
+} event_budget SEC(".maps");
+
+// emit_allowed returns whether a telemetry emit is within this CPU's per-second
+// budget, advancing the window and count. Fails open (emits) if the budget map
+// is unexpectedly missing.
+static __always_inline int emit_allowed(void *budget_map, __u64 now) {
+    __u32 k = 0;
+    struct emit_budget *b = bpf_map_lookup_elem(budget_map, &k);
+    if (!b)
+        return 1;
+    if (now - b->window_start > 1000000000ULL) {
+        b->window_start = now;
+        b->count = 1;
+        return 1;
+    }
+    if (b->count >= MAX_EMITS_PER_SEC_PER_CPU)
+        return 0;
+    b->count++;
+    return 1;
+}
+
 // emit_incident_v4/v6 record a structured incident (source, reason,
-// timestamp) onto the `incidents` perf event array for every XDP_DROP
-// decision made by the collector's own kernel-space enforcement.
+// timestamp) onto the `incidents` perf event array for XDP_DROP decisions made
+// by the collector's own kernel-space enforcement, sampled to the per-CPU
+// budget so a flood cannot saturate the ring.
 static __always_inline void emit_incident_v4(struct xdp_md *ctx, __u32 saddr, __u8 reason, __u64 now) {
+    if (!emit_allowed(&incident_budget, now))
+        return;
     struct incident_event inc = {};
     inc.timestamp = now;
     inc.saddr_v4 = saddr;
@@ -392,6 +443,8 @@ static __always_inline void emit_incident_v4(struct xdp_md *ctx, __u32 saddr, __
 }
 
 static __always_inline void emit_incident_v6(struct xdp_md *ctx, struct in6_addr *saddr, __u8 reason, __u64 now) {
+    if (!emit_allowed(&incident_budget, now))
+        return;
     struct incident_event inc = {};
     inc.timestamp = now;
     __builtin_memcpy(inc.saddr_v6, saddr, 16);
@@ -923,7 +976,11 @@ int tc_ingress_syn_monitor(struct __sk_buff *skb) {
             // IPv6 extension headers (always 0 for IPv4)
             meta.ipv6_ext_headers = 0;
 
-            bpf_perf_event_output(skb, &events, flags, &meta, sizeof(meta));
+            // Sample per-SYN JA4T emits to the per-CPU budget so a SYN flood
+            // cannot saturate the perf ring; the handshake tracking below still
+            // runs for every SYN.
+            if (emit_allowed(&event_budget, bpf_ktime_get_ns()))
+                bpf_perf_event_output(skb, &events, flags, &meta, sizeof(meta));
 
 
             struct handshake_status *existing = bpf_map_lookup_elem(&pending_handshakes, &key);
@@ -1024,7 +1081,11 @@ int tc_ingress_syn_monitor(struct __sk_buff *skb) {
             // IPv6 extension header counting disabled (eBPF verifier complexity)
             meta.ipv6_ext_headers = 0;
 
-            bpf_perf_event_output(skb, &events, flags, &meta, sizeof(meta));
+            // Sample per-SYN JA4T emits to the per-CPU budget so a SYN flood
+            // cannot saturate the perf ring; the handshake tracking below still
+            // runs for every SYN.
+            if (emit_allowed(&event_budget, bpf_ktime_get_ns()))
+                bpf_perf_event_output(skb, &events, flags, &meta, sizeof(meta));
 
             struct handshake_status *existing = bpf_map_lookup_elem(&pending_handshakes_v6, &key);
             if (!existing) {
