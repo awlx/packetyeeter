@@ -1,6 +1,7 @@
 package botverify
 
 import (
+	"context"
 	"net"
 	"strings"
 	"sync"
@@ -105,6 +106,7 @@ type Verifier struct {
 	verifyInFlight  map[string]*sync.Mutex // Prevent duplicate verifications
 	geoIP           GeoIPProvider          // GeoIP for ASN/org-based fallback verification
 	maxCacheEntries int
+	resolver        *net.Resolver // injectable for tests; DNS calls honor dnsTimeout
 }
 
 // NewVerifier creates a new bot verifier
@@ -129,6 +131,7 @@ func NewVerifierWithGeoIP(cacheTTL, dnsTimeout time.Duration, geoIP GeoIPProvide
 		verifyInFlight:  make(map[string]*sync.Mutex),
 		geoIP:           geoIP,
 		maxCacheEntries: 50000,
+		resolver:        net.DefaultResolver,
 	}
 
 	// Start cache cleanup goroutine
@@ -215,8 +218,13 @@ func (v *Verifier) verifyDNS(ip net.IP, pattern *BotPattern) *VerificationResult
 		VerifiedAt: time.Now(),
 	}
 
-	// Reverse DNS lookup
-	names, err := net.LookupAddr(ip.String())
+	// Reverse DNS lookup. Verification runs inline on the per-collector
+	// signal-stream goroutine, so an unbounded lookup against an
+	// attacker-controlled PTR zone would stall all detection for that
+	// collector — every DNS call must honor dnsTimeout.
+	ctx, cancel := context.WithTimeout(context.Background(), v.dnsTimeout)
+	defer cancel()
+	names, err := v.resolver.LookupAddr(ctx, ip.String())
 	if err != nil {
 		logrus.WithError(err).Debug("Reverse DNS lookup failed")
 		result.ErrorMessage = "reverse DNS failed"
@@ -263,7 +271,9 @@ func (v *Verifier) verifyDNS(ip net.IP, pattern *BotPattern) *VerificationResult
 
 	// Forward DNS verification (if required)
 	if pattern.RequireForward {
-		addrs, err := net.LookupHost(reverseDNS)
+		fwdCtx, fwdCancel := context.WithTimeout(context.Background(), v.dnsTimeout)
+		defer fwdCancel()
+		addrs, err := v.resolver.LookupHost(fwdCtx, reverseDNS)
 		if err != nil {
 			logrus.WithError(err).Debug("Forward DNS lookup failed")
 			result.ErrorMessage = "forward DNS failed"
