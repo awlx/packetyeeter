@@ -1376,7 +1376,7 @@ func (a *Analyzer) updatePathEntropy(ip net.IP, path string) (float64, bool, boo
 	// prune
 	i := 0
 	for i < len(pw.Events) {
-		if now.Sub(pw.Events[i].Ts) <= window && len(pw.Events) <= maxEvents {
+		if now.Sub(pw.Events[i].Ts) <= window && len(pw.Events)-i <= maxEvents {
 			break
 		}
 		old := pw.Events[i]
@@ -1581,7 +1581,7 @@ func (a *Analyzer) trackHTTPErrors(ip net.IP, statusCode uint32, path string) (i
 	// Prune old events
 	i := 0
 	for i < len(w.Events) {
-		if now.Sub(w.Events[i].Ts) <= window && len(w.Events) <= maxEvents {
+		if now.Sub(w.Events[i].Ts) <= window && len(w.Events)-i <= maxEvents {
 			break
 		}
 		old := w.Events[i]
