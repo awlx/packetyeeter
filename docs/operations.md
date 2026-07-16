@@ -22,7 +22,7 @@ Default listeners are convenient for labs but should be deliberately bound in pr
 | Analyzer inspector | `-inspect-addr` | `127.0.0.1:9092` | Keep loopback unless placed behind trusted access controls. |
 | Analyzer pprof | `-pprof-addr` | `:6060` when enabled | Enable only temporarily for diagnostics and bind securely. |
 | Collector metrics | `-metrics-addr` | `:2112` | Scrape from Prometheus over a trusted network. |
-| Collector management | `-socket` | `/var/run/packetyeeter-collector.sock` | Keep local and permission-restricted. |
+| Collector management | `-socket` | `/var/run/packetyeeter-collector.sock` | Created with mode `0600` (owner-only); run `yeetctl` as the same user or relax with a group and chmod after start. |
 | HAProxy peer/SPOE | `-haproxy-port`, `-spoe-port` | `8765`, `9876` | Expose only to trusted HAProxy peers. |
 
 ## systemd hardening notes
