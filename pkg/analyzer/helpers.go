@@ -3,6 +3,7 @@ package analyzer
 import (
 	"net"
 	"strings"
+	"sync"
 	"time"
 
 	"PacketYeeter/pkg/analyzer/aidetection"
@@ -14,7 +15,10 @@ func Contains(s, substr string) bool {
 	return strings.Contains(strings.ToLower(s), strings.ToLower(substr))
 }
 
+// blockedMu guards blockedIPs and blockedASNs: trackBlocked runs concurrently
+// from the per-collector gRPC stream handler goroutines.
 var (
+	blockedMu   sync.Mutex
 	blockedIPs  = make(map[string]time.Time)
 	blockedASNs = make(map[string]time.Time)
 )
@@ -22,6 +26,8 @@ var (
 func trackBlocked(ip net.IP, asn string) {
 	now := time.Now()
 	window := 60 * time.Second
+	blockedMu.Lock()
+	defer blockedMu.Unlock()
 	if ip != nil {
 		blockedIPs[ip.String()] = now
 	}
