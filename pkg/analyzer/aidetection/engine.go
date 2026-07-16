@@ -836,13 +836,12 @@ func (e *Engine) worker(id int) {
 
 // processSignal handles a single signal
 // ASN tracking helpers
-func (e *Engine) markASNActive(asn, org string, ip net.IP) {
-	if asn == "" || asn == "Unknown" || ip == nil {
+func (e *Engine) markASNActive(asn, org, ipStr string, now time.Time) {
+	if asn == "" || asn == "Unknown" || ipStr == "" {
 		return
 	}
 	e.asnMapsMu.Lock()
 	defer e.asnMapsMu.Unlock()
-	ipStr := ip.String()
 	if e.asnActiveIPs[asn] == nil {
 		if len(e.asnActiveIPs) >= 5000 {
 			return
@@ -851,7 +850,7 @@ func (e *Engine) markASNActive(asn, org string, ip net.IP) {
 	}
 	e.asnOrg[asn] = org
 	if _, exists := e.asnActiveIPs[asn][ipStr]; exists || len(e.asnActiveIPs[asn]) < 5000 {
-		e.asnActiveIPs[asn][ipStr] = time.Now()
+		e.asnActiveIPs[asn][ipStr] = now
 	}
 	active := len(e.asnActiveIPs[asn])
 	abusive := len(e.asnAbusiveIPs[asn])
@@ -1250,10 +1249,18 @@ func (e *Engine) processSignal(signal Signal, windowSignals map[string][]Signal,
 
 	signal.Type = CanonicalizeSignalType(signal.Type)
 
+	// Hoist the two per-signal invariants: net.IP.String() formats and
+	// allocates on every call (it was recomputed up to six times below),
+	// and the clock was read four times. This is the hottest loop in the
+	// analyzer.
+	var ipStr string
+	if signal.IP != nil {
+		ipStr = signal.IP.String()
+	}
+	now := start
+
 	// Capture pre-detection event for potential session recording
 	if signal.IP != nil {
-		ipStr := signal.IP.String()
-
 		// Check if IP is in learning window before acquiring pre-detection lock
 		if e.feedback != nil && e.feedback.IsInLearningWindow(ipStr) {
 			e.capturePreDetectionEvent(ipStr, signal)
@@ -1290,7 +1297,7 @@ func (e *Engine) processSignal(signal Signal, windowSignals map[string][]Signal,
 			Timestamp: signal.Timestamp,
 			Metadata:  signal.Metadata,
 		}
-		e.historyManager.AddEvent(signal.IP.String(), event)
+		e.historyManager.AddEvent(ipStr, event)
 	}
 
 	metrics.AISignalsTotal.Inc()
@@ -1322,7 +1329,7 @@ func (e *Engine) processSignal(signal Signal, windowSignals map[string][]Signal,
 	}
 	metrics.AISignalsByASN.WithLabelValues(asnTag, orgTag, string(signal.Type)).Inc()
 	// Track active IPs per ASN for proportional scaling
-	e.markASNActive(asnTag, orgTag, signal.IP)
+	e.markASNActive(asnTag, orgTag, ipStr, now)
 
 	if e.reputation != nil && signal.IP != nil {
 		weight := signal.Weight
@@ -1355,13 +1362,12 @@ func (e *Engine) processSignal(signal Signal, windowSignals map[string][]Signal,
 		// AI-engine workers all calling into the same reputation.Engine
 		// per signal, cutting per-signal lock acquisitions reduces
 		// contention that otherwise serializes the workers.
-		e.reputation.RecordSignal(signal.IP.String(), weight, asn, asnWeight, signal.JA4H, ja4Weight, string(signal.Type))
+		e.reputation.RecordSignal(ipStr, weight, asn, asnWeight, signal.JA4H, ja4Weight, string(signal.Type))
 	}
 
 	e.metricsMu.Lock()
 	if signal.IP != nil {
-		ipStr := signal.IP.String()
-		if e.admitMetricEntityLocked("ip:"+ipStr, e.signalsByIP, ipStr, time.Now()) {
+		if e.admitMetricEntityLocked("ip:"+ipStr, e.signalsByIP, ipStr, now) {
 			e.signalsByIP[ipStr]++
 			if e.signalTypesByIP[ipStr] == nil {
 				e.signalTypesByIP[ipStr] = make(map[string]uint64)
@@ -1374,7 +1380,7 @@ func (e *Engine) processSignal(signal Signal, windowSignals map[string][]Signal,
 		}
 	}
 	if signal.ASN != "" {
-		if e.admitMetricEntityLocked("asn:"+signal.ASN, e.signalsByASN, signal.ASN, time.Now()) {
+		if e.admitMetricEntityLocked("asn:"+signal.ASN, e.signalsByASN, signal.ASN, now) {
 			e.signalsByASN[signal.ASN]++
 			if e.signalTypesByASN[signal.ASN] == nil {
 				e.signalTypesByASN[signal.ASN] = make(map[string]uint64)
@@ -1387,7 +1393,7 @@ func (e *Engine) processSignal(signal Signal, windowSignals map[string][]Signal,
 		}
 	}
 	if signal.JA4H != "" {
-		if e.admitMetricEntityLocked("ja4h:"+signal.JA4H, e.signalsByJA4H, signal.JA4H, time.Now()) {
+		if e.admitMetricEntityLocked("ja4h:"+signal.JA4H, e.signalsByJA4H, signal.JA4H, now) {
 			e.signalsByJA4H[signal.JA4H]++
 			if e.signalTypesByJA4H[signal.JA4H] == nil {
 				e.signalTypesByJA4H[signal.JA4H] = make(map[string]uint64)
@@ -1401,8 +1407,14 @@ func (e *Engine) processSignal(signal Signal, windowSignals map[string][]Signal,
 	}
 	e.metricsMu.Unlock()
 
-	key := signalRouteKey(signal)
-	if key == "" {
+	// Same routing as signalRouteKey, reusing the hoisted ipStr.
+	var key string
+	switch {
+	case signal.JA4H != "":
+		key = "ja4h:" + signal.JA4H
+	case ipStr != "":
+		key = "ip:" + ipStr
+	default:
 		return
 	}
 

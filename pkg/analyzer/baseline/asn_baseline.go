@@ -3,7 +3,6 @@ package baseline
 import (
 	"PacketYeeter/pkg/metrics"
 	"PacketYeeter/pkg/utils/stats"
-	"hash/fnv"
 	"math"
 	"sync"
 	"time"
@@ -83,9 +82,16 @@ type BaselineCalibrator struct {
 // always maps to the same shard, which is required for correctness (all
 // operations on one ASN must observe each other).
 func (bc *BaselineCalibrator) shardFor(asn string) *baselineShard {
-	h := fnv.New32a()
-	_, _ = h.Write([]byte(asn))
-	return bc.shards[h.Sum32()%numBaselineShards]
+	// Inline FNV-1a: fnv.New32a() returns its state behind a hash.Hash32
+	// interface and []byte(asn) escapes into the interface call, costing
+	// two heap allocations per call — and this runs per signal via both
+	// RecordObservation and CalculateAnomaly.
+	h := uint32(2166136261)
+	for i := 0; i < len(asn); i++ {
+		h ^= uint32(asn[i])
+		h *= 16777619
+	}
+	return bc.shards[h%numBaselineShards]
 }
 
 // Config holds configuration for the baseline calibrator
@@ -258,8 +264,9 @@ func (bc *BaselineCalibrator) CalculateAnomaly(asn string, obs ObservationData) 
 		result.ByteRateZScore = baseline.ByteRate.ZScore(obs.ByteRate)
 	}
 
-	// Find max absolute z-score
-	zScores := []float64{
+	// Find max absolute z-score without allocating a slice per call (this
+	// runs per signal on the hot path).
+	result.MaxZScore = max(
 		math.Abs(result.TTLZScore),
 		math.Abs(result.WindowSizeZScore),
 		math.Abs(result.PacketSizeZScore),
@@ -269,13 +276,7 @@ func (bc *BaselineCalibrator) CalculateAnomaly(asn string, obs ObservationData) 
 		math.Abs(result.HandshakeRTTZScore),
 		math.Abs(result.PacketRateZScore),
 		math.Abs(result.ByteRateZScore),
-	}
-
-	for _, z := range zScores {
-		if z > result.MaxZScore {
-			result.MaxZScore = z
-		}
-	}
+	)
 
 	return result
 }
