@@ -36,6 +36,14 @@ func (c *Collector) startManagementSocket() error {
 	if err != nil {
 		return err
 	}
+	// The socket is created with 0777&^umask, so a permissive umask leaves
+	// it group/world-connectable. Commands are read-only today but disclose
+	// the blocked-IP set; restrict to the owning user (typically root, same
+	// as yeetctl runs).
+	if err := os.Chmod(c.Config.SocketPath, 0o600); err != nil {
+		listener.Close()
+		return fmt.Errorf("failed to restrict management socket permissions: %w", err)
+	}
 	c.managementListener = listener
 
 	c.wg.Add(1)
