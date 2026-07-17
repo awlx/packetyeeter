@@ -60,10 +60,14 @@ type Collector struct {
 	Config Config
 
 	// Components
-	Loader         *ebpf.Loader
-	Maps           *ebpf.Maps
-	GeoIP          *geoip.Provider
-	Logger         *logrus.Logger
+	Loader *ebpf.Loader
+	Maps   *ebpf.Maps
+	GeoIP  *geoip.Provider
+	Logger *logrus.Logger
+	// allowedNetsMu guards allowedNets: executeCommand mutates it on the
+	// command-stream goroutine while checkAllowlist reads it from the map
+	// polling, perf-event, and SPOE goroutines.
+	allowedNetsMu  sync.RWMutex
 	allowedNets    []*net.IPNet
 	policyRules    []ebpf.PolicyRule
 	perfReader     *perf.Reader
@@ -84,8 +88,10 @@ type Collector struct {
 	dropLogCount int
 
 	// Previous rates to compute pps across windows (monotonic timestamps)
-	prevICMPRates map[uint32]prevRate
-	prevUDPRates  map[uint32]prevRate
+	prevICMPRates   map[uint32]prevRate
+	prevUDPRates    map[uint32]prevRate
+	prevICMPRatesV6 map[[16]byte]prevRate
+	prevUDPRatesV6  map[[16]byte]prevRate
 
 	// Last-alerted timestamps for bad TCP flag scans, so repeated polls
 	// don't re-emit a signal for the same kernel-observed event.
@@ -129,6 +135,8 @@ func New(cfg Config, logger *logrus.Logger) (*Collector, error) {
 		synCacheTTL:        60 * time.Second,                                          // TTL for SYN timestamp cache
 		prevICMPRates:      make(map[uint32]prevRate),
 		prevUDPRates:       make(map[uint32]prevRate),
+		prevICMPRatesV6:    make(map[[16]byte]prevRate),
+		prevUDPRatesV6:     make(map[[16]byte]prevRate),
 		prevBadFlagsSeen:   make(map[uint32]uint64),
 		prevBadFlagsSeenV6: make(map[[16]byte]uint64),
 	}
@@ -386,6 +394,8 @@ func (c *Collector) checkAllowlist(ip net.IP) bool {
 	if ip.IsLoopback() {
 		return true
 	}
+	c.allowedNetsMu.RLock()
+	defer c.allowedNetsMu.RUnlock()
 	for _, subnet := range c.allowedNets {
 		if subnet.Contains(ip) {
 			return true
@@ -433,14 +443,10 @@ func (c *Collector) Stop() {
 		}
 	}
 
-	if c.Loader != nil {
-		c.Loader.Close()
-	}
-	if c.GeoIP != nil {
-		c.GeoIP.Close()
-	}
-
-	// Wait for goroutines with timeout
+	// Wait for goroutines with timeout. The map-polling and event goroutines
+	// still use the eBPF maps and the mmapped GeoIP DB, so those must stay
+	// open until the goroutines have drained (closing the GeoIP reader while
+	// a Lookup is in flight munmaps memory under it and segfaults).
 	done := make(chan struct{})
 	go func() {
 		c.wg.Wait()
@@ -452,6 +458,13 @@ func (c *Collector) Stop() {
 		c.Logger.Info("Collector stopped gracefully")
 	case <-time.After(10 * time.Second):
 		c.Logger.Warn("Shutdown timeout waiting for goroutines")
+	}
+
+	if c.Loader != nil {
+		c.Loader.Close()
+	}
+	if c.GeoIP != nil {
+		c.GeoIP.Close()
 	}
 }
 
@@ -510,7 +523,9 @@ func (c *Collector) executeCommand(cmd *apiv1.Command) {
 		} else {
 			ipNet = &net.IPNet{IP: ip, Mask: net.CIDRMask(128, 128)}
 		}
+		c.allowedNetsMu.Lock()
 		c.allowedNets = append(c.allowedNets, ipNet)
+		c.allowedNetsMu.Unlock()
 		if err := c.Maps.AddAllowlistEntry(ipNet); err != nil {
 			logger.WithError(err).Warn("Failed to add IP to kernel-space allowlist")
 		}
@@ -518,17 +533,23 @@ func (c *Collector) executeCommand(cmd *apiv1.Command) {
 
 	case apiv1.CommandType_COMMAND_REMOVE_ALLOWLIST_IP:
 		// Remove IP from allowlist
+		c.allowedNetsMu.Lock()
 		filtered := make([]*net.IPNet, 0, len(c.allowedNets))
+		removed := make([]*net.IPNet, 0, 1)
 		for _, n := range c.allowedNets {
 			if !n.IP.Equal(ip) {
 				filtered = append(filtered, n)
 				continue
 			}
+			removed = append(removed, n)
+		}
+		c.allowedNets = filtered
+		c.allowedNetsMu.Unlock()
+		for _, n := range removed {
 			if err := c.Maps.RemoveAllowlistEntry(n); err != nil {
 				logger.WithError(err).Warn("Failed to remove IP from kernel-space allowlist")
 			}
 		}
-		c.allowedNets = filtered
 		logger.Info("Removed IP from allowlist by analyzer command")
 
 	default:
@@ -794,6 +815,26 @@ func (c *Collector) cleanupSynCache() {
 	}
 }
 
+// handshakeRTTNanos returns the SYN->SYN-ACK round-trip for a pending handshake
+// and whether it is valid. Entries still awaiting a SYN-ACK have SynAckTime==0,
+// so the unsigned SynAckTime-BeginTime subtraction underflows into a huge value
+// that, cast to int64, poisons the aggregated handshake RTT.
+func handshakeRTTNanos(synAckTime, beginTime uint64) (int64, bool) {
+	if synAckTime <= beginTime {
+		return 0, false
+	}
+	return int64(synAckTime - beginTime), true
+}
+
+// avgRTTNanos averages accumulated handshake RTTs, returning 0 when no handshake
+// in the batch had a valid (completed) RTT rather than dividing by zero.
+func avgRTTNanos(totalRTT int64, rttCount int) int64 {
+	if rttCount <= 0 {
+		return 0
+	}
+	return totalRTT / int64(rttCount)
+}
+
 // sendPendingHandshakes sends incomplete TCP handshakes to analyzer
 // Aggregates by source IP to avoid flooding the analyzer
 func (c *Collector) sendPendingHandshakes() {
@@ -804,6 +845,7 @@ func (c *Collector) sendPendingHandshakes() {
 	// Aggregate by source IP
 	type ipStats struct {
 		count    int
+		rttCount int // handshakes in the batch with a valid (completed) RTT
 		totalRTT int64
 		ports    map[uint16]bool
 	}
@@ -825,7 +867,10 @@ func (c *Collector) sendPendingHandshakes() {
 			ipv4Stats[key.Saddr] = stats
 		}
 		stats.count++
-		stats.totalRTT += int64(val.SynAckTime - val.BeginTime)
+		if rtt, ok := handshakeRTTNanos(val.SynAckTime, val.BeginTime); ok {
+			stats.totalRTT += rtt
+			stats.rttCount++
+		}
 		stats.ports[key.Dport] = true
 	}
 
@@ -864,7 +909,7 @@ func (c *Collector) sendPendingHandshakes() {
 			Weight:    weight, // Use weight to convey count (clamped)
 			TcpContext: &apiv1.TCPContext{
 				SynCount:       uint32(stats.count),
-				HandshakeRttNs: stats.totalRTT / int64(stats.count), // Average RTT
+				HandshakeRttNs: avgRTTNanos(stats.totalRTT, stats.rttCount), // Average RTT over completed handshakes
 			},
 			Metadata: map[string]string{
 				"pending_count": fmt.Sprintf("%d", stats.count),
@@ -873,10 +918,6 @@ func (c *Collector) sendPendingHandshakes() {
 		}
 
 		c.sendSignal(signal)
-	}
-
-	if len(ipv4Stats) > 0 {
-		c.Logger.WithField("count", len(ipv4Stats)).Debug("Sent pending handshake signals (IPv4)")
 	}
 
 	if len(ipv4Stats) > 0 {
@@ -905,7 +946,10 @@ func (c *Collector) sendPendingHandshakes() {
 			ipv6Stats[k] = stats
 		}
 		stats.count++
-		stats.totalRTT += int64(val.SynAckTime - val.BeginTime)
+		if rtt, ok := handshakeRTTNanos(val.SynAckTime, val.BeginTime); ok {
+			stats.totalRTT += rtt
+			stats.rttCount++
+		}
 		stats.ports[key6.Dport] = true
 	}
 
@@ -922,6 +966,17 @@ func (c *Collector) sendPendingHandshakes() {
 			asn, org = c.GeoIP.Lookup(ipAddr)
 		}
 
+		// Normalize identically to the v4 branch: convey a pps rate clamped
+		// to 50000, not a raw per-poll count (which scales with PollInterval
+		// and is unbounded), so v4 and v6 handshake weights are comparable.
+		pollSec := c.Config.PollInterval.Seconds()
+		if pollSec == 0 {
+			pollSec = 1
+		}
+		weight := float64(stats.count) / pollSec
+		if weight > 50000 {
+			weight = 50000
+		}
 		signal := &apiv1.Signal{
 			Id:        fmt.Sprintf("tcp6-agg-%x", saddr),
 			Timestamp: timestamppb.Now(),
@@ -930,10 +985,10 @@ func (c *Collector) sendPendingHandshakes() {
 			Ip:        saddr[:],
 			Asn:       asn,
 			Org:       org,
-			Weight:    float64(stats.count),
+			Weight:    weight,
 			TcpContext: &apiv1.TCPContext{
 				SynCount:       uint32(stats.count),
-				HandshakeRttNs: stats.totalRTT / int64(stats.count),
+				HandshakeRttNs: avgRTTNanos(stats.totalRTT, stats.rttCount),
 			},
 			Metadata: map[string]string{
 				"pending_count": fmt.Sprintf("%d", stats.count),
@@ -947,140 +1002,129 @@ func (c *Collector) sendPendingHandshakes() {
 
 // sendICMPRates sends ICMP rate data to analyzer
 func (c *Collector) sendICMPRates() {
-	if c.Maps == nil || c.Maps.ICMPRates == nil {
+	if c.Maps == nil {
 		return
 	}
 
-	const maxBatchSize = 1000  // Limit signals per poll
-	const minFloodPPS = 1000.0 // Raised to 1000 - avoid false positives on legitimate bursts
 	sentCount := 0
 	totalPPS := 0.0
 
-	var ip uint32
-	var rate ebpf.ICMPRate
-
-	iter := c.Maps.ICMPRates.Iterate()
-	for iter.Next(&ip, &rate) {
-		if rate.Count == 0 {
-			continue
+	if c.Maps.ICMPRates != nil {
+		var ip uint32
+		var rate ebpf.ICMPRate
+		iter := c.Maps.ICMPRates.Iterate()
+		for iter.Next(&ip, &rate) {
+			if sentCount >= rateMaxBatchSize {
+				break
+			}
+			if rate.Count == 0 {
+				continue
+			}
+			ipBytes := make([]byte, 4)
+			binary.LittleEndian.PutUint32(ipBytes, ip)
+			pps := computePPS(c.prevICMPRates, ip, rate)
+			if p, sent := c.emitFloodSignal(net.IP(ipBytes), pps, rate,
+				apiv1.SignalType_SIGNAL_ICMP_FLOOD, "icmp"); sent {
+				totalPPS += p
+				sentCount++
+			}
 		}
+	}
 
-		// Stop if we hit batch size limit
-		if sentCount >= maxBatchSize {
-			break
+	// IPv6: the XDP program populates icmp_rates_v6 identically to the v4 map;
+	// without this loop IPv6 ICMP floods never reach the analyzer. It carries
+	// its own per-poll budget (separate from the v4 sentCount) so a concurrent
+	// IPv4 flood that fills the v4 batch cannot starve IPv6 emission this poll.
+	sentCountV6 := 0
+	if c.Maps.ICMPRatesV6 != nil {
+		var key [16]byte
+		var rate ebpf.ICMPRate
+		iter := c.Maps.ICMPRatesV6.Iterate()
+		for iter.Next(&key, &rate) {
+			if sentCountV6 >= rateMaxBatchSize {
+				break
+			}
+			if rate.Count == 0 {
+				continue
+			}
+			pps := computePPSV6(c.prevICMPRatesV6, key, rate)
+			if p, sent := c.emitFloodSignal(net.IP(key[:]), pps, rate,
+				apiv1.SignalType_SIGNAL_ICMP_FLOOD, "icmp6"); sent {
+				totalPPS += p
+				sentCountV6++
+			}
 		}
-
-		ipBytes := make([]byte, 4)
-		binary.LittleEndian.PutUint32(ipBytes, ip)
-		ipAddr := net.IP(ipBytes)
-
-		// Skip allowlisted IPs
-		if c.checkAllowlist(ipAddr) {
-			continue
-		}
-
-		asn, org := "", ""
-		if c.GeoIP != nil {
-			asn, org = c.GeoIP.Lookup(ipAddr)
-		}
-
-		pps := computePPS(c.prevICMPRates, ip, rate)
-		if pps < minFloodPPS {
-			continue
-		}
-		totalPPS += pps
-
-		signal := &apiv1.Signal{
-			Id:        fmt.Sprintf("icmp-%d", ip),
-			Timestamp: timestamppb.Now(),
-			Type:      apiv1.SignalType_SIGNAL_ICMP_FLOOD,
-			Source:    apiv1.SignalSource_SOURCE_EBPF,
-			Ip:        ipBytes,
-			Asn:       asn,
-			Org:       org,
-			Weight:    pps,
-			Metadata: map[string]string{
-				"count":     fmt.Sprintf("%d", rate.Count),
-				"last_time": fmt.Sprintf("%d", rate.LastTime),
-				"pps":       fmt.Sprintf("%.2f", pps),
-			},
-		}
-
-		c.sendSignal(signal)
-		sentCount++
 	}
 
 	if metrics.ICMPTotalRate != nil {
 		metrics.ICMPTotalRate.Set(totalPPS)
 	}
-	if sentCount > 0 {
-		c.Logger.WithField("count", sentCount).Debug("Sent ICMP flood signals")
+	if sent := sentCount + sentCountV6; sent > 0 {
+		c.Logger.WithField("count", sent).Debug("Sent ICMP flood signals")
 	}
 }
 
 // sendUDPRates sends UDP rate data to analyzer
 func (c *Collector) sendUDPRates() {
-	if c.Maps == nil || c.Maps.UDPRates == nil {
+	if c.Maps == nil {
 		return
 	}
 
-	const maxBatchSize = 1000  // Limit signals per poll
-	const minFloodPPS = 1000.0 // Raised to 1000 - avoid false positives on legitimate bursts
 	sentCount := 0
 	totalPPS := 0.0
 
-	var ip uint32
-	var rate ebpf.ICMPRate // Same struct for UDP
-
-	iter := c.Maps.UDPRates.Iterate()
-	for iter.Next(&ip, &rate) {
-		if rate.Count == 0 {
-			continue
+	if c.Maps.UDPRates != nil {
+		var ip uint32
+		var rate ebpf.ICMPRate // Same struct for UDP
+		iter := c.Maps.UDPRates.Iterate()
+		for iter.Next(&ip, &rate) {
+			if sentCount >= rateMaxBatchSize {
+				break
+			}
+			if rate.Count == 0 {
+				continue
+			}
+			ipBytes := make([]byte, 4)
+			binary.LittleEndian.PutUint32(ipBytes, ip)
+			pps := computePPS(c.prevUDPRates, ip, rate)
+			if p, sent := c.emitFloodSignal(net.IP(ipBytes), pps, rate,
+				apiv1.SignalType_SIGNAL_UDP_FLOOD, "udp"); sent {
+				totalPPS += p
+				sentCount++
+			}
 		}
+	}
 
-		// Stop if we hit batch size limit
-		if sentCount >= maxBatchSize {
-			break
+	// IPv6: mirror the v4 path over udp_rates_v6, which the XDP program
+	// populates the same way; otherwise IPv6 UDP floods are never reported. Its
+	// own per-poll budget (separate from the v4 sentCount) keeps a concurrent
+	// IPv4 flood from starving IPv6 emission this poll.
+	sentCountV6 := 0
+	if c.Maps.UDPRatesV6 != nil {
+		var key [16]byte
+		var rate ebpf.ICMPRate
+		iter := c.Maps.UDPRatesV6.Iterate()
+		for iter.Next(&key, &rate) {
+			if sentCountV6 >= rateMaxBatchSize {
+				break
+			}
+			if rate.Count == 0 {
+				continue
+			}
+			pps := computePPSV6(c.prevUDPRatesV6, key, rate)
+			if p, sent := c.emitFloodSignal(net.IP(key[:]), pps, rate,
+				apiv1.SignalType_SIGNAL_UDP_FLOOD, "udp6"); sent {
+				totalPPS += p
+				sentCountV6++
+			}
 		}
+	}
 
-		ipBytes := make([]byte, 4)
-		binary.LittleEndian.PutUint32(ipBytes, ip)
-		ipAddr := net.IP(ipBytes)
-
-		// Skip allowlisted IPs
-		if c.checkAllowlist(ipAddr) {
-			continue
-		}
-
-		asn, org := "", ""
-		if c.GeoIP != nil {
-			asn, org = c.GeoIP.Lookup(ipAddr)
-		}
-
-		pps := computePPS(c.prevUDPRates, ip, rate)
-		if pps < minFloodPPS {
-			continue
-		}
-		totalPPS += pps
-
-		signal := &apiv1.Signal{
-			Id:        fmt.Sprintf("udp-%d", ip),
-			Timestamp: timestamppb.Now(),
-			Type:      apiv1.SignalType_SIGNAL_UDP_FLOOD,
-			Source:    apiv1.SignalSource_SOURCE_EBPF,
-			Ip:        ipBytes,
-			Asn:       asn,
-			Org:       org,
-			Weight:    pps,
-			Metadata: map[string]string{
-				"count":     fmt.Sprintf("%d", rate.Count),
-				"last_time": fmt.Sprintf("%d", rate.LastTime),
-				"pps":       fmt.Sprintf("%.2f", pps),
-			},
-		}
-
-		c.sendSignal(signal)
-		sentCount++
+	if metrics.UDPTotalRate != nil {
+		metrics.UDPTotalRate.Set(totalPPS)
+	}
+	if sent := sentCount + sentCountV6; sent > 0 {
+		c.Logger.WithField("count", sent).Debug("Sent UDP flood signals")
 	}
 }
 
@@ -1200,6 +1244,22 @@ func computePPS(prev map[uint32]prevRate, ip uint32, rate ebpf.ICMPRate) float64
 	}
 	pr, ok := prev[ip]
 	prev[ip] = prevRate{lastTime: rate.LastTime, count: rate.Count}
+	return ppsFromWindow(pr, ok, rate)
+}
+
+// computePPSV6 mirrors computePPS for the [16]byte-keyed IPv6 rate maps.
+func computePPSV6(prev map[[16]byte]prevRate, ip [16]byte, rate ebpf.ICMPRate) float64 {
+	if prev == nil {
+		return float64(rate.Count)
+	}
+	pr, ok := prev[ip]
+	prev[ip] = prevRate{lastTime: rate.LastTime, count: rate.Count}
+	return ppsFromWindow(pr, ok, rate)
+}
+
+// ppsFromWindow derives a pps estimate from the current and previous window
+// samples, shared by the v4 and v6 computePPS variants.
+func ppsFromWindow(pr prevRate, ok bool, rate ebpf.ICMPRate) float64 {
 	if !ok {
 		return float64(rate.Count)
 	}
@@ -1211,6 +1271,51 @@ func computePPS(prev map[uint32]prevRate, ip uint32, rate ebpf.ICMPRate) float64
 		return float64(pr.count)
 	}
 	return float64(rate.Count)
+}
+
+// floodRateParams bundles the constants shared by the ICMP/UDP rate readers.
+const (
+	rateMaxBatchSize = 1000   // Limit signals per poll
+	rateMinFloodPPS  = 1000.0 // Avoid false positives on legitimate bursts
+)
+
+// emitFloodSignal applies the allowlist and pps-threshold gates and, if the
+// source qualifies, builds and sends one flood signal. It returns the pps it
+// contributed (0 when skipped) and whether a signal was sent, so v4 and v6
+// callers share identical gating and cannot drift apart.
+func (c *Collector) emitFloodSignal(ipAddr net.IP, pps float64, rate ebpf.ICMPRate, sigType apiv1.SignalType, idPrefix string) (float64, bool) {
+	if c.checkAllowlist(ipAddr) {
+		return 0, false
+	}
+	if pps < rateMinFloodPPS {
+		return 0, false
+	}
+	// The rate-map iterators reuse a single key buffer across iterations and
+	// signals are marshaled asynchronously off signalQueue, so the address must
+	// be copied before it is retained; aliasing ipAddr ships every signal with
+	// the last-iterated source IP. Formatting the id here (post-gate) also keeps
+	// the per-entry string allocation off the sub-threshold/allowlisted paths.
+	ip := append(net.IP(nil), ipAddr...)
+	asn, org := "", ""
+	if c.GeoIP != nil {
+		asn, org = c.GeoIP.Lookup(ip)
+	}
+	c.sendSignal(&apiv1.Signal{
+		Id:        idPrefix + "-" + ip.String(),
+		Timestamp: timestamppb.Now(),
+		Type:      sigType,
+		Source:    apiv1.SignalSource_SOURCE_EBPF,
+		Ip:        ip,
+		Asn:       asn,
+		Org:       org,
+		Weight:    pps,
+		Metadata: map[string]string{
+			"count":     fmt.Sprintf("%d", rate.Count),
+			"last_time": fmt.Sprintf("%d", rate.LastTime),
+			"pps":       fmt.Sprintf("%.2f", pps),
+		},
+	})
+	return pps, true
 }
 
 // runBlockGC garbage collects expired blocks from eBPF maps
