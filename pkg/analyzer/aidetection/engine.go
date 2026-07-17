@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -1932,6 +1933,13 @@ func (e *Engine) isDDoSPattern(signals []Signal, asnFloodWeight float64) (bool, 
 }
 
 // checkAdaptiveDetection uses EWMA baseline to detect anomalies
+// maxEWMAEntries bounds the adaptive-detection baseline map. When it fills we
+// evict the oldest entries rather than refusing to evaluate new keys: the key is
+// derived from client-controlled JA4H/IP, so failing open on a full map would
+// let a churn of distinct identifiers silently disable adaptive detection for
+// every other key.
+const maxEWMAEntries = 20000
+
 func (e *Engine) checkAdaptiveDetection(key string, currentCount int) (bool, float64) {
 	now := time.Now()
 	current := float64(currentCount)
@@ -1941,8 +1949,10 @@ func (e *Engine) checkAdaptiveDetection(key string, currentCount int) (bool, flo
 
 	st := e.ewmaMap[key]
 	if st == nil {
-		if len(e.ewmaMap) >= 20000 {
-			return false, current
+		if len(e.ewmaMap) >= maxEWMAEntries {
+			// Evict a batch of the oldest-by-last-seen entries in one pass so the
+			// scan amortizes over many inserts instead of running per new key.
+			evictOldestEWMA(e.ewmaMap, maxEWMAEntries/10)
 		}
 		st = &ewma.State{Value: current, LastTime: now}
 		e.ewmaMap[key] = st
@@ -1957,6 +1967,46 @@ func (e *Engine) checkAdaptiveDetection(key string, currentCount int) (bool, flo
 	}
 
 	return false, st.Value
+}
+
+// containsDeterministicHighSeverity reports whether the signal set includes a
+// deterministic, high-severity indicator that must not be suppressed by a
+// learned-legitimate allowlist match or erased by a strong-legitimate ML
+// verdict: a honeypot hit (client reached a hidden trap URL) or a JA4H match
+// against a known-bot TLS fingerprint. Both are properties of the traffic
+// itself, independent of the spoofable UA/JA4H/ASN identity an allowlist vouches
+// for.
+func containsDeterministicHighSeverity(signals []Signal) bool {
+	for i := range signals {
+		switch signals[i].Type {
+		case SignalHoneypot, SignalJA4HBotMatch:
+			return true
+		}
+	}
+	return false
+}
+
+// evictOldestEWMA removes the n entries with the oldest LastTime from m in a
+// single sorted pass. Caller holds e.ewmaMu.
+func evictOldestEWMA(m map[string]*ewma.State, n int) {
+	if n <= 0 || len(m) == 0 {
+		return
+	}
+	type keyed struct {
+		key string
+		ts  time.Time
+	}
+	entries := make([]keyed, 0, len(m))
+	for k, s := range m {
+		entries = append(entries, keyed{key: k, ts: s.LastTime})
+	}
+	slices.SortFunc(entries, func(a, b keyed) int { return a.ts.Compare(b.ts) })
+	if n > len(entries) {
+		n = len(entries)
+	}
+	for i := 0; i < n; i++ {
+		delete(m, entries[i].key)
+	}
 }
 
 // handleDetection processes a confirmed detection
@@ -2083,11 +2133,19 @@ func (e *Engine) handleDetection(key string, signals []Signal, ewmaBaseline, con
 		}
 	}
 
+	// DDoS verdict computed up front: a learned-legitimate allowlist match is
+	// keyed on client-controlled UA/JA4H/ASN and must not suppress a DDoS/flood
+	// pattern or a deterministic high-severity signal (honeypot/JA4H-bot), which
+	// do not depend on the identity the allowlist vouches for.
+	ddosDetected, ddosInfo := e.isDDoSPattern(signals, asnFloodWeight)
+
 	// Check if this traffic pattern has been learned as legitimate
 	if e.feedback != nil {
 		if matched, label, patternConfidence, patternKey := e.feedback.CheckPattern(userAgent, firstSignal.ASN, ja4h); matched {
-			if label == "legitimate" && patternConfidence >= 0.7 {
-				// This is a known legitimate pattern - skip detection
+			if label == "legitimate" && patternConfidence >= 0.7 &&
+				!ddosDetected && !containsDeterministicHighSeverity(signals) {
+				// A known legitimate pattern with no overriding high-severity or
+				// DDoS evidence - skip detection.
 				logrus.WithFields(logrus.Fields{
 					"key":                key,
 					"pattern_key":        patternKey,
@@ -2134,7 +2192,7 @@ func (e *Engine) handleDetection(key string, signals []Signal, ewmaBaseline, con
 		return
 	}
 
-	ddosDetected, ddosInfo := e.isDDoSPattern(signals, asnFloodWeight)
+	// ddosDetected/ddosInfo were computed above (before the legitimate-pattern gate).
 	if !ddosDetected && botCategory == BotCategoryDDoS {
 		botCategory = BotCategoryUnknown
 	}
@@ -2291,6 +2349,14 @@ func (e *Engine) handleDetection(key string, signals []Signal, ewmaBaseline, con
 				confidence = math.Min(confidence+0.05, 1.0)
 			}
 		}
+	}
+
+	// Honeypot hits and JA4H known-bot matches are deterministic high-severity
+	// signals; lift rule confidence to the floor blendMLConfidence protects so a
+	// strong-legitimate ML verdict cannot cap them down to legitimate (mirrors
+	// the known-scanner boost above).
+	if containsDeterministicHighSeverity(signals) {
+		confidence = math.Max(confidence, strongRuleConfidenceFloor)
 	}
 
 	if behavioralProfile != nil && behavioralProfile.IsBursty {
