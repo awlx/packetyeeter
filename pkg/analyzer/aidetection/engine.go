@@ -1979,8 +1979,18 @@ func (e *Engine) checkAdaptiveDetection(key string, currentCount int) (bool, flo
 func containsDeterministicHighSeverity(signals []Signal) bool {
 	for i := range signals {
 		switch signals[i].Type {
-		case SignalHoneypot, SignalJA4HBotMatch:
+		case SignalHoneypot:
 			return true
+		case SignalJA4HBotMatch:
+			// Only an exact JA4DB match is a reliable, deterministic
+			// attribution. A wildcard/coarse-prefix collision (or a match with
+			// no recorded type) is uncertain, so it must not bypass the
+			// learned-legitimate allowlist or floor confidence - it still
+			// contributes its weight to scoring. Absent/non-string match_type
+			// fails closed to "not deterministic" (fewer false-positive blocks).
+			if mt, _ := signals[i].Metadata["match_type"].(string); mt == "exact" {
+				return true
+			}
 		}
 	}
 	return false
@@ -2135,8 +2145,8 @@ func (e *Engine) handleDetection(key string, signals []Signal, ewmaBaseline, con
 
 	// DDoS verdict computed up front: a learned-legitimate allowlist match is
 	// keyed on client-controlled UA/JA4H/ASN and must not suppress a DDoS/flood
-	// pattern or a deterministic high-severity signal (honeypot/JA4H-bot), which
-	// do not depend on the identity the allowlist vouches for.
+	// pattern or a deterministic high-severity signal (honeypot / exact JA4H-bot
+	// match), which do not depend on the identity the allowlist vouches for.
 	ddosDetected, ddosInfo := e.isDDoSPattern(signals, asnFloodWeight)
 
 	// Check if this traffic pattern has been learned as legitimate
@@ -2351,8 +2361,8 @@ func (e *Engine) handleDetection(key string, signals []Signal, ewmaBaseline, con
 		}
 	}
 
-	// Honeypot hits and JA4H known-bot matches are deterministic high-severity
-	// signals; lift rule confidence to the floor blendMLConfidence protects so a
+	// Honeypot hits and exact JA4H known-bot matches are deterministic
+	// high-severity signals; lift rule confidence to the floor blendMLConfidence protects so a
 	// strong-legitimate ML verdict cannot cap them down to legitimate (mirrors
 	// the known-scanner boost above).
 	if containsDeterministicHighSeverity(signals) {
