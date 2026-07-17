@@ -153,3 +153,19 @@ func TestDeriveAppCategoryScript(t *testing.T) {
 		t.Fatalf("expected script, got %q", cat)
 	}
 }
+
+func TestFindByHeadersPrefixUsesIndex(t *testing.T) {
+	d := NewDownloader(t.TempDir()+"/cache.json", logrus.New())
+	d.applyEntries([]JA4Entry{
+		{Application: "curl", JA4HFingerprint: "ge11nn05enus_aabbccddeeff_000000000000_000000000000"},
+		{Application: "firefox", JA4HFingerprint: "ge20nn09enus_112233445566_000000000000_000000000000"},
+	}, "test", "v1")
+
+	info, found := d.FindByHeadersPrefix("ge11nn05enus_aabbccddeeff")
+	if !found || info != "curl" {
+		t.Fatalf("got (%q, %v), want (curl, true)", info, found)
+	}
+	if _, found := d.FindByHeadersPrefix("ge99nn99enus_ffffffffffff"); found {
+		t.Fatal("unknown prefix must not match")
+	}
+}
