@@ -389,6 +389,11 @@ func (f *FeedbackLoop) IncrementLearningTrainCount(ip string) {
 
 // AccumulateLearningData adds behavioral data to an IP in the learning window
 // This is called on each detection to build up a comprehensive behavioral profile
+// maxLearningUniquePaths bounds the distinct paths tracked per learning-window
+// IP so a high-volume path spray cannot grow the set without limit; the crawl
+// signal is well-established long before this many distinct paths.
+const maxLearningUniquePaths = 1000
+
 func (f *FeedbackLoop) AccumulateLearningData(ip string, data LearningData) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -406,8 +411,10 @@ func (f *FeedbackLoop) AccumulateLearningData(ip string, data LearningData) {
 		learning.JA4H = data.JA4H
 	}
 
-	// Add unique paths
-	if data.Path != "" {
+	// Add unique paths, bounded: without a cap a learning-window IP that sends
+	// a high volume of distinct paths grows this map without limit for the full
+	// window. Once at the cap the crawl signal is already well-established.
+	if data.Path != "" && len(learning.UniquePaths) < maxLearningUniquePaths {
 		learning.UniquePaths[data.Path] = true
 	}
 
@@ -435,8 +442,10 @@ func (f *FeedbackLoop) AccumulateLearningData(ip string, data LearningData) {
 		}
 	}
 
-	// Detect path crawling pattern (sequential or alphabetical paths)
-	if len(learning.UniquePaths) >= 5 {
+	// Detect path crawling pattern (sequential or alphabetical paths). Once
+	// detected it stays detected, so skip the O(n) rescan on every subsequent
+	// event for the same learning-window IP.
+	if !learning.PathCrawlDetected && len(learning.UniquePaths) >= 5 {
 		learning.PathCrawlDetected = detectPathCrawlPattern(learning.UniquePaths)
 	}
 

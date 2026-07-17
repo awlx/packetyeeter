@@ -183,17 +183,31 @@ func TestVerificationCacheRespectsSizeCap(t *testing.T) {
 	v := newCrawlerVerifier(nil, resolver, time.Second, time.Minute)
 	v.maxCacheEntries = 50
 
-	for i := 0; i < 500; i++ {
+	reachedCap := false
+	sawHeadroomAfterCap := false
+	for i := range 500 {
 		ip := net.ParseIP(fmt.Sprintf("203.0.113.%d", i%256))
 		key := fmt.Sprintf("%s|googlebot-%d", ip.String(), i)
 		v.storeVerification(key, VerificationFailed)
 		if len(v.cache) > v.maxCacheEntries {
 			t.Fatalf("cache grew beyond cap: got %d entries, want <= %d", len(v.cache), v.maxCacheEntries)
 		}
+		if len(v.cache) >= v.maxCacheEntries {
+			reachedCap = true
+		}
+		// Batch eviction drops the cache below the cap once it fills, so the O(n)
+		// oldest-scan runs once per ~cap/10 inserts instead of on every insert.
+		// One-at-a-time eviction would keep it pinned exactly at the cap forever.
+		if reachedCap && len(v.cache) < v.maxCacheEntries {
+			sawHeadroomAfterCap = true
+		}
 	}
 
-	if len(v.cache) != v.maxCacheEntries {
-		t.Fatalf("expected cache to settle at cap %d entries, got %d", v.maxCacheEntries, len(v.cache))
+	if !sawHeadroomAfterCap {
+		t.Fatal("expected batch eviction to leave headroom below the cap after filling; cache stayed pinned at cap (per-insert eviction)")
+	}
+	if len(v.cache) < v.maxCacheEntries-v.maxCacheEntries/10-1 {
+		t.Fatalf("cache evicted too aggressively: got %d entries, want >= %d", len(v.cache), v.maxCacheEntries-v.maxCacheEntries/10-1)
 	}
 }
 

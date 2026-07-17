@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -835,13 +836,12 @@ func (e *Engine) worker(id int) {
 
 // processSignal handles a single signal
 // ASN tracking helpers
-func (e *Engine) markASNActive(asn, org string, ip net.IP) {
-	if asn == "" || asn == "Unknown" || ip == nil {
+func (e *Engine) markASNActive(asn, org, ipStr string, now time.Time) {
+	if asn == "" || asn == "Unknown" || ipStr == "" {
 		return
 	}
 	e.asnMapsMu.Lock()
 	defer e.asnMapsMu.Unlock()
-	ipStr := ip.String()
 	if e.asnActiveIPs[asn] == nil {
 		if len(e.asnActiveIPs) >= 5000 {
 			return
@@ -850,7 +850,7 @@ func (e *Engine) markASNActive(asn, org string, ip net.IP) {
 	}
 	e.asnOrg[asn] = org
 	if _, exists := e.asnActiveIPs[asn][ipStr]; exists || len(e.asnActiveIPs[asn]) < 5000 {
-		e.asnActiveIPs[asn][ipStr] = time.Now()
+		e.asnActiveIPs[asn][ipStr] = now
 	}
 	active := len(e.asnActiveIPs[asn])
 	abusive := len(e.asnAbusiveIPs[asn])
@@ -1249,10 +1249,18 @@ func (e *Engine) processSignal(signal Signal, windowSignals map[string][]Signal,
 
 	signal.Type = CanonicalizeSignalType(signal.Type)
 
+	// Hoist the two per-signal invariants: net.IP.String() formats and
+	// allocates on every call (it was recomputed up to six times below),
+	// and the clock was read four times. This is the hottest loop in the
+	// analyzer.
+	var ipStr string
+	if signal.IP != nil {
+		ipStr = signal.IP.String()
+	}
+	now := start
+
 	// Capture pre-detection event for potential session recording
 	if signal.IP != nil {
-		ipStr := signal.IP.String()
-
 		// Check if IP is in learning window before acquiring pre-detection lock
 		if e.feedback != nil && e.feedback.IsInLearningWindow(ipStr) {
 			e.capturePreDetectionEvent(ipStr, signal)
@@ -1289,7 +1297,7 @@ func (e *Engine) processSignal(signal Signal, windowSignals map[string][]Signal,
 			Timestamp: signal.Timestamp,
 			Metadata:  signal.Metadata,
 		}
-		e.historyManager.AddEvent(signal.IP.String(), event)
+		e.historyManager.AddEvent(ipStr, event)
 	}
 
 	metrics.AISignalsTotal.Inc()
@@ -1321,7 +1329,7 @@ func (e *Engine) processSignal(signal Signal, windowSignals map[string][]Signal,
 	}
 	metrics.AISignalsByASN.WithLabelValues(asnTag, orgTag, string(signal.Type)).Inc()
 	// Track active IPs per ASN for proportional scaling
-	e.markASNActive(asnTag, orgTag, signal.IP)
+	e.markASNActive(asnTag, orgTag, ipStr, now)
 
 	if e.reputation != nil && signal.IP != nil {
 		weight := signal.Weight
@@ -1354,13 +1362,12 @@ func (e *Engine) processSignal(signal Signal, windowSignals map[string][]Signal,
 		// AI-engine workers all calling into the same reputation.Engine
 		// per signal, cutting per-signal lock acquisitions reduces
 		// contention that otherwise serializes the workers.
-		e.reputation.RecordSignal(signal.IP.String(), weight, asn, asnWeight, signal.JA4H, ja4Weight, string(signal.Type))
+		e.reputation.RecordSignal(ipStr, weight, asn, asnWeight, signal.JA4H, ja4Weight, string(signal.Type))
 	}
 
 	e.metricsMu.Lock()
 	if signal.IP != nil {
-		ipStr := signal.IP.String()
-		if e.admitMetricEntityLocked("ip:"+ipStr, e.signalsByIP, ipStr, time.Now()) {
+		if e.admitMetricEntityLocked("ip:"+ipStr, e.signalsByIP, ipStr, now) {
 			e.signalsByIP[ipStr]++
 			if e.signalTypesByIP[ipStr] == nil {
 				e.signalTypesByIP[ipStr] = make(map[string]uint64)
@@ -1373,7 +1380,7 @@ func (e *Engine) processSignal(signal Signal, windowSignals map[string][]Signal,
 		}
 	}
 	if signal.ASN != "" {
-		if e.admitMetricEntityLocked("asn:"+signal.ASN, e.signalsByASN, signal.ASN, time.Now()) {
+		if e.admitMetricEntityLocked("asn:"+signal.ASN, e.signalsByASN, signal.ASN, now) {
 			e.signalsByASN[signal.ASN]++
 			if e.signalTypesByASN[signal.ASN] == nil {
 				e.signalTypesByASN[signal.ASN] = make(map[string]uint64)
@@ -1386,7 +1393,7 @@ func (e *Engine) processSignal(signal Signal, windowSignals map[string][]Signal,
 		}
 	}
 	if signal.JA4H != "" {
-		if e.admitMetricEntityLocked("ja4h:"+signal.JA4H, e.signalsByJA4H, signal.JA4H, time.Now()) {
+		if e.admitMetricEntityLocked("ja4h:"+signal.JA4H, e.signalsByJA4H, signal.JA4H, now) {
 			e.signalsByJA4H[signal.JA4H]++
 			if e.signalTypesByJA4H[signal.JA4H] == nil {
 				e.signalTypesByJA4H[signal.JA4H] = make(map[string]uint64)
@@ -1400,8 +1407,14 @@ func (e *Engine) processSignal(signal Signal, windowSignals map[string][]Signal,
 	}
 	e.metricsMu.Unlock()
 
-	key := signalRouteKey(signal)
-	if key == "" {
+	// Same routing as signalRouteKey, reusing the hoisted ipStr.
+	var key string
+	switch {
+	case signal.JA4H != "":
+		key = "ja4h:" + signal.JA4H
+	case ipStr != "":
+		key = "ip:" + ipStr
+	default:
 		return
 	}
 
@@ -1932,6 +1945,13 @@ func (e *Engine) isDDoSPattern(signals []Signal, asnFloodWeight float64) (bool, 
 }
 
 // checkAdaptiveDetection uses EWMA baseline to detect anomalies
+// maxEWMAEntries bounds the adaptive-detection baseline map. When it fills we
+// evict the oldest entries rather than refusing to evaluate new keys: the key is
+// derived from client-controlled JA4H/IP, so failing open on a full map would
+// let a churn of distinct identifiers silently disable adaptive detection for
+// every other key.
+const maxEWMAEntries = 20000
+
 func (e *Engine) checkAdaptiveDetection(key string, currentCount int) (bool, float64) {
 	now := time.Now()
 	current := float64(currentCount)
@@ -1941,8 +1961,10 @@ func (e *Engine) checkAdaptiveDetection(key string, currentCount int) (bool, flo
 
 	st := e.ewmaMap[key]
 	if st == nil {
-		if len(e.ewmaMap) >= 20000 {
-			return false, current
+		if len(e.ewmaMap) >= maxEWMAEntries {
+			// Evict a batch of the oldest-by-last-seen entries in one pass so the
+			// scan amortizes over many inserts instead of running per new key.
+			evictOldestEWMA(e.ewmaMap, maxEWMAEntries/10)
 		}
 		st = &ewma.State{Value: current, LastTime: now}
 		e.ewmaMap[key] = st
@@ -1957,6 +1979,56 @@ func (e *Engine) checkAdaptiveDetection(key string, currentCount int) (bool, flo
 	}
 
 	return false, st.Value
+}
+
+// containsDeterministicHighSeverity reports whether the signal set includes a
+// deterministic, high-severity indicator that must not be suppressed by a
+// learned-legitimate allowlist match or erased by a strong-legitimate ML
+// verdict: a honeypot hit (client reached a hidden trap URL) or a JA4H match
+// against a known-bot TLS fingerprint. Both are properties of the traffic
+// itself, independent of the spoofable UA/JA4H/ASN identity an allowlist vouches
+// for.
+func containsDeterministicHighSeverity(signals []Signal) bool {
+	for i := range signals {
+		switch signals[i].Type {
+		case SignalHoneypot:
+			return true
+		case SignalJA4HBotMatch:
+			// Only an exact JA4DB match is a reliable, deterministic
+			// attribution. A wildcard/coarse-prefix collision (or a match with
+			// no recorded type) is uncertain, so it must not bypass the
+			// learned-legitimate allowlist or floor confidence - it still
+			// contributes its weight to scoring. Absent/non-string match_type
+			// fails closed to "not deterministic" (fewer false-positive blocks).
+			if mt, _ := signals[i].Metadata["match_type"].(string); mt == "exact" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// evictOldestEWMA removes the n entries with the oldest LastTime from m in a
+// single sorted pass. Caller holds e.ewmaMu.
+func evictOldestEWMA(m map[string]*ewma.State, n int) {
+	if n <= 0 || len(m) == 0 {
+		return
+	}
+	type keyed struct {
+		key string
+		ts  time.Time
+	}
+	entries := make([]keyed, 0, len(m))
+	for k, s := range m {
+		entries = append(entries, keyed{key: k, ts: s.LastTime})
+	}
+	slices.SortFunc(entries, func(a, b keyed) int { return a.ts.Compare(b.ts) })
+	if n > len(entries) {
+		n = len(entries)
+	}
+	for i := 0; i < n; i++ {
+		delete(m, entries[i].key)
+	}
 }
 
 // handleDetection processes a confirmed detection
@@ -2083,11 +2155,19 @@ func (e *Engine) handleDetection(key string, signals []Signal, ewmaBaseline, con
 		}
 	}
 
+	// DDoS verdict computed up front: a learned-legitimate allowlist match is
+	// keyed on client-controlled UA/JA4H/ASN and must not suppress a DDoS/flood
+	// pattern or a deterministic high-severity signal (honeypot / exact JA4H-bot
+	// match), which do not depend on the identity the allowlist vouches for.
+	ddosDetected, ddosInfo := e.isDDoSPattern(signals, asnFloodWeight)
+
 	// Check if this traffic pattern has been learned as legitimate
 	if e.feedback != nil {
 		if matched, label, patternConfidence, patternKey := e.feedback.CheckPattern(userAgent, firstSignal.ASN, ja4h); matched {
-			if label == "legitimate" && patternConfidence >= 0.7 {
-				// This is a known legitimate pattern - skip detection
+			if label == "legitimate" && patternConfidence >= 0.7 &&
+				!ddosDetected && !containsDeterministicHighSeverity(signals) {
+				// A known legitimate pattern with no overriding high-severity or
+				// DDoS evidence - skip detection.
 				logrus.WithFields(logrus.Fields{
 					"key":                key,
 					"pattern_key":        patternKey,
@@ -2134,7 +2214,7 @@ func (e *Engine) handleDetection(key string, signals []Signal, ewmaBaseline, con
 		return
 	}
 
-	ddosDetected, ddosInfo := e.isDDoSPattern(signals, asnFloodWeight)
+	// ddosDetected/ddosInfo were computed above (before the legitimate-pattern gate).
 	if !ddosDetected && botCategory == BotCategoryDDoS {
 		botCategory = BotCategoryUnknown
 	}
@@ -2291,6 +2371,14 @@ func (e *Engine) handleDetection(key string, signals []Signal, ewmaBaseline, con
 				confidence = math.Min(confidence+0.05, 1.0)
 			}
 		}
+	}
+
+	// Honeypot hits and exact JA4H known-bot matches are deterministic
+	// high-severity signals; lift rule confidence to the floor blendMLConfidence protects so a
+	// strong-legitimate ML verdict cannot cap them down to legitimate (mirrors
+	// the known-scanner boost above).
+	if containsDeterministicHighSeverity(signals) {
+		confidence = math.Max(confidence, strongRuleConfidenceFloor)
 	}
 
 	if behavioralProfile != nil && behavioralProfile.IsBursty {

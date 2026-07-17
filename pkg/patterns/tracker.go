@@ -101,7 +101,7 @@ func (pt *PatternTracker) RecordConnection(ip net.IP, meta ConnectionMetadata) {
 
 		// Enforce max patterns
 		if len(pt.patterns) > pt.maxPatterns {
-			pt.evictOldestPattern()
+			pt.evictOldestPatterns()
 		}
 	}
 
@@ -618,8 +618,11 @@ func (pt *PatternTracker) isSequentialPorts(sequence []uint16) bool {
 	return float64(sequential)/float64(checkLen-1) > 0.6
 }
 
-func (pt *PatternTracker) evictOldestPattern() {
-	mapcleaner.RemoveOldestEntry(pt.patterns, func(_ string, pattern *ConnectionPattern) time.Time {
+// evictOldestPatterns evicts a batch so the O(n) oldest-scan runs once per
+// batch instead of on every new IP — under a spoofed-source flood that scan is
+// per-packet work serialized behind pt.mu (~3.6ms per packet at the 100k cap).
+func (pt *PatternTracker) evictOldestPatterns() {
+	mapcleaner.EnforceMaxSizeBatch(pt.patterns, pt.maxPatterns, func(_ string, pattern *ConnectionPattern) time.Time {
 		return pattern.LastSeen
 	})
 }

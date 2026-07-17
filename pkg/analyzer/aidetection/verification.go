@@ -3,6 +3,7 @@ package aidetection
 import (
 	"PacketYeeter/pkg/analyzer/ja4db"
 	"PacketYeeter/pkg/metrics"
+	"PacketYeeter/pkg/utils/mapcleaner"
 	"context"
 	"net"
 	"strings"
@@ -268,14 +269,16 @@ func (v *CrawlerVerifier) storeVerification(cacheKey string, status Verification
 		ttl = v.negativeCacheTTL
 	}
 
-	if _, exists := v.cache[cacheKey]; !exists && len(v.cache) >= v.effectiveMaxCacheEntries() {
-		v.evictOneLocked()
-	}
-
 	v.cache[cacheKey] = crawlerVerificationCacheEntry{
 		status:    status,
 		expiresAt: v.now().Add(ttl),
 	}
+	// Cap the cache size by evicting the entries closest to expiry. Batching
+	// (rather than an O(n) oldest-scan per insert) matters here because a
+	// crawler-UA flood of distinct source IPs drives this insert path under
+	// cacheMu on the signal hot path.
+	mapcleaner.EnforceMaxSizeBatch(v.cache, v.effectiveMaxCacheEntries(),
+		func(_ string, e crawlerVerificationCacheEntry) time.Time { return e.expiresAt })
 }
 
 func (v *CrawlerVerifier) effectiveMaxCacheEntries() int {
@@ -283,27 +286,6 @@ func (v *CrawlerVerifier) effectiveMaxCacheEntries() int {
 		return maxVerificationCacheEntries
 	}
 	return v.maxCacheEntries
-}
-
-// evictOneLocked removes a single entry from the cache to make room for a
-// new one once the size cap has been reached. It must be called with
-// cacheMu held. It evicts the entry closest to expiry (oldest-first by
-// remaining TTL) rather than an arbitrary/newest entry, so eviction doesn't
-// cause cache-miss thrashing for entries that were just verified.
-func (v *CrawlerVerifier) evictOneLocked() {
-	var oldestKey string
-	var oldestExpiry time.Time
-	first := true
-	for key, entry := range v.cache {
-		if first || entry.expiresAt.Before(oldestExpiry) {
-			oldestKey = key
-			oldestExpiry = entry.expiresAt
-			first = false
-		}
-	}
-	if !first {
-		delete(v.cache, oldestKey)
-	}
 }
 
 func formatJA4Info(entry ja4db.JA4Entry) string {
