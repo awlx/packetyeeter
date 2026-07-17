@@ -13,11 +13,13 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
+	"google.golang.org/grpc/peer"
 
 	apiv1 "PacketYeeter/api/proto/v1"
 	"PacketYeeter/pkg/analyzer/aidetection"
@@ -202,6 +204,7 @@ type Analyzer struct {
 	// Connected collectors
 	collectors   map[string]*collectorStream
 	collectorsMu sync.RWMutex
+	collectorSeq atomic.Uint64
 
 	// gRPC server
 	grpcServer *grpc.Server
@@ -577,24 +580,36 @@ func (a *Analyzer) Start() error {
 	return nil
 }
 
+// registerCollector keys the stream by peer address plus a monotonic sequence
+// number. A shared constant key (the old ctx.Value("collector-id") fallback,
+// which nothing ever set) let a second collector's connect overwrite the
+// first's stream and a disconnect evict a still-live sibling, silently
+// stopping Broadcast enforcement for the whole fleet.
+func (a *Analyzer) registerCollector(ctx context.Context, cs *collectorStream) string {
+	addr := "unknown"
+	if p, ok := peer.FromContext(ctx); ok && p.Addr != nil {
+		addr = p.Addr.String()
+	}
+	id := fmt.Sprintf("%s#%d", addr, a.collectorSeq.Add(1))
+
+	a.collectorsMu.Lock()
+	a.collectors[id] = cs
+	a.collectorsMu.Unlock()
+	return id
+}
+
+func (a *Analyzer) unregisterCollector(id string) {
+	a.collectorsMu.Lock()
+	delete(a.collectors, id)
+	a.collectorsMu.Unlock()
+}
+
 // StreamSignals implements the bidirectional streaming RPC
 func (a *Analyzer) StreamSignals(stream apiv1.AnalyzerService_StreamSignalsServer) error {
 	ctx := stream.Context()
-	collectorID := ctx.Value("collector-id")
-	if collectorID == nil {
-		collectorID = "unknown"
-	}
-
 	cs := &collectorStream{stream: stream}
-	a.collectorsMu.Lock()
-	a.collectors[collectorID.(string)] = cs
-	a.collectorsMu.Unlock()
-
-	defer func() {
-		a.collectorsMu.Lock()
-		delete(a.collectors, collectorID.(string))
-		a.collectorsMu.Unlock()
-	}()
+	collectorID := a.registerCollector(ctx, cs)
+	defer a.unregisterCollector(collectorID)
 
 	logrus.WithField("collector", collectorID).Info("Collector connected")
 
@@ -641,12 +656,19 @@ func (a *Analyzer) StreamSignals(stream apiv1.AnalyzerService_StreamSignalsServe
 }
 
 func (a *Analyzer) processSignal(sig *apiv1.Signal, cs *collectorStream) {
-	// Check for reputation penalty request
+	// Check for reputation penalty request. penalty_key/penalty_type from
+	// wire metadata are never honored as the target: the signal plane is an
+	// unauthenticated gRPC listener, so an arbitrary target would let any
+	// peer poison a third party's reputation and get it blocked fleet-wide.
+	// A penalty request may only ever penalize the signal's own source IP.
 	if sig.Metadata != nil {
-		if penaltyKey, ok := sig.Metadata["penalty_key"]; ok {
-			penaltyType := sig.Metadata["penalty_type"]
-			reason := sig.Metadata["penalty_reason"]
-			a.Reputation.Penalize(penaltyKey, reputation.EntityType(penaltyType), sig.Weight, reason)
+		if _, ok := sig.Metadata["penalty_key"]; ok {
+			if len(sig.Ip) == 0 || a.Reputation == nil {
+				logrus.WithField("signal_type", sig.Type.String()).
+					Warn("Dropping reputation penalty request with no source IP to bind it to")
+				return
+			}
+			a.Reputation.Penalize(net.IP(sig.Ip).String(), reputation.TypeIP, sig.Weight, sig.Metadata["penalty_reason"])
 			return
 		}
 	}
@@ -745,11 +767,19 @@ func (a *Analyzer) processSignal(sig *apiv1.Signal, cs *collectorStream) {
 
 	// Record connection pattern
 	if a.PatternTracker != nil && sig.TcpContext != nil {
+		// SIMPLIFIED: the proto TCPContext carries no packet size, dest
+		// port, connection id, or handshake-success field, so the pattern
+		// tracker's packet-size-uniformity, port-scan, and connection-reuse
+		// detectors receive no input through this path and cannot fire; only
+		// the TTL/window/MSS/ASN and incomplete-handshake patterns are live.
+		// Enabling the rest requires new TCPContext proto fields plus
+		// collector support.
 		meta := patterns.ConnectionMetadata{
-			TTL:        uint8(sig.TcpContext.Ttl),
-			WindowSize: uint16(sig.TcpContext.WindowSize),
-			MSS:        uint16(sig.TcpContext.Mss),
-			ASN:        asn,
+			TTL:                   uint8(sig.TcpContext.Ttl),
+			WindowSize:            uint16(sig.TcpContext.WindowSize),
+			MSS:                   uint16(sig.TcpContext.Mss),
+			ASN:                   asn,
+			IsIncompleteHandshake: sig.Type == apiv1.SignalType_SIGNAL_INCOMPLETE_HANDSHAKE,
 		}
 		a.PatternTracker.RecordConnection(ip, meta)
 	}
@@ -918,16 +948,31 @@ func (a *Analyzer) sendCommand(cs *collectorStream, cmd *apiv1.Command) {
 		return
 	}
 
-	// Dedup block commands per IP for a short TTL
-	if cmd.Type == apiv1.CommandType_COMMAND_BLOCK_IP && len(cmd.Ip) > 0 {
-		ip := net.IP(cmd.Ip)
-		if a.wasRecentlyBlocked(ip) {
-			logrus.WithFields(logrus.Fields{"ip": ip.String()}).Debug("Block command skipped (recently blocked)")
-			return
-		}
-		a.markBlocked(ip)
+	if a.isDuplicateBlockCommand(cmd) {
+		return
 	}
 
+	a.sendToStream(cs, cmd)
+}
+
+// isDuplicateBlockCommand dedups block commands per IP for a short TTL,
+// marking the IP as blocked when it is not a duplicate. It must run once per
+// block decision — never once per collector — or a multi-collector fan-out
+// suppresses the command for every collector after the first.
+func (a *Analyzer) isDuplicateBlockCommand(cmd *apiv1.Command) bool {
+	if cmd.Type != apiv1.CommandType_COMMAND_BLOCK_IP || len(cmd.Ip) == 0 {
+		return false
+	}
+	ip := net.IP(cmd.Ip)
+	if a.wasRecentlyBlocked(ip) {
+		logrus.WithFields(logrus.Fields{"ip": ip.String()}).Debug("Block command skipped (recently blocked)")
+		return true
+	}
+	a.markBlocked(ip)
+	return false
+}
+
+func (a *Analyzer) sendToStream(cs *collectorStream, cmd *apiv1.Command) {
 	cs.sendMu.Lock()
 	defer cs.sendMu.Unlock()
 
@@ -971,11 +1016,15 @@ func (a *Analyzer) Broadcast(cmd *apiv1.Command) {
 		logrus.WithFields(logrus.Fields{"cmd": cmd.String()}).Debug("Dry run: not broadcasting command")
 		return
 	}
+	if a.isDuplicateBlockCommand(cmd) {
+		return
+	}
+
 	a.collectorsMu.RLock()
 	defer a.collectorsMu.RUnlock()
 
 	for _, cs := range a.collectors {
-		go a.sendCommand(cs, cmd)
+		go a.sendToStream(cs, cmd)
 	}
 }
 
@@ -1376,7 +1425,7 @@ func (a *Analyzer) updatePathEntropy(ip net.IP, path string) (float64, bool, boo
 	// prune
 	i := 0
 	for i < len(pw.Events) {
-		if now.Sub(pw.Events[i].Ts) <= window && len(pw.Events) <= maxEvents {
+		if now.Sub(pw.Events[i].Ts) <= window && len(pw.Events)-i <= maxEvents {
 			break
 		}
 		old := pw.Events[i]
@@ -1581,7 +1630,7 @@ func (a *Analyzer) trackHTTPErrors(ip net.IP, statusCode uint32, path string) (i
 	// Prune old events
 	i := 0
 	for i < len(w.Events) {
-		if now.Sub(w.Events[i].Ts) <= window && len(w.Events) <= maxEvents {
+		if now.Sub(w.Events[i].Ts) <= window && len(w.Events)-i <= maxEvents {
 			break
 		}
 		old := w.Events[i]
