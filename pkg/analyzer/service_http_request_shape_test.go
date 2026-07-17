@@ -1,6 +1,9 @@
 package analyzer
 
-import "testing"
+import (
+	"PacketYeeter/pkg/analyzer/aidetection"
+	"testing"
+)
 
 func TestIsBrowserHeaderOptionalRequest(t *testing.T) {
 	cases := []struct {
@@ -45,5 +48,70 @@ func TestIsProtocolOrBackgroundRequest(t *testing.T) {
 	}
 	if isProtocolOrBackgroundRequest("GET", "", "/wiki/start", "text/html", "") {
 		t.Fatal("expected normal HTML page to keep entropy/header checks")
+	}
+}
+
+// TestJA4MatchSignalGatesOnExactMatch verifies that a JA4DB "wildcard_tls"
+// match (which only shares the coarse JA4 prefix with an unrelated entry,
+// see ja4db.ja4WildcardPrefix) is never classified as a browser signal and
+// never carries ja4_info - both of which would otherwise let an
+// attacker-crafted fingerprint that merely collides on the coarse prefix
+// impersonate a browser and evade bot detection.
+func TestJA4MatchSignalGatesOnExactMatch(t *testing.T) {
+	cases := []struct {
+		name               string
+		isBrowser          bool
+		matchType          string
+		wantSigType        aidetection.SignalType
+		wantWeight         float64
+		wantIncludeJA4Info bool
+	}{
+		{
+			name:               "exact browser match: browser signal with ja4_info",
+			isBrowser:          true,
+			matchType:          "exact",
+			wantSigType:        aidetection.SignalBrowserDetected,
+			wantWeight:         1.0,
+			wantIncludeJA4Info: true,
+		},
+		{
+			name:               "wildcard browser-looking match: NOT a browser signal, no ja4_info",
+			isBrowser:          true,
+			matchType:          "wildcard_tls",
+			wantSigType:        aidetection.SignalJA4HBotMatch,
+			wantWeight:         20.0,
+			wantIncludeJA4Info: false,
+		},
+		{
+			name:               "exact non-browser match: bot-match signal with ja4_info",
+			isBrowser:          false,
+			matchType:          "exact",
+			wantSigType:        aidetection.SignalJA4HBotMatch,
+			wantWeight:         20.0,
+			wantIncludeJA4Info: true,
+		},
+		{
+			name:               "wildcard non-browser match: bot-match signal, no ja4_info",
+			isBrowser:          false,
+			matchType:          "wildcard_tls",
+			wantSigType:        aidetection.SignalJA4HBotMatch,
+			wantWeight:         20.0,
+			wantIncludeJA4Info: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sigType, weight, includeJA4Info := ja4MatchSignal(tc.isBrowser, tc.matchType)
+			if sigType != tc.wantSigType {
+				t.Errorf("sigType = %v, want %v", sigType, tc.wantSigType)
+			}
+			if weight != tc.wantWeight {
+				t.Errorf("weight = %v, want %v", weight, tc.wantWeight)
+			}
+			if includeJA4Info != tc.wantIncludeJA4Info {
+				t.Errorf("includeJA4Info = %v, want %v", includeJA4Info, tc.wantIncludeJA4Info)
+			}
+		})
 	}
 }
