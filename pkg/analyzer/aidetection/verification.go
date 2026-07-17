@@ -5,11 +5,13 @@ import (
 	"PacketYeeter/pkg/metrics"
 	"context"
 	"net"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/sirupsen/logrus"
+	"golang.org/x/sync/singleflight"
 )
 
 // JA4Verifier interface for JA4 database lookups
@@ -53,6 +55,21 @@ type CrawlerVerifier struct {
 	now     func() time.Time
 	cacheMu sync.Mutex
 	cache   map[string]crawlerVerificationCacheEntry
+
+	// botNamePriority holds the keys of verifiedDomains in a fixed, stable
+	// order. VerifyCrawler scans this slice (rather than ranging the map
+	// directly) so that a User-Agent containing multiple known bot-name
+	// substrings always resolves to the same claimedBot - and therefore the
+	// same cache key - across calls. Go randomizes map iteration order per
+	// range, which previously made the choice (and the resulting
+	// verified/failed outcome) nondeterministic for such UAs.
+	botNamePriority []string
+
+	// verifyGroup de-duplicates concurrent uncached verification lookups
+	// that share the same cache key, so a burst of concurrent detection
+	// passes for the same (IP, claimedBot) performs one DNS lookup instead
+	// of one per caller.
+	verifyGroup singleflight.Group
 }
 
 // NewCrawlerVerifier creates a new crawler verifier
@@ -76,6 +93,52 @@ func newCrawlerVerifier(ja4DB JA4Verifier, resolver crawlerDNSResolver, timeout,
 		// (relevant for tests/configs that use a very short cacheTTL).
 		negativeTTL = cacheTTL
 	}
+
+	verifiedDomains := map[string][]string{
+		// Search engines
+		"googlebot":   {".googlebot.com", ".google.com"},
+		"bingbot":     {".search.msn.com"},
+		"slurp":       {".crawl.yahoo.net"},
+		"duckduckbot": {".duckduckgo.com"},
+		"baiduspider": {".crawl.baidu.com", ".crawl.baidu.jp"},
+		"yandexbot":   {".yandex.com", ".yandex.net", ".yandex.ru"},
+
+		// AI crawlers
+		"gptbot":             {".openai.com"},
+		"claudebot":          {".anthropic.com"},
+		"cohere-ai":          {".cohere.com"},
+		"perplexitybot":      {".perplexity.ai"},
+		"anthropic-ai":       {".anthropic.com"},
+		"meta-externalagent": {".fbsv.net", ".facebook.com"},
+		"bytespider":         {".bytedance.com"},
+
+		// Social media
+		"facebookexternalhit": {".fbsv.net", ".facebook.com"},
+		"twitterbot":          {".twitter.com"},
+		"linkedinbot":         {".linkedin.com"},
+
+		// Monitoring
+		"pingdom":     {".pingdom.com"},
+		"uptimerobot": {".uptimerobot.com"},
+
+		// SEO/marketing crawlers - widely used, well-documented,
+		// respect robots.txt, and publish reverse-DNS verification
+		// like the search engines above. Live production data showed
+		// SEMrushBot traffic being blocked purely because it wasn't in
+		// this list at all (VerificationSkipped, no dampening),
+		// combined with the always-true bot_ua/missing_accept_language
+		// signals every crawler naturally trips.
+		"semrushbot": {".semrush.com"},
+	}
+
+	botNamePriority := make([]string, 0, len(verifiedDomains))
+	for botName := range verifiedDomains {
+		botNamePriority = append(botNamePriority, botName)
+	}
+	// Sorted for a stable, deterministic scan order - see botNamePriority
+	// field doc.
+	sort.Strings(botNamePriority)
+
 	return &CrawlerVerifier{
 		ja4DB:            ja4DB,
 		resolver:         resolver,
@@ -85,42 +148,8 @@ func newCrawlerVerifier(ja4DB JA4Verifier, resolver crawlerDNSResolver, timeout,
 		maxCacheEntries:  maxVerificationCacheEntries,
 		now:              time.Now,
 		cache:            make(map[string]crawlerVerificationCacheEntry),
-		verifiedDomains: map[string][]string{
-			// Search engines
-			"googlebot":   {".googlebot.com", ".google.com"},
-			"bingbot":     {".search.msn.com"},
-			"slurp":       {".crawl.yahoo.net"},
-			"duckduckbot": {".duckduckgo.com"},
-			"baiduspider": {".crawl.baidu.com", ".crawl.baidu.jp"},
-			"yandexbot":   {".yandex.com", ".yandex.net", ".yandex.ru"},
-
-			// AI crawlers
-			"gptbot":             {".openai.com"},
-			"claudebot":          {".anthropic.com"},
-			"cohere-ai":          {".cohere.com"},
-			"perplexitybot":      {".perplexity.ai"},
-			"anthropic-ai":       {".anthropic.com"},
-			"meta-externalagent": {".fbsv.net", ".facebook.com"},
-			"bytespider":         {".bytedance.com"},
-
-			// Social media
-			"facebookexternalhit": {".fbsv.net", ".facebook.com"},
-			"twitterbot":          {".twitter.com"},
-			"linkedinbot":         {".linkedin.com"},
-
-			// Monitoring
-			"pingdom":     {".pingdom.com"},
-			"uptimerobot": {".uptimerobot.com"},
-
-			// SEO/marketing crawlers - widely used, well-documented,
-			// respect robots.txt, and publish reverse-DNS verification
-			// like the search engines above. Live production data showed
-			// SEMrushBot traffic being blocked purely because it wasn't in
-			// this list at all (VerificationSkipped, no dampening),
-			// combined with the always-true bot_ua/missing_accept_language
-			// signals every crawler naturally trips.
-			"semrushbot": {".semrush.com"},
-		},
+		verifiedDomains:  verifiedDomains,
+		botNamePriority:  botNamePriority,
 	}
 }
 
@@ -146,17 +175,7 @@ type crawlerVerificationCacheEntry struct {
 
 // VerifyCrawler attempts to verify a crawler's identity using reverse DNS
 func (v *CrawlerVerifier) VerifyCrawler(ip net.IP, userAgent string) VerificationStatus {
-	ua := strings.ToLower(userAgent)
-
-	// Find potential crawler claim in user agent
-	var claimedBot string
-	for botName := range v.verifiedDomains {
-		if strings.Contains(ua, botName) {
-			claimedBot = botName
-			break
-		}
-	}
-
+	claimedBot := v.claimedBotFor(userAgent)
 	if claimedBot == "" {
 		// No crawler claim found
 		return VerificationSkipped
@@ -167,9 +186,30 @@ func (v *CrawlerVerifier) VerifyCrawler(ip net.IP, userAgent string) Verificatio
 		return status
 	}
 
-	status := v.verifyCrawlerUncached(ip, claimedBot)
-	v.storeVerification(cacheKey, status)
-	return status
+	// singleflight collapses concurrent callers that miss the cache for the
+	// same (IP, claimedBot) into a single outbound DNS lookup instead of a
+	// thundering herd, one per caller.
+	result, _, _ := v.verifyGroup.Do(cacheKey, func() (interface{}, error) {
+		status := v.verifyCrawlerUncached(ip, claimedBot)
+		v.storeVerification(cacheKey, status)
+		return status, nil
+	})
+	return result.(VerificationStatus)
+}
+
+// claimedBotFor scans botNamePriority (a fixed, stable order) for the first
+// bot name whose substring appears in the User-Agent. Using a stable order
+// instead of ranging the verifiedDomains map directly ensures a UA
+// containing multiple bot-name substrings always resolves to the same
+// claimedBot across calls.
+func (v *CrawlerVerifier) claimedBotFor(userAgent string) string {
+	ua := strings.ToLower(userAgent)
+	for _, botName := range v.botNamePriority {
+		if strings.Contains(ua, botName) {
+			return botName
+		}
+	}
+	return ""
 }
 
 func (v *CrawlerVerifier) verifyCrawlerUncached(ip net.IP, claimedBot string) VerificationStatus {

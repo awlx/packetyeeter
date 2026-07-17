@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -256,6 +258,133 @@ func TestVerifyCrawlerPTRMismatchIsFailed(t *testing.T) {
 	if status != VerificationFailed {
 		t.Fatalf("expected a PTR record resolving to an unrelated domain to be a verification failure, got %s", status)
 	}
+}
+
+// TestVerifyCrawlerClaimedBotSelectionIsDeterministic verifies that when a
+// User-Agent contains substrings for multiple known bot names, the crawler
+// verifier always picks the same claimedBot for repeated calls with the same
+// UA. The prior implementation ranged over the verifiedDomains map with a
+// `break` on first match, which relies on Go's randomized map iteration
+// order - an attacker sending a single UA containing every known bot
+// substring would get a different verification outcome (and cache key) on
+// almost every call.
+func TestVerifyCrawlerClaimedBotSelectionIsDeterministic(t *testing.T) {
+	v := NewCrawlerVerifier(nil)
+
+	// Build a UA containing every known bot name substring so the selection
+	// logic actually has multiple candidates to choose between.
+	allBotNames := make([]string, 0, len(v.verifiedDomains))
+	for botName := range v.verifiedDomains {
+		allBotNames = append(allBotNames, botName)
+	}
+	ua := "Mozilla/5.0 (multi-claim) "
+	for _, botName := range allBotNames {
+		ua += botName + " "
+	}
+
+	first := v.claimedBotFor(ua)
+	if first == "" {
+		t.Fatalf("expected a claimed bot to be detected in multi-bot UA")
+	}
+	for i := 0; i < 200; i++ {
+		got := v.claimedBotFor(ua)
+		if got != first {
+			t.Fatalf("claimedBot selection is nondeterministic: call 1 got %q, call %d got %q", first, i+2, got)
+		}
+	}
+}
+
+// TestVerifyCrawlerMultiBotUAUsesSingleDeterministicCacheKey verifies the
+// end-to-end effect of deterministic claimedBot selection: a UA claiming
+// multiple bots must produce exactly one cache entry (and one DNS lookup)
+// across repeated calls, not a different cache key (and a fresh DNS lookup)
+// each time.
+func TestVerifyCrawlerMultiBotUAUsesSingleDeterministicCacheKey(t *testing.T) {
+	resolver := &fakeCrawlerResolver{err: errors.New("dns timeout")}
+	v := newCrawlerVerifier(nil, resolver, time.Second, time.Minute)
+
+	allBotNames := make([]string, 0, len(v.verifiedDomains))
+	for botName := range v.verifiedDomains {
+		allBotNames = append(allBotNames, botName)
+	}
+	ua := "Mozilla/5.0 (multi-claim) "
+	for _, botName := range allBotNames {
+		ua += botName + " "
+	}
+	ip := net.ParseIP("203.0.113.77")
+
+	for i := 0; i < 50; i++ {
+		v.VerifyCrawler(ip, ua)
+	}
+
+	if len(v.cache) != 1 {
+		t.Fatalf("expected exactly one cache entry for repeated calls with the same multi-bot UA, got %d", len(v.cache))
+	}
+	if resolver.addrCalls != 1 {
+		t.Fatalf("expected exactly one reverse DNS lookup across repeated calls (cache hit thereafter), got %d", resolver.addrCalls)
+	}
+}
+
+// TestVerifyCrawlerDeduplicatesConcurrentLookups verifies that concurrent
+// VerifyCrawler calls for the same (IP, claimedBot) that all miss the cache
+// perform exactly one reverse-DNS lookup instead of a thundering herd - one
+// per concurrent caller.
+func TestVerifyCrawlerDeduplicatesConcurrentLookups(t *testing.T) {
+	release := make(chan struct{})
+	resolver := &blockingCrawlerResolver{
+		release: release,
+		names:   []string{"crawl-1.googlebot.com."},
+		ips:     []net.IPAddr{{IP: net.ParseIP("66.249.66.9")}},
+	}
+	v := newCrawlerVerifier(nil, resolver, time.Second, time.Minute)
+	v.verifiedDomains["googlebot"] = []string{".googlebot.com."}
+
+	ip := net.ParseIP("66.249.66.9")
+	const concurrentCallers = 20
+
+	var wg sync.WaitGroup
+	results := make([]VerificationStatus, concurrentCallers)
+	for i := 0; i < concurrentCallers; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			results[idx] = v.VerifyCrawler(ip, "Mozilla/5.0 Googlebot/2.1")
+		}(i)
+	}
+
+	// Give every goroutine a chance to reach the DNS lookup (or block behind
+	// the in-flight de-duplication) before releasing the resolver.
+	time.Sleep(50 * time.Millisecond)
+	close(release)
+	wg.Wait()
+
+	if got := atomic.LoadInt32(&resolver.addrCalls); got != 1 {
+		t.Fatalf("expected exactly one reverse DNS lookup for %d concurrent callers sharing the same key, got %d", concurrentCallers, got)
+	}
+	for i, status := range results {
+		if status != VerificationVerified {
+			t.Fatalf("caller %d: expected verified status, got %s", i, status)
+		}
+	}
+}
+
+// blockingCrawlerResolver blocks LookupAddr until release is closed, so
+// tests can force multiple concurrent VerifyCrawler calls to overlap.
+type blockingCrawlerResolver struct {
+	addrCalls int32
+	release   chan struct{}
+	names     []string
+	ips       []net.IPAddr
+}
+
+func (r *blockingCrawlerResolver) LookupAddr(ctx context.Context, addr string) ([]string, error) {
+	atomic.AddInt32(&r.addrCalls, 1)
+	<-r.release
+	return r.names, nil
+}
+
+func (r *blockingCrawlerResolver) LookupIPAddr(ctx context.Context, host string) ([]net.IPAddr, error) {
+	return r.ips, nil
 }
 
 // TestVerifyCrawlerSEMrushBotIsVerifiable ensures SEMrushBot - a widely used,
