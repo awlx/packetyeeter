@@ -1032,14 +1032,17 @@ func (c *Collector) sendICMPRates() {
 		}
 	}
 
-	// IPv6: the XDP program populates icmp_rates_v6 identically to the v4
-	// map; without this loop IPv6 ICMP floods never reach the analyzer.
+	// IPv6: the XDP program populates icmp_rates_v6 identically to the v4 map;
+	// without this loop IPv6 ICMP floods never reach the analyzer. It carries
+	// its own per-poll budget (separate from the v4 sentCount) so a concurrent
+	// IPv4 flood that fills the v4 batch cannot starve IPv6 emission this poll.
+	sentCountV6 := 0
 	if c.Maps.ICMPRatesV6 != nil {
 		var key [16]byte
 		var rate ebpf.ICMPRate
 		iter := c.Maps.ICMPRatesV6.Iterate()
 		for iter.Next(&key, &rate) {
-			if sentCount >= rateMaxBatchSize {
+			if sentCountV6 >= rateMaxBatchSize {
 				break
 			}
 			if rate.Count == 0 {
@@ -1049,7 +1052,7 @@ func (c *Collector) sendICMPRates() {
 			if p, sent := c.emitFloodSignal(net.IP(key[:]), pps, rate,
 				apiv1.SignalType_SIGNAL_ICMP_FLOOD, "icmp6"); sent {
 				totalPPS += p
-				sentCount++
+				sentCountV6++
 			}
 		}
 	}
@@ -1057,8 +1060,8 @@ func (c *Collector) sendICMPRates() {
 	if metrics.ICMPTotalRate != nil {
 		metrics.ICMPTotalRate.Set(totalPPS)
 	}
-	if sentCount > 0 {
-		c.Logger.WithField("count", sentCount).Debug("Sent ICMP flood signals")
+	if sent := sentCount + sentCountV6; sent > 0 {
+		c.Logger.WithField("count", sent).Debug("Sent ICMP flood signals")
 	}
 }
 
@@ -1094,13 +1097,16 @@ func (c *Collector) sendUDPRates() {
 	}
 
 	// IPv6: mirror the v4 path over udp_rates_v6, which the XDP program
-	// populates the same way; otherwise IPv6 UDP floods are never reported.
+	// populates the same way; otherwise IPv6 UDP floods are never reported. Its
+	// own per-poll budget (separate from the v4 sentCount) keeps a concurrent
+	// IPv4 flood from starving IPv6 emission this poll.
+	sentCountV6 := 0
 	if c.Maps.UDPRatesV6 != nil {
 		var key [16]byte
 		var rate ebpf.ICMPRate
 		iter := c.Maps.UDPRatesV6.Iterate()
 		for iter.Next(&key, &rate) {
-			if sentCount >= rateMaxBatchSize {
+			if sentCountV6 >= rateMaxBatchSize {
 				break
 			}
 			if rate.Count == 0 {
@@ -1110,7 +1116,7 @@ func (c *Collector) sendUDPRates() {
 			if p, sent := c.emitFloodSignal(net.IP(key[:]), pps, rate,
 				apiv1.SignalType_SIGNAL_UDP_FLOOD, "udp6"); sent {
 				totalPPS += p
-				sentCount++
+				sentCountV6++
 			}
 		}
 	}
@@ -1118,8 +1124,8 @@ func (c *Collector) sendUDPRates() {
 	if metrics.UDPTotalRate != nil {
 		metrics.UDPTotalRate.Set(totalPPS)
 	}
-	if sentCount > 0 {
-		c.Logger.WithField("count", sentCount).Debug("Sent UDP flood signals")
+	if sent := sentCount + sentCountV6; sent > 0 {
+		c.Logger.WithField("count", sent).Debug("Sent UDP flood signals")
 	}
 }
 
