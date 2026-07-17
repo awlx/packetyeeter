@@ -110,6 +110,20 @@ func (pt *PatternTracker) RecordConnection(ip net.IP, meta ConnectionMetadata) {
 		}
 	}
 
+	// Track inter-connection timing before LastSeen is overwritten below:
+	// the signal detectMechanicalTiming/IsBursty need is the gap between
+	// this connection and the previous one, not the (always ~0) gap between
+	// "now" and a timestamp set moments ago. A brand-new pattern has a zero
+	// LastSeen with nothing to diff against yet, so it seeds here without
+	// recording a sample rather than producing a bogus near-zero delta.
+	if !pattern.LastSeen.IsZero() {
+		timing := time.Since(pattern.LastSeen)
+		pattern.PacketTimings = append(pattern.PacketTimings, timing)
+		if len(pattern.PacketTimings) > 100 {
+			pattern.PacketTimings = pattern.PacketTimings[1:]
+		}
+	}
+
 	pattern.LastSeen = time.Now()
 	pattern.ConnectionAttempts++
 
@@ -139,15 +153,6 @@ func (pt *PatternTracker) RecordConnection(ip net.IP, meta ConnectionMetadata) {
 		pattern.MSSValues = append(pattern.MSSValues, meta.MSS)
 		if len(pattern.MSSValues) > 50 {
 			pattern.MSSValues = pattern.MSSValues[1:]
-		}
-	}
-
-	// Track timing
-	if len(pattern.PacketTimings) > 0 {
-		timing := time.Since(pattern.LastSeen)
-		pattern.PacketTimings = append(pattern.PacketTimings, timing)
-		if len(pattern.PacketTimings) > 100 {
-			pattern.PacketTimings = pattern.PacketTimings[1:]
 		}
 	}
 

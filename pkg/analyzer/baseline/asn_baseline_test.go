@@ -27,6 +27,48 @@ func TestRecordAndCalculateAnomaly_RoundTrip(t *testing.T) {
 	}
 }
 
+// TestRecordObservation_DoesNotFoldClearlyAnomalousSamplesAfterWarmup is a
+// regression test for baseline self-poisoning: RecordObservation used to
+// fold every sample - including attack traffic - into the same Welford
+// stats CalculateAnomaly scores it against, with no gating. A sustained
+// attacker sending >= minObservations of elevated traffic would drag the
+// baseline's own mean toward the attack rate, so identical follow-up attack
+// traffic would eventually score as normal (MaxZScore ~= 0). This verifies
+// that once a metric's baseline is warm, repeatedly observing the same
+// clearly-anomalous value keeps scoring as anomalous instead of normalizing
+// itself into the baseline.
+func TestRecordObservation_DoesNotFoldClearlyAnomalousSamplesAfterWarmup(t *testing.T) {
+	bc := NewBaselineCalibrator(Config{MinObservations: 21, RetentionPeriod: time.Hour, CleanupInterval: time.Hour})
+	asn := "AS64502"
+
+	// Warm up with realistic, slightly-varying legitimate traffic (small
+	// nonzero variance - a perfectly constant baseline would report a
+	// z-score of 0 for everything, which would trivially "pass" this test
+	// without the gate doing any work).
+	legitimateRates := []float64{4, 5, 6, 5, 4, 6, 5}
+	for i := 0; i < 21; i++ {
+		bc.RecordObservation(asn, ObservationData{TTL: 64, RequestRate: legitimateRates[i%len(legitimateRates)]})
+	}
+
+	const attackRate = 500.0
+	before := bc.CalculateAnomaly(asn, ObservationData{TTL: 64, RequestRate: attackRate})
+	if !before.IsAnomalous() {
+		t.Fatalf("expected a 100x request-rate spike to be anomalous against the warmed baseline, got MaxZScore=%v", before.MaxZScore)
+	}
+
+	// Simulate a sustained attack: repeatedly record the same anomalous
+	// request rate, well past minObservations, trying to drag the baseline
+	// toward the attack's own rate.
+	for i := 0; i < 200; i++ {
+		bc.RecordObservation(asn, ObservationData{TTL: 64, RequestRate: attackRate})
+	}
+
+	after := bc.CalculateAnomaly(asn, ObservationData{TTL: 64, RequestRate: attackRate})
+	if !after.IsAnomalous() {
+		t.Fatalf("expected repeated attack traffic to remain anomalous against its own baseline (self-poisoning guard failed): MaxZScore=%v", after.MaxZScore)
+	}
+}
+
 // TestCalculateAnomaly_UnknownASNNotValid ensures an ASN with no recorded
 // observations reports an invalid (not-yet-calibrated) baseline rather than
 // panicking or returning a false positive anomaly.
