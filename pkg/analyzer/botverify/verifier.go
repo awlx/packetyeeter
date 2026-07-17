@@ -1,6 +1,8 @@
 package botverify
 
 import (
+	"context"
+	"errors"
 	"net"
 	"strings"
 	"sync"
@@ -82,12 +84,54 @@ var KnownBots = []BotPattern{
 
 // VerificationResult represents the result of bot verification
 type VerificationResult struct {
-	IsVerified   bool
-	BotType      BotType
-	ReverseDNS   string
-	ForwardDNS   []string
-	VerifiedAt   time.Time
-	ErrorMessage string
+	IsVerified bool
+	BotType    BotType
+	ReverseDNS string
+	ForwardDNS []string
+	VerifiedAt time.Time
+	// TransientFailure marks a verification that could not complete (DNS
+	// timeout, SERVFAIL, network error). It is not evidence of impersonation:
+	// a transient hiccup on a real crawler's PTR must not read as a spoofed
+	// bot. Cached only for transientFailTTL so verification retries soon.
+	TransientFailure bool
+	// ConsecutiveTransientFailures counts back-to-back re-verification cycles
+	// that ended in a transient failure for this IP, with no definitive
+	// result in between. The "transient" classification is attacker
+	// influenceable: whoever controls an IP block controls its PTR zone and
+	// can serve SERVFAIL/timeouts indefinitely, so unbounded forgiveness of
+	// transient failures would be a permanent impersonation free pass. Any
+	// definitive result (verified, NXDOMAIN, DNS mismatch) resets this to 0.
+	ConsecutiveTransientFailures int
+	ErrorMessage                 string
+}
+
+// transientFailTTL bounds how long a could-not-complete verification is
+// served from cache before re-verifying. The regular cacheTTL (default 1h)
+// would turn one DNS hiccup into an hour of unverified treatment for a
+// legitimate crawler.
+const transientFailTTL = 1 * time.Minute
+
+// maxConsecutiveTransientFailures caps how many consecutive transient-DNS
+// re-verification cycles an IP gets the forgiving no-penalty treatment.
+// Past the cap the failure is handled exactly like a definitive one
+// (impersonation + penalty). Cycles are transientFailTTL (1m) apart, so 5
+// tolerates ~5 minutes of genuine resolver/PTR outage — enough for typical
+// transient DNS incidents — while bounding an attacker-controlled PTR zone
+// (deliberate SERVFAIL/timeout) to a ~5 minute unpenalized window per IP,
+// independent of request rate. During that window the client is merely
+// unverified, never verified.
+const maxConsecutiveTransientFailures = 5
+
+// isTransientDNSError reports whether a lookup error is a transient resolver
+// problem rather than a definitive answer. NXDOMAIN ("no such host") is
+// definitive - the IP genuinely has no PTR / the name has no records - while
+// timeouts, SERVFAIL, and network errors say nothing about the peer.
+func isTransientDNSError(err error) bool {
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return !dnsErr.IsNotFound
+	}
+	return true
 }
 
 // GeoIPProvider interface for GeoIP lookups
@@ -105,6 +149,12 @@ type Verifier struct {
 	verifyInFlight  map[string]*sync.Mutex // Prevent duplicate verifications
 	geoIP           GeoIPProvider          // GeoIP for ASN/org-based fallback verification
 	maxCacheEntries int
+	resolver        *net.Resolver // injectable for tests; DNS calls honor dnsTimeout
+
+	// DNS lookup seams, injectable for deterministic tests. Default to closures
+	// that call resolver with a dnsTimeout-bounded context.
+	lookupAddr func(addr string) ([]string, error)
+	lookupHost func(host string) ([]string, error)
 }
 
 // NewVerifier creates a new bot verifier
@@ -129,6 +179,22 @@ func NewVerifierWithGeoIP(cacheTTL, dnsTimeout time.Duration, geoIP GeoIPProvide
 		verifyInFlight:  make(map[string]*sync.Mutex),
 		geoIP:           geoIP,
 		maxCacheEntries: 50000,
+		resolver:        net.DefaultResolver,
+	}
+	// Default DNS seams call the resolver with a dnsTimeout-bounded context.
+	// They read v.resolver/v.dnsTimeout at call time so a test overriding either
+	// field (or the whole seam) takes effect. Verification runs inline on the
+	// per-collector signal-stream goroutine, so an unbounded lookup against a
+	// hostile PTR zone must not stall detection for that collector.
+	v.lookupAddr = func(addr string) ([]string, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), v.dnsTimeout)
+		defer cancel()
+		return v.resolver.LookupAddr(ctx, addr)
+	}
+	v.lookupHost = func(host string) ([]string, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), v.dnsTimeout)
+		defer cancel()
+		return v.resolver.LookupHost(ctx, host)
 	}
 
 	// Start cache cleanup goroutine
@@ -149,7 +215,7 @@ func (v *Verifier) Verify(ip net.IP, userAgent string) *VerificationResult {
 	v.mu.RLock()
 	cached, ok := v.cache[ipStr]
 	v.mu.RUnlock()
-	if ok && time.Since(cached.VerifiedAt) < v.cacheTTL {
+	if ok && time.Since(cached.VerifiedAt) < v.cachedResultTTL(cached) {
 		return cached
 	}
 
@@ -191,17 +257,41 @@ func (v *Verifier) Verify(ip net.IP, userAgent string) *VerificationResult {
 	v.mu.RLock()
 	cached, ok = v.cache[ipStr]
 	v.mu.RUnlock()
-	if ok && time.Since(cached.VerifiedAt) < v.cacheTTL {
+	if ok && time.Since(cached.VerifiedAt) < v.cachedResultTTL(cached) {
 		return cached
 	}
 
 	// Perform verification
 	result := v.verifyDNS(ip, pattern)
 
-	// Cache result
+	// Cache result, accumulating the consecutive-transient counter under the
+	// same critical section so concurrent verifications cannot lose counts.
 	v.mu.Lock()
-	if _, exists := v.cache[ipStr]; exists || len(v.cache) < v.maxCacheEntries {
+	prev, exists := v.cache[ipStr]
+	if result.TransientFailure {
+		if exists && prev.TransientFailure {
+			// The previous entry survives in the cache for the full cacheTTL
+			// even though it is only *served* for transientFailTTL, so the
+			// counter persists across re-verification cycles: an attacker
+			// cannot reset it by simply triggering another transient lookup.
+			// It only resets via a definitive result below (overwrite with
+			// TransientFailure=false) or after the IP goes idle past
+			// cacheTTL — accepted residual: an hour of silence buys at most
+			// maxConsecutiveTransientFailures fresh forgiven cycles.
+			result.ConsecutiveTransientFailures = prev.ConsecutiveTransientFailures + 1
+		} else {
+			result.ConsecutiveTransientFailures = 1
+		}
+	}
+	if exists || len(v.cache) < v.maxCacheEntries {
 		v.cache[ipStr] = result
+	} else if result.TransientFailure {
+		// Fail closed: the cache is saturated and this IP's counter cannot be
+		// tracked. Handing out an untracked forgiving pass here would let an
+		// attacker reset the cap at will by keeping the cache full (50k
+		// bot-claiming IPs — itself an attack condition), so treat the
+		// failure as over-cap instead. Definitive results are unaffected.
+		result.ConsecutiveTransientFailures = maxConsecutiveTransientFailures + 1
 	}
 	v.mu.Unlock()
 
@@ -215,10 +305,11 @@ func (v *Verifier) verifyDNS(ip net.IP, pattern *BotPattern) *VerificationResult
 		VerifiedAt: time.Now(),
 	}
 
-	// Reverse DNS lookup
-	names, err := net.LookupAddr(ip.String())
+	// Reverse DNS lookup (seam honors dnsTimeout).
+	names, err := v.lookupAddr(ip.String())
 	if err != nil {
 		logrus.WithError(err).Debug("Reverse DNS lookup failed")
+		result.TransientFailure = isTransientDNSError(err)
 		result.ErrorMessage = "reverse DNS failed"
 		return result
 	}
@@ -263,9 +354,10 @@ func (v *Verifier) verifyDNS(ip net.IP, pattern *BotPattern) *VerificationResult
 
 	// Forward DNS verification (if required)
 	if pattern.RequireForward {
-		addrs, err := net.LookupHost(reverseDNS)
+		addrs, err := v.lookupHost(reverseDNS)
 		if err != nil {
 			logrus.WithError(err).Debug("Forward DNS lookup failed")
+			result.TransientFailure = isTransientDNSError(err)
 			result.ErrorMessage = "forward DNS failed"
 			return result
 		}
@@ -318,6 +410,16 @@ func GetBotType(userAgent string) BotType {
 		}
 	}
 	return BotTypeUnknown
+}
+
+// cachedResultTTL returns how long a cached result stays valid: completed
+// verifications (verified or definitively failed) use the full cacheTTL,
+// transient failures only transientFailTTL.
+func (v *Verifier) cachedResultTTL(result *VerificationResult) time.Duration {
+	if result.TransientFailure {
+		return transientFailTTL
+	}
+	return v.cacheTTL
 }
 
 // cleanupLoop periodically removes expired cache entries
