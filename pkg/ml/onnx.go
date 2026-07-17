@@ -254,6 +254,21 @@ func (m *ONNXModel) featuresToTensor(features aidetection.MLFeatures) []float32 
 	return m.featuresToTensorLegacy(features)
 }
 
+// copyTruncated copies as much of src into dst starting at offset as fits,
+// silently dropping any tail that would exceed dst's length. Used so smaller
+// auto-detected model sizes (100/106/110 features) don't panic when a
+// feature block sized for the full 126-feature layout doesn't fit.
+func copyTruncated(dst []float32, offset int, src []float32) {
+	if offset >= len(dst) {
+		return
+	}
+	end := offset + len(src)
+	if end > len(dst) {
+		end = len(dst)
+	}
+	copy(dst[offset:end], src)
+}
+
 // featuresToTensorAdvanced extracts 126 features from event history
 func (m *ONNXModel) featuresToTensorAdvanced(features aidetection.MLFeatures) []float32 {
 	// Allocate based on model's actual feature count
@@ -282,9 +297,14 @@ func (m *ONNXModel) featuresToTensorAdvanced(features aidetection.MLFeatures) []
 	signalFeats := extractor.ExtractSignalFeatures(*features.EventHistory)
 	copy(tensor[70:95], signalFeats)
 
-	// Fingerprint features (10)
+	// Fingerprint features (10) and behavioral features (10) normally occupy
+	// tensor[95:115]. Auto-detected model sizes 100/106/110 (see the probe
+	// list in loadONNXModelInternal) are narrower than that, so copyTruncated
+	// clamps each write to the tensor's actual capacity instead of writing
+	// the fixed offsets unconditionally, which would panic with a
+	// slice-bounds-out-of-range on those sizes.
 	fingerprintFeats := extractor.ExtractFingerprintFeatures(*features.EventHistory, features.JA4, features.JA4H, features.JA4T)
-	copy(tensor[95:105], fingerprintFeats)
+	copyTruncated(tensor, 95, fingerprintFeats)
 
 	// Behavioral features (10) - requires splitting events into pre/post
 	// For now, use all events as both pre and post (simplified)
@@ -294,7 +314,7 @@ func (m *ONNXModel) featuresToTensorAdvanced(features aidetection.MLFeatures) []
 		features.EventHistory.Timestamps,
 		features.EventHistory.Timestamps,
 	)
-	copy(tensor[105:115], behavioralFeats)
+	copyTruncated(tensor, 105, behavioralFeats)
 
 	// Original detection features (11) - only if model supports 126 features
 	if m.nFeatures >= 126 {
