@@ -16,6 +16,20 @@
 // Increased map sizes for handling large-scale DDoS
 #define BLOCK_MAP_SIZE 3000000
 #define HANDSHAKES_MAP_SIZE 500000
+// Bad-flags scanners tracked for telemetry. LRU so a spoofed-source scan flood
+// evicts the oldest entry instead of failing inserts (E2BIG) once full, which
+// would otherwise blind the userspace signal pipeline to every new scanner.
+#define BADFLAGS_MAP_SIZE 100000
+
+// IPv6 extension-header next-header values, and the cap on how many we walk
+// before giving up. A packet's real L4 protocol can hide behind these; without
+// walking them, dispatching on ip6->nexthdr alone lets one extension header
+// bypass every IPv6 L4 check (ICMPv6/UDP/fragment/TCP).
+#define IP6_EXT_HOPOPTS   0   // Hop-by-Hop Options
+#define IP6_EXT_ROUTING   43  // Routing
+#define IP6_EXT_FRAGMENT  44  // Fragment (fixed 8 bytes)
+#define IP6_EXT_DSTOPTS   60  // Destination Options
+#define MAX_IPV6_EXT_HEADERS 8
 
 #ifndef IP_MF
 #define IP_MF 0x2000
@@ -236,15 +250,15 @@ struct {
 // Bad Flags (TCP) - separate because handled by existing logic, but could unify?
 // Keeping existing logical to minimize drift for now.
 struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, 1000);
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, BADFLAGS_MAP_SIZE);
     __type(key, __u32);
     __type(value, struct bad_flags_info);
 } bad_flags SEC(".maps");
 
 struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, 1000);
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, BADFLAGS_MAP_SIZE);
     __type(key, struct in6_addr);
     __type(value, struct bad_flags_info);
 } bad_flags_v6 SEC(".maps");
@@ -302,13 +316,20 @@ struct event_metadata {
 static __always_inline int check_rate_limit(void *map, void *key, __u32 limit, __u64 now) {
     struct rate_limit *rate = bpf_map_lookup_elem(map, key);
     if (rate) {
-        if (now - rate->last_time > 1000000000) { 
+        if (now - rate->last_time > 1000000000) {
+            // New 1s window. A benign race here (two CPUs both resetting, or a
+            // reset racing an increment) only mis-counts by ~1 packet at the
+            // window boundary, so the reset is left as a plain store.
             rate->last_time = now;
             rate->count = 1;
             return 0;
         } else {
-            rate->count++;
-            if (rate->count > limit) {
+            // The value is shared across CPUs for a given source; a plain
+            // read-modify-write loses increments under a same-source flood
+            // spread over RX queues, which lets the flood stay under `limit`.
+            // Increment atomically and test the post-increment value.
+            __u64 count = __sync_fetch_and_add(&rate->count, 1) + 1;
+            if (count > limit) {
                 return 1;
             }
             return 0;
@@ -341,10 +362,78 @@ static __always_inline __u32 tcp_flags_raw(struct tcphdr *tcp) {
         | ((__u32)tcp->cwr << 7);
 }
 
+// ipv4_tcp_header returns a bounds-checked pointer to the TCP header, honoring
+// the IHL field so IP options are skipped. IHL is attacker-controlled, so it is
+// validated (5..15 32-bit words) and the computed offset is bounds-checked
+// before use. Returns NULL if the header cannot be located. Locating TCP at a
+// fixed 20-byte offset (ignoring IHL) reads IP option bytes as TCP flags, which
+// lets a SYN+FIN/Xmas/NULL scan carrying a single IP option evade
+// check_tcp_flags (and corrupts JA4T/timestamp parsing in the TC path).
+static __always_inline struct tcphdr *ipv4_tcp_header(struct iphdr *ip, void *data_end) {
+    __u32 ihl = ip->ihl;
+    if (ihl < 5 || ihl > 15)
+        return 0;
+    struct tcphdr *tcp = (void *)ip + ihl * 4;
+    if ((void *)(tcp + 1) > data_end)
+        return 0;
+    return tcp;
+}
+
+// Per-CPU emission budgets. Under a multi-Mpps flood the program would
+// otherwise call bpf_perf_event_output once per dropped packet (incidents) and
+// once per SYN (events), saturating the perf ring - which drops events for
+// everyone and burns CPU on the per-event copy and wakeup - exactly when the
+// host is most loaded. These cap telemetry emits per CPU per 1s window;
+// enforcement (the XDP_DROP itself, and the handshake tracking) is unaffected,
+// only the audit/telemetry stream is sampled. Per-CPU so there is no
+// cross-core contention on the counter.
+#define MAX_EMITS_PER_SEC_PER_CPU 1000
+
+struct emit_budget {
+    __u64 window_start;
+    __u64 count;
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, struct emit_budget);
+} incident_budget SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, struct emit_budget);
+} event_budget SEC(".maps");
+
+// emit_allowed returns whether a telemetry emit is within this CPU's per-second
+// budget, advancing the window and count. Fails open (emits) if the budget map
+// is unexpectedly missing.
+static __always_inline int emit_allowed(void *budget_map, __u64 now) {
+    __u32 k = 0;
+    struct emit_budget *b = bpf_map_lookup_elem(budget_map, &k);
+    if (!b)
+        return 1;
+    if (now - b->window_start > 1000000000ULL) {
+        b->window_start = now;
+        b->count = 1;
+        return 1;
+    }
+    if (b->count >= MAX_EMITS_PER_SEC_PER_CPU)
+        return 0;
+    b->count++;
+    return 1;
+}
+
 // emit_incident_v4/v6 record a structured incident (source, reason,
-// timestamp) onto the `incidents` perf event array for every XDP_DROP
-// decision made by the collector's own kernel-space enforcement.
+// timestamp) onto the `incidents` perf event array for XDP_DROP decisions made
+// by the collector's own kernel-space enforcement, sampled to the per-CPU
+// budget so a flood cannot saturate the ring.
 static __always_inline void emit_incident_v4(struct xdp_md *ctx, __u32 saddr, __u8 reason, __u64 now) {
+    if (!emit_allowed(&incident_budget, now))
+        return;
     struct incident_event inc = {};
     inc.timestamp = now;
     inc.saddr_v4 = saddr;
@@ -354,6 +443,8 @@ static __always_inline void emit_incident_v4(struct xdp_md *ctx, __u32 saddr, __
 }
 
 static __always_inline void emit_incident_v6(struct xdp_md *ctx, struct in6_addr *saddr, __u8 reason, __u64 now) {
+    if (!emit_allowed(&incident_budget, now))
+        return;
     struct incident_event inc = {};
     inc.timestamp = now;
     __builtin_memcpy(inc.saddr_v6, saddr, 16);
@@ -529,31 +620,50 @@ static __always_inline __u8 estimate_payload_entropy(void *payload_start, void *
 }
 
 // Count IPv6 extension headers
-static __always_inline __u8 count_ipv6_ext_headers(struct ipv6hdr *ip6, void *data_end) {
+// Generic IPv6 extension header: next-header byte + length in 8-octet units
+// (excluding the first 8 octets), matching Hop-by-Hop/Routing/Destination
+// Options. The Fragment header is a fixed 8 bytes and is reported to the caller
+// rather than skipped, so the fragment-drop policy still applies.
+struct ipv6_ext_hdr {
+    __u8 next_hdr;
+    __u8 hdr_ext_len;
+};
+
+// parse_ipv6_l4 walks the IPv6 extension-header chain to find the true
+// upper-layer protocol and the offset of its header. Dispatching on
+// ip6->nexthdr directly lets a single extension header hide the L4 protocol and
+// bypass every IPv6 check, so every L4 decision must run off this result.
+// Returns 0 on success (setting *l4_proto, *l4_hdr, *ext_count), or -1 if the
+// chain is truncated or longer than MAX_IPV6_EXT_HEADERS (fail closed: the
+// caller treats -1 as "cannot inspect"). A Fragment header stops the walk and
+// is returned as the protocol.
+static __always_inline int parse_ipv6_l4(struct ipv6hdr *ip6, void *data_end,
+                                         __u8 *l4_proto, void **l4_hdr, __u8 *ext_count) {
+    __u8 next = ip6->nexthdr;
+    void *cur = (void *)(ip6 + 1);
     __u8 count = 0;
-    __u8 next_hdr = ip6->nexthdr;
-    void *hdr = (void *)(ip6 + 1);
 
-    // Check for common extension headers
-    // 0 = Hop-by-Hop, 43 = Routing, 44 = Fragment, 60 = Destination Options
     #pragma unroll
-    for (int i = 0; i < 4; i++) { // Max 4 extension headers
-        if (hdr + 8 > data_end) {
-            break;
-        }
-
-        if (next_hdr == 0 || next_hdr == 43 || next_hdr == 44 || next_hdr == 60) {
+    for (int i = 0; i < MAX_IPV6_EXT_HEADERS; i++) {
+        if (next == IP6_EXT_HOPOPTS || next == IP6_EXT_ROUTING || next == IP6_EXT_DSTOPTS) {
+            struct ipv6_ext_hdr *eh = cur;
+            if ((void *)(eh + 1) > data_end)
+                return -1;
+            __u32 hdr_len = ((__u32)eh->hdr_ext_len + 1) * 8;
+            next = eh->next_hdr;
+            cur += hdr_len;
+            if (cur > data_end)
+                return -1;
             count++;
-            // Read next header field (first byte of extension header)
-            next_hdr = *(__u8 *)hdr;
-            // Skip to next header (simplified - just move 8 bytes)
-            hdr += 8;
-        } else {
-            break;
+            continue;
         }
+        // Fragment header or a real upper-layer protocol: stop here.
+        *l4_proto = next;
+        *l4_hdr = cur;
+        *ext_count = count;
+        return 0;
     }
-
-    return count;
+    return -1; // chain longer than we walk
 }
 
 // --- XDP Program ---
@@ -570,9 +680,9 @@ int xdp_filter(struct xdp_md *ctx) {
     __u16 h_proto = eth->h_proto;
     void *cursor = (void *)(eth + 1);
 
-    // Handle VLANs (up to 2 layers)
+    // Handle VLANs (up to 3 stacked tags)
     #pragma unroll
-    for (int i = 0; i < 2; i++) {
+    for (int i = 0; i < 3; i++) {
         if (h_proto == bpf_htons(ETH_P_8021Q) || h_proto == bpf_htons(ETH_P_8021AD)) {
             struct vlan_hdr *vlan = cursor;
             if ((void *)(vlan + 1) > data_end)
@@ -587,6 +697,15 @@ int xdp_filter(struct xdp_md *ctx) {
     __u32 key_monitor = 1;
     __u32 *monitor_mode = bpf_map_lookup_elem(&config_map, &key_monitor);
     int is_monitor = (monitor_mode && *monitor_mode == 1);
+
+    // Frame stacked deeper than the tags we parse: h_proto is still a VLAN
+    // ethertype, so neither the IPv4 nor IPv6 branch below would match and the
+    // frame would fall through to XDP_PASS uninspected. Fail closed - we cannot
+    // see its L3/L4 to enforce on it - while honoring monitor/dry-run mode.
+    if (h_proto == bpf_htons(ETH_P_8021Q) || h_proto == bpf_htons(ETH_P_8021AD)) {
+        if (!is_monitor)
+            return XDP_DROP;
+    }
 
     if (h_proto == bpf_htons(ETH_P_IP)) {
         struct iphdr *ip = cursor;
@@ -667,9 +786,8 @@ int xdp_filter(struct xdp_md *ctx) {
 
         // 4. TCP Flag Check
         if (ip->protocol == IPPROTO_TCP) {
-             // Standard IP header size for verifier
-             struct tcphdr *tcp = (void *)(ip + 1);
-             if ((void *)(tcp + 1) > data_end) return XDP_PASS;
+             struct tcphdr *tcp = ipv4_tcp_header(ip, data_end);
+             if (!tcp) return XDP_PASS;
              int scan_type = check_tcp_flags(tcp);
              if (scan_type != BAD_FLAGS_NONE) {
                  struct bad_flags_info info = {};
@@ -722,8 +840,22 @@ int xdp_filter(struct xdp_md *ctx) {
             if (!is_monitor) return XDP_DROP;
         }
 
+        // Resolve the true upper-layer protocol behind any IPv6 extension
+        // headers. Dispatching on ip6->nexthdr alone lets a single extension
+        // header (e.g. Hop-by-Hop) hide the real L4 protocol and bypass every
+        // check below, so all L4 decisions run off this walk.
+        __u8 l4_proto = 0;
+        void *l4_hdr = (void *)(ip6 + 1);
+        __u8 ext_count = 0;
+        if (parse_ipv6_l4(ip6, data_end, &l4_proto, &l4_hdr, &ext_count) < 0) {
+            // Extension-header chain truncated or longer than we walk: we
+            // cannot locate L4 to enforce on it. Pass (consistent with the
+            // program's other unparseable-packet paths).
+            return XDP_PASS;
+        }
+
         // IPv6 ICMPv6 Rate Limit
-        if (ip6->nexthdr == IPPROTO_ICMPV6) {
+        if (l4_proto == IPPROTO_ICMPV6) {
              __u32 key_icmp_limit = 0; // Shared threshold
              __u32 *icmp_thresh = bpf_map_lookup_elem(&config_map, &key_icmp_limit);
              __u32 limit = 100;
@@ -736,10 +868,8 @@ int xdp_filter(struct xdp_md *ctx) {
              }
         }
 
-        // IPv6 UDP Checks
-        // Note: Fragmentation in IPv6 is an extension header (44). 
-        // For simple UDP flood protection, we check if nexthdr is UDP.
-        if (ip6->nexthdr == IPPROTO_UDP) {
+        // IPv6 UDP Rate Limit
+        if (l4_proto == IPPROTO_UDP) {
              __u32 key_udp_limit = 2; // Shared threshold
              __u32 *udp_thresh = bpf_map_lookup_elem(&config_map, &key_udp_limit);
              __u32 limit = 2500;
@@ -751,16 +881,15 @@ int xdp_filter(struct xdp_md *ctx) {
                  if (!is_monitor) return XDP_DROP;
              }
         }
-        // Block IPv6 Fragments
-        if (ip6->nexthdr == 44) {
-            // It is a fragment.
+        // Block IPv6 Fragments (a Fragment extension header in the chain)
+        if (l4_proto == IP6_EXT_FRAGMENT) {
             emit_incident_v6(ctx, &saddr, INCIDENT_UDP_FRAG, now);
             if (!is_monitor) return XDP_DROP;
         }
 
-        // IPv6 TCP Flag Check
-        if (ip6->nexthdr == IPPROTO_TCP) {
-            struct tcphdr *tcp = (void *)(ip6 + 1);
+        // IPv6 TCP Flag Check, on the L4 header located past any extension headers
+        if (l4_proto == IPPROTO_TCP) {
+            struct tcphdr *tcp = l4_hdr;
             if ((void *)(tcp + 1) > data_end) return XDP_PASS;
             int scan_type = check_tcp_flags(tcp);
             if (scan_type != BAD_FLAGS_NONE) {
@@ -794,9 +923,8 @@ int tc_ingress_syn_monitor(struct __sk_buff *skb) {
 
         if (ip->protocol != IPPROTO_TCP) return TC_ACT_OK;
 
-        // Standard IP header size for verifier
-        struct tcphdr *tcp = (void *)(ip + 1);
-        if ((void *)(tcp + 1) > data_end) return TC_ACT_OK;
+        struct tcphdr *tcp = ipv4_tcp_header(ip, data_end);
+        if (!tcp) return TC_ACT_OK;
 
         if (tcp->syn && !tcp->ack) {
             struct tcp_session_key key = {};
@@ -822,7 +950,7 @@ int tc_ingress_syn_monitor(struct __sk_buff *skb) {
             meta.dport = tcp->dest;
             meta.protocol = IPPROTO_TCP;
             meta.type = 1; // JA4T
-            meta.window = tcp->window;
+            meta.window = bpf_ntohs(tcp->window);
             meta.len = pkt_len; 
             meta.rtt_us = 0;
             meta.ttl = ip->ttl;
@@ -848,7 +976,11 @@ int tc_ingress_syn_monitor(struct __sk_buff *skb) {
             // IPv6 extension headers (always 0 for IPv4)
             meta.ipv6_ext_headers = 0;
 
-            bpf_perf_event_output(skb, &events, flags, &meta, sizeof(meta));
+            // Sample per-SYN JA4T emits to the per-CPU budget so a SYN flood
+            // cannot saturate the perf ring; the handshake tracking below still
+            // runs for every SYN.
+            if (emit_allowed(&event_budget, bpf_ktime_get_ns()))
+                bpf_perf_event_output(skb, &events, flags, &meta, sizeof(meta));
 
 
             struct handshake_status *existing = bpf_map_lookup_elem(&pending_handshakes, &key);
@@ -918,7 +1050,7 @@ int tc_ingress_syn_monitor(struct __sk_buff *skb) {
             // Or use perf_event's raw data which includes IP header.
             meta.type = 1;
             meta.protocol = IPPROTO_TCP;
-            meta.window = tcp->window;
+            meta.window = bpf_ntohs(tcp->window);
             meta.len = pkt_len;
             meta.rtt_us = 0;
             
@@ -949,7 +1081,11 @@ int tc_ingress_syn_monitor(struct __sk_buff *skb) {
             // IPv6 extension header counting disabled (eBPF verifier complexity)
             meta.ipv6_ext_headers = 0;
 
-            bpf_perf_event_output(skb, &events, flags, &meta, sizeof(meta));
+            // Sample per-SYN JA4T emits to the per-CPU budget so a SYN flood
+            // cannot saturate the perf ring; the handshake tracking below still
+            // runs for every SYN.
+            if (emit_allowed(&event_budget, bpf_ktime_get_ns()))
+                bpf_perf_event_output(skb, &events, flags, &meta, sizeof(meta));
 
             struct handshake_status *existing = bpf_map_lookup_elem(&pending_handshakes_v6, &key);
             if (!existing) {
@@ -1009,9 +1145,8 @@ int tc_egress_synack_monitor(struct __sk_buff *skb) {
 
         if (ip->protocol != IPPROTO_TCP) return TC_ACT_OK;
 
-        // Standard IP header size for verifier
-        struct tcphdr *tcp = (void *)(ip + 1);
-        if ((void *)(tcp + 1) > data_end) return TC_ACT_OK;
+        struct tcphdr *tcp = ipv4_tcp_header(ip, data_end);
+        if (!tcp) return TC_ACT_OK;
 
         if (tcp->syn && tcp->ack) {
             struct tcp_session_key key = {};
