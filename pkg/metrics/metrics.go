@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
@@ -762,6 +763,14 @@ func StartMetricsServer(addr string) *http.Server {
 	server := &http.Server{
 		Addr:    addr,
 		Handler: mux,
+		// The default addr binds all interfaces; without timeouts a
+		// slowloris client trickling header bytes pins goroutines and fds
+		// indefinitely.
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 16,
 	}
 
 	return server
