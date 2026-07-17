@@ -139,6 +139,21 @@ func (e *Engine) shardFor(key string) *repShard {
 	return e.shards[h.Sum64()%reputationShardCount]
 }
 
+// deleteEntryLocked removes a reputation entry and, when it is an ASN's
+// Entry, also drops the parallel sh.asnStats bookkeeping (the Seen/Offenders
+// IP sets) for that ASN. Without this, asnStats entries outlive the
+// reputation Entry that represents them: decay()/pruneIfNeededLocked only
+// ever deleted from sh.entries, so every ASN ever observed retained up to
+// ~2*maxASNHosts IP strings indefinitely, even long after its score decayed
+// away and its Entry was reclaimed. An ASN's Entry and its asnStats always
+// share a shard (see shardFor), so this stays within the caller's lock.
+func (e *Engine) deleteEntryLocked(sh *repShard, storeKey string) {
+	delete(sh.entries, storeKey)
+	if asn, ok := strings.CutPrefix(storeKey, string(TypeASN)+":"); ok {
+		delete(sh.asnStats, asn)
+	}
+}
+
 func (e *Engine) getIPScoreCap() float64   { return math.Float64frombits(e.ipScoreCapBits.Load()) }
 func (e *Engine) getJA4ScoreCap() float64  { return math.Float64frombits(e.ja4ScoreCapBits.Load()) }
 func (e *Engine) getASNScoreCap() float64  { return math.Float64frombits(e.asnScoreCapBits.Load()) }
@@ -699,12 +714,12 @@ func (e *Engine) decay() {
 			entry.Score *= e.decayFactor
 
 			if maxEntryAge > 0 && now.Sub(entry.LastSeen) > maxEntryAge {
-				delete(sh.entries, k)
+				e.deleteEntryLocked(sh, k)
 				continue
 			}
 			if entry.Score < 0.1 {
 				// Cleanup low scores to save memory
-				delete(sh.entries, k)
+				e.deleteEntryLocked(sh, k)
 				continue
 			}
 
@@ -757,7 +772,7 @@ func (e *Engine) pruneIfNeededLocked(sh *repShard) {
 		excess = int64(len(arr))
 	}
 	for i := int64(0); i < excess; i++ {
-		delete(sh.entries, arr[i].key)
+		e.deleteEntryLocked(sh, arr[i].key)
 	}
 }
 

@@ -159,34 +159,66 @@ func (bc *BaselineCalibrator) RecordObservation(asn string, obs ObservationData)
 	// Increment metrics
 	metrics.BaselineObservationsTotal.Inc()
 
+	// Once a metric's baseline is past warmup, exclude samples that already
+	// score as clearly anomalous against it from further folding into that
+	// same baseline (self-poisoning guard - see baselineAnomalyZScoreThreshold).
+	// During warmup (baseline.ObservationCount < minObservations) every
+	// sample still folds in normally, same as before, so a fresh ASN can
+	// calibrate from its initial (possibly mixed) traffic.
+	warm := baseline.ObservationCount >= bc.minObservations
+
 	// Update running statistics using Welford's algorithm (see pkg/utils/stats)
 	if obs.TTL > 0 {
-		stats.UpdateRunningStats(&baseline.TTL, float64(obs.TTL), obs.Timestamp)
+		updateStatIfNotAnomalous(&baseline.TTL, float64(obs.TTL), obs.Timestamp, warm)
 	}
 	if obs.WindowSize > 0 {
-		stats.UpdateRunningStats(&baseline.WindowSize, float64(obs.WindowSize), obs.Timestamp)
+		updateStatIfNotAnomalous(&baseline.WindowSize, float64(obs.WindowSize), obs.Timestamp, warm)
 	}
 	if obs.PacketSize > 0 {
-		stats.UpdateRunningStats(&baseline.PacketSize, float64(obs.PacketSize), obs.Timestamp)
+		updateStatIfNotAnomalous(&baseline.PacketSize, float64(obs.PacketSize), obs.Timestamp, warm)
 	}
 	if obs.RequestRate > 0 {
-		stats.UpdateRunningStats(&baseline.RequestRate, obs.RequestRate, obs.Timestamp)
+		updateStatIfNotAnomalous(&baseline.RequestRate, obs.RequestRate, obs.Timestamp, warm)
 	}
 	if obs.SignalRate >= 0 {
-		stats.UpdateRunningStats(&baseline.SignalRate, obs.SignalRate, obs.Timestamp)
+		updateStatIfNotAnomalous(&baseline.SignalRate, obs.SignalRate, obs.Timestamp, warm)
 	}
 	if obs.ConnTime > 0 {
-		stats.UpdateRunningStats(&baseline.ConnTime, obs.ConnTime, obs.Timestamp)
+		updateStatIfNotAnomalous(&baseline.ConnTime, obs.ConnTime, obs.Timestamp, warm)
 	}
 	if obs.HandshakeRTT > 0 {
-		stats.UpdateRunningStats(&baseline.HandshakeRTT, obs.HandshakeRTT, obs.Timestamp)
+		updateStatIfNotAnomalous(&baseline.HandshakeRTT, obs.HandshakeRTT, obs.Timestamp, warm)
 	}
 	if obs.PacketRate > 0 {
-		stats.UpdateRunningStats(&baseline.PacketRate, obs.PacketRate, obs.Timestamp)
+		updateStatIfNotAnomalous(&baseline.PacketRate, obs.PacketRate, obs.Timestamp, warm)
 	}
 	if obs.ByteRate > 0 {
-		stats.UpdateRunningStats(&baseline.ByteRate, obs.ByteRate, obs.Timestamp)
+		updateStatIfNotAnomalous(&baseline.ByteRate, obs.ByteRate, obs.Timestamp, warm)
 	}
+}
+
+// baselineAnomalyZScoreThreshold matches AnomalyScore.IsAnomalous's 3-sigma
+// cutoff. Once a per-metric baseline is warm, a sample that already scores
+// at or beyond this many standard deviations from it is excluded from
+// folding into that same baseline, so a sustained attack can't keep
+// dragging the baseline it's scored against toward its own attack rate
+// (self-poisoning). This only ever excludes individual metric updates, never
+// the observation as a whole: ObservationCount/LastSeen above still advance
+// normally, and other metrics on the same observation are evaluated
+// independently.
+const baselineAnomalyZScoreThreshold = 3.0
+
+// updateStatIfNotAnomalous folds value into stats via Welford's algorithm,
+// unless the baseline for this metric is already warm (at least 2 prior
+// samples, and the observation isn't part of initial ASN warmup) and value
+// already scores beyond baselineAnomalyZScoreThreshold against it.
+func updateStatIfNotAnomalous(runningStats *RunningStats, value float64, timestamp time.Time, warm bool) {
+	if warm && runningStats.Count >= 2 {
+		if z := runningStats.ZScore(value); math.Abs(z) > baselineAnomalyZScoreThreshold {
+			return
+		}
+	}
+	stats.UpdateRunningStats(runningStats, value, timestamp)
 }
 
 // AnomalyScore contains z-scores for all metrics
