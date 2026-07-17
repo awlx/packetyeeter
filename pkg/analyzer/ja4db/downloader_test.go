@@ -153,3 +153,51 @@ func TestDeriveAppCategoryScript(t *testing.T) {
 		t.Fatalf("expected script, got %q", cat)
 	}
 }
+
+// TestJA4WildcardRequiresABSegments verifies that the JA4 wildcard fallback
+// (EntriesByJA4Prefix / LookupWithTypeResult) requires a match on both the
+// 'a' and 'b' segments of the fingerprint, not just the coarse 'a' segment.
+// Before the fix, any fingerprint sharing only the 'a' segment with an
+// indexed entry returned that entry as an arbitrary "wildcard_tls" match,
+// letting unrelated clients (including attacker-crafted ClientHellos) collide
+// with browser/bot DB entries that merely share the coarse prefix.
+func TestJA4WildcardRequiresABSegments(t *testing.T) {
+	d := NewDownloader(filepath.Join(t.TempDir(), "ja4db.json"), newTestLogger())
+
+	browserEntry := JA4Entry{
+		Application:    "Chrome",
+		JA4Fingerprint: "t13d1516h2_8daaf6152771_02713d6af862",
+	}
+	d.applyEntries([]JA4Entry{browserEntry}, "test", "v1")
+
+	t.Run("same a, different b: no wildcard match", func(t *testing.T) {
+		// Shares only the 'a' segment (t13d1516h2) with the indexed entry.
+		fp := "t13d1516h2_ffffffffffff_ffffffffffff"
+		res, found := d.LookupWithTypeResult(fp, "ja4")
+		if found {
+			t.Fatalf("expected no match for fingerprint sharing only the 'a' segment, got match_type=%q entry=%+v", res.MatchType, res.Entry)
+		}
+	})
+
+	t.Run("same a and b, different c: wildcard match", func(t *testing.T) {
+		// Shares the 'a' and 'b' segments; only 'c' (extension hash) differs.
+		fp := "t13d1516h2_8daaf6152771_ffffffffffff"
+		res, found := d.LookupWithTypeResult(fp, "ja4")
+		if !found {
+			t.Fatalf("expected wildcard match for fingerprint sharing 'a' and 'b' segments")
+		}
+		if res.MatchType != "wildcard_tls" {
+			t.Fatalf("expected match_type=wildcard_tls, got %q", res.MatchType)
+		}
+		if res.Entry.Application != "Chrome" {
+			t.Fatalf("expected matched entry application=Chrome, got %q", res.Entry.Application)
+		}
+	})
+
+	t.Run("exact fingerprint: exact match", func(t *testing.T) {
+		res, found := d.LookupWithTypeResult(browserEntry.JA4Fingerprint, "ja4")
+		if !found || res.MatchType != "exact" {
+			t.Fatalf("expected exact match, got found=%v match_type=%q", found, res.MatchType)
+		}
+	})
+}
