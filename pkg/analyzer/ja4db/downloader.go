@@ -78,7 +78,7 @@ type JA4Database struct {
 	// the reduced-fidelity community CSV fallback.
 	Source              string
 	Entries             map[string]JA4Entry // ja4_fingerprint -> entry
-	EntriesByJA4Prefix  map[string]JA4Entry // ja4 prefix (p1..p6) -> entry
+	EntriesByJA4Prefix  map[string]JA4Entry // ja4 wildcard key: 'a_b' segments (see ja4WildcardPrefix) -> entry
 	EntriesByJA4H       map[string]JA4Entry // ja4h_fingerprint -> entry
 	EntriesByJA4HPrefix map[string]JA4Entry // ja4h headers prefix -> entry (first match)
 	EntriesByJA4T       map[string]JA4Entry // ja4t_fingerprint -> entry
@@ -391,6 +391,23 @@ func parseJA4PlusCSV(data []byte) ([]JA4Entry, error) {
 	return entries, nil
 }
 
+// ja4WildcardPrefix returns the JA4 wildcard-matching key for a raw JA4
+// fingerprint: the 'a' (TLS version/SNI/cipher+extension counts/ALPN) and 'b'
+// (raw cipher list hash) segments joined. Matching on 'a' alone is too coarse
+// -- it is shared by thousands of unrelated clients, including common browser
+// stacks -- so an exact-miss lookup keyed only on 'a' returned an essentially
+// arbitrary same-prefix DB entry as a positive wildcard match. Requiring
+// 'a'+'b' narrows collisions enough for the wildcard match to be meaningful.
+// Returns ("", false) if the fingerprint has fewer than two underscore-
+// separated segments.
+func ja4WildcardPrefix(fingerprint string) (string, bool) {
+	parts := strings.Split(fingerprint, "_")
+	if len(parts) < 2 {
+		return "", false
+	}
+	return parts[0] + "_" + parts[1], true
+}
+
 // applyEntries indexes entries into the lookup maps and atomically swaps
 // them into the live database, recording which source they came from.
 func (d *Downloader) applyEntries(entries []JA4Entry, source, version string) {
@@ -403,8 +420,7 @@ func (d *Downloader) applyEntries(entries []JA4Entry, source, version string) {
 	for _, entry := range entries {
 		if entry.JA4Fingerprint != "" {
 			entriesMap[entry.JA4Fingerprint] = entry
-			if parts := strings.Split(entry.JA4Fingerprint, "_"); len(parts) >= 1 {
-				prefix := parts[0]
+			if prefix, ok := ja4WildcardPrefix(entry.JA4Fingerprint); ok {
 				if _, exists := entriesByJA4Prefix[prefix]; !exists {
 					entriesByJA4Prefix[prefix] = entry
 				}
@@ -529,9 +545,10 @@ func (d *Downloader) LookupWithTypeResult(fingerprint string, fpType string) (Lo
 			}
 		}
 		if !found && fpType == "ja4" {
-			// JA4 wildcard: match TLS characteristics prefix (before first underscore)
-			if parts := strings.Split(fingerprint, "_"); len(parts) >= 1 {
-				prefix := parts[0]
+			// JA4 wildcard: match on 'a'+'b' segments (see ja4WildcardPrefix).
+			// The 'a' segment alone is shared by thousands of unrelated
+			// clients, so it cannot safely stand in for a positive match.
+			if prefix, ok := ja4WildcardPrefix(fingerprint); ok {
 				if e, ok := d.DB.EntriesByJA4Prefix[prefix]; ok {
 					entry = e
 					found = true
@@ -723,8 +740,7 @@ func (d *Downloader) loadFromCache() error {
 	for _, entry := range entries {
 		if entry.JA4Fingerprint != "" {
 			entriesMap[entry.JA4Fingerprint] = entry
-			if parts := strings.Split(entry.JA4Fingerprint, "_"); len(parts) >= 1 {
-				prefix := parts[0]
+			if prefix, ok := ja4WildcardPrefix(entry.JA4Fingerprint); ok {
 				if _, exists := entriesByJA4Prefix[prefix]; !exists {
 					entriesByJA4Prefix[prefix] = entry
 				}
