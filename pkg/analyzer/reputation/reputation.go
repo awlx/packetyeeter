@@ -122,6 +122,12 @@ func New(decayInterval time.Duration, decayFactor float64, banThreshold float64)
 			asnStats: make(map[string]*asnStats),
 		}
 	}
+	// All per-type score caps default to +Inf (uncapped); operators lower them
+	// via SetIPScoreCap/SetJA4ScoreCap/SetASNScoreCap. Leaving a cap at the
+	// zero value would clamp every penalty of that type back to 0 in
+	// penalizeLocked, silently turning per-IP/JA4 reputation into a no-op.
+	e.ipScoreCapBits.Store(math.Float64bits(math.Inf(1)))
+	e.ja4ScoreCapBits.Store(math.Float64bits(math.Inf(1)))
 	e.asnScoreCapBits.Store(math.Float64bits(math.Inf(1)))
 	e.banThresholdBits.Store(math.Float64bits(banThreshold))
 	e.maxEntries.Store(defaultMaxEntries)
@@ -137,6 +143,21 @@ func (e *Engine) shardFor(key string) *repShard {
 	h := fnv.New64a()
 	_, _ = h.Write([]byte(key))
 	return e.shards[h.Sum64()%reputationShardCount]
+}
+
+// deleteEntryLocked removes a reputation entry and, when it is an ASN's
+// Entry, also drops the parallel sh.asnStats bookkeeping (the Seen/Offenders
+// IP sets) for that ASN. Without this, asnStats entries outlive the
+// reputation Entry that represents them: decay()/pruneIfNeededLocked only
+// ever deleted from sh.entries, so every ASN ever observed retained up to
+// ~2*maxASNHosts IP strings indefinitely, even long after its score decayed
+// away and its Entry was reclaimed. An ASN's Entry and its asnStats always
+// share a shard (see shardFor), so this stays within the caller's lock.
+func (e *Engine) deleteEntryLocked(sh *repShard, storeKey string) {
+	delete(sh.entries, storeKey)
+	if asn, ok := strings.CutPrefix(storeKey, string(TypeASN)+":"); ok {
+		delete(sh.asnStats, asn)
+	}
 }
 
 func (e *Engine) getIPScoreCap() float64   { return math.Float64frombits(e.ipScoreCapBits.Load()) }
@@ -699,12 +720,12 @@ func (e *Engine) decay() {
 			entry.Score *= e.decayFactor
 
 			if maxEntryAge > 0 && now.Sub(entry.LastSeen) > maxEntryAge {
-				delete(sh.entries, k)
+				e.deleteEntryLocked(sh, k)
 				continue
 			}
 			if entry.Score < 0.1 {
 				// Cleanup low scores to save memory
-				delete(sh.entries, k)
+				e.deleteEntryLocked(sh, k)
 				continue
 			}
 
@@ -741,7 +762,13 @@ func (e *Engine) pruneIfNeededLocked(sh *repShard) {
 		return
 	}
 
-	excess := int64(len(sh.entries)) - perShardBudget
+	// Evict a batch (down to ~90% of budget) instead of exactly the excess:
+	// pruning to the budget means the very next new-key Penalize is over
+	// budget again, so a distinct-IP flood pays this full-shard sort on
+	// every signal (~1.5ms and ~365KB per insert at the default budget)
+	// while holding the shard write lock. Batching amortizes the sort to
+	// once per ~budget/10 inserts.
+	excess := int64(len(sh.entries)) - perShardBudget + perShardBudget/10
 	type kv struct {
 		key      string
 		lastSeen time.Time
@@ -757,7 +784,7 @@ func (e *Engine) pruneIfNeededLocked(sh *repShard) {
 		excess = int64(len(arr))
 	}
 	for i := int64(0); i < excess; i++ {
-		delete(sh.entries, arr[i].key)
+		e.deleteEntryLocked(sh, arr[i].key)
 	}
 }
 

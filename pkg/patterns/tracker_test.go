@@ -1,6 +1,60 @@
 package patterns
 
-import "testing"
+import (
+	"net"
+	"testing"
+	"time"
+)
+
+// TestRecordConnection_PopulatesInterConnectionTiming is a regression test
+// for a dead-code bug: PacketTimings was appended only inside
+// `if len(pattern.PacketTimings) > 0`, so it could never bootstrap, and even
+// if seeded the timing was measured against a LastSeen the same call had
+// just overwritten to "now" (yielding ~0). Both defects together meant
+// detectMechanicalTiming and the IsBursty ML feature were permanently fed
+// zero data. This verifies a second connection now records a real,
+// positive gap since the first, and the first connection - with nothing to
+// diff against yet - records nothing.
+func TestRecordConnection_PopulatesInterConnectionTiming(t *testing.T) {
+	pt := NewPatternTracker(nil)
+	ip := net.ParseIP("203.0.113.5")
+
+	pt.RecordConnection(ip, ConnectionMetadata{TTL: 64})
+	if p := pt.GetPattern(ip); len(p.PacketTimings) != 0 {
+		t.Fatalf("expected no timing sample after the first connection (nothing to diff against yet), got %d", len(p.PacketTimings))
+	}
+
+	time.Sleep(5 * time.Millisecond)
+	pt.RecordConnection(ip, ConnectionMetadata{TTL: 64})
+
+	p := pt.GetPattern(ip)
+	if len(p.PacketTimings) != 1 {
+		t.Fatalf("expected one inter-connection timing sample after the second connection, got %d", len(p.PacketTimings))
+	}
+	if p.PacketTimings[0] <= 0 {
+		t.Fatalf("expected a positive inter-connection delta, got %v", p.PacketTimings[0])
+	}
+}
+
+// TestRecordConnection_TimingCapRespected verifies the existing 100-sample
+// cap on PacketTimings still applies once the slice actually accumulates
+// data (previously untestable, since the slice never grew at all).
+func TestRecordConnection_TimingCapRespected(t *testing.T) {
+	pt := NewPatternTracker(nil)
+	ip := net.ParseIP("203.0.113.6")
+
+	for i := 0; i < 105; i++ {
+		pt.RecordConnection(ip, ConnectionMetadata{TTL: 64})
+	}
+
+	p := pt.GetPattern(ip)
+	if len(p.PacketTimings) > 100 {
+		t.Fatalf("expected PacketTimings to be capped at 100 entries, got %d", len(p.PacketTimings))
+	}
+	if len(p.PacketTimings) == 0 {
+		t.Fatalf("expected PacketTimings to be populated after 105 connections")
+	}
+}
 
 // TestDetectWindowAnomaly_StableRealisticWindowIsNotFlagged verifies that a
 // single source consistently advertising the same, plausible TCP window
