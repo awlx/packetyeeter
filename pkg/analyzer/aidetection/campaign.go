@@ -135,20 +135,31 @@ type campaignSignal struct {
 }
 
 type attackCampaign struct {
-	key           string
-	vector        SignalType
-	firstSeen     time.Time
-	lastSeen      time.Time
-	events        []campaignSignal
-	lastDetection time.Time
-	lastReason    string
+	key       string
+	vector    SignalType
+	firstSeen time.Time
+	lastSeen  time.Time
+	events    []campaignSignal
+	// episode uniquely identifies this campaign instance. It is assigned once
+	// when the campaign is first created and never changes while the campaign
+	// lives, so the derived campaign_id is stable within an episode. When a
+	// campaign fully ages out (deleted from the map) and a later burst on the
+	// same key creates a new attackCampaign, that instance gets a new episode
+	// and therefore a distinct campaign_id - two unrelated episodes are not
+	// conflated under one id.
+	episode             uint64
+	lastDetection       time.Time
+	lastReason          string
+	lastBaseline        CampaignBaselineObservation
+	lastBaselineObserve time.Time
 }
 
 type CampaignAggregator struct {
-	mu        sync.Mutex
-	cfg       CampaignConfig
-	campaigns map[string]*attackCampaign
-	baseline  *CampaignBaselineTracker
+	mu         sync.Mutex
+	cfg        CampaignConfig
+	campaigns  map[string]*attackCampaign
+	baseline   *CampaignBaselineTracker
+	episodeSeq uint64
 }
 
 func NewCampaignAggregator(cfg CampaignConfig) *CampaignAggregator {
@@ -214,10 +225,12 @@ func (a *CampaignAggregator) recordLocked(key string, signal Signal, destIP, des
 		if len(a.campaigns) >= a.cfg.MaxCampaigns {
 			return
 		}
+		a.episodeSeq++
 		c = &attackCampaign{
 			key:       key,
 			vector:    signal.Type,
 			firstSeen: signal.Timestamp,
+			episode:   a.episodeSeq,
 		}
 		a.campaigns[key] = c
 	}
@@ -271,16 +284,28 @@ func (a *CampaignAggregator) Evaluate(now time.Time) []CampaignDetection {
 		if !ok {
 			continue
 		}
-		// Dedup a still-firing campaign BEFORE feeding the baseline: observing on
-		// every evaluation tick fed a sustained campaign's own attack rate into
-		// the adaptive baseline, training it up toward that rate until the
-		// campaign no longer read as anomalous. Observe only on a fresh
-		// detection (at most once per Window per campaign) so the corroborating
-		// baseline is not self-poisoned by the campaign it is meant to score.
+		// Feed the corroborating baseline at most once per Window per campaign,
+		// REGARDLESS of the detection reason. Observing on every evaluation tick
+		// fed a sustained campaign's own attack rate into the adaptive baseline,
+		// training it up toward that rate until the campaign no longer read as
+		// anomalous. The previous guard keyed on the reason as well, so a
+		// campaign whose reason flapped (e.g. alternating destination_ip_breadth
+		// / source_ip_breadth across ticks) slipped past it and retrained the
+		// baseline every tick. Gate purely on elapsed time since the last
+		// observation so reason flapping cannot self-poison the baseline.
+		if c.lastBaselineObserve.IsZero() || now.Sub(c.lastBaselineObserve) >= a.cfg.Window {
+			c.lastBaseline = a.observeBaselineLocked(c, now)
+			c.lastBaselineObserve = now
+		}
+		detection.Baseline = c.lastBaseline
+
+		// Detection emission dedup: suppress a repeat of the SAME reason within
+		// the window (unchanged), but let a changed reason (or a new window)
+		// through so operators still see it. This no longer affects baseline
+		// training, which is handled above.
 		if c.lastReason == detection.Reason && !c.lastDetection.IsZero() && now.Sub(c.lastDetection) < a.cfg.Window {
 			continue
 		}
-		detection.Baseline = a.observeBaselineLocked(c, now)
 		c.lastReason = detection.Reason
 		c.lastDetection = now
 		detections = append(detections, detection)
@@ -487,7 +512,7 @@ func (a *CampaignAggregator) evaluateCampaignLocked(c *attackCampaign) (Campaign
 	}
 
 	return CampaignDetection{
-		ID:               stableCampaignID(c.key),
+		ID:               stableCampaignID(c.key, c.episode),
 		Key:              c.key,
 		Vector:           c.vector,
 		Reason:           reason,
@@ -599,13 +624,16 @@ func campaignKey(vector SignalType, source SignalSource, collector, destSubnet s
 	return fmt.Sprintf("vector=%s|source=%s|collector=%s|dest_subnet=%s", vector, source, collector, destSubnet)
 }
 
-// stableCampaignID derives an ID from the campaign's stable key only. It must
-// NOT incorporate firstSeen: pruneCampaignLocked slides firstSeen forward as old
-// events age out of the window, so hashing it would mint a new ID every cycle
-// for any campaign that outlives the window, breaking campaign_id correlation
-// across a single continuous campaign.
-func stableCampaignID(key string) string {
-	return fmt.Sprintf("%x", fnv64(key))
+// stableCampaignID derives an ID from the campaign's stable key AND its episode
+// token. It must NOT incorporate firstSeen: pruneCampaignLocked slides firstSeen
+// forward as old events age out of the window, so hashing it would mint a new ID
+// every cycle for any campaign that outlives the window, breaking campaign_id
+// correlation across a single continuous campaign. The episode token, by
+// contrast, is fixed for the campaign's whole lifetime and only changes when a
+// brand-new campaign instance is created on the same key after the previous one
+// aged out - so the id is stable within an episode but distinct across episodes.
+func stableCampaignID(key string, episode uint64) string {
+	return fmt.Sprintf("%x", fnv64(fmt.Sprintf("%s|episode=%d", key, episode)))
 }
 
 func fnv64(s string) uint64 {
