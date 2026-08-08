@@ -105,6 +105,17 @@ type VerificationResult struct {
 	ErrorMessage                 string
 }
 
+// IsForgivenTransientFailure reports whether this result is a transient DNS
+// failure that is still within the forgiveness cap and therefore must NOT be
+// treated as impersonation. It centralizes the rule so every consumer (the
+// HTTP handler and the gRPC VerifyBot RPC) agrees: a real crawler with a
+// briefly-flaky PTR is not a spoofer, but the forgiveness is bounded so an
+// attacker serving SERVFAIL forever eventually falls through to impersonation.
+func (r *VerificationResult) IsForgivenTransientFailure() bool {
+	return r != nil && r.TransientFailure &&
+		r.ConsecutiveTransientFailures <= maxConsecutiveTransientFailures
+}
+
 // transientFailTTL bounds how long a could-not-complete verification is
 // served from cache before re-verifying. The regular cacheTTL (default 1h)
 // would turn one DNS hiccup into an hour of unverified treatment for a
@@ -151,10 +162,12 @@ type Verifier struct {
 	maxCacheEntries int
 	resolver        *net.Resolver // injectable for tests; DNS calls honor dnsTimeout
 
-	// DNS lookup seams, injectable for deterministic tests. Default to closures
-	// that call resolver with a dnsTimeout-bounded context.
-	lookupAddr func(addr string) ([]string, error)
-	lookupHost func(host string) ([]string, error)
+	// DNS lookup seams, injectable for deterministic tests. They take the
+	// caller's context so verifyDNS can bound the whole verification (reverse +
+	// forward) under a single shared deadline rather than giving each lookup its
+	// own, which would let a hostile PTR zone multiply the total stall.
+	lookupAddr func(ctx context.Context, addr string) ([]string, error)
+	lookupHost func(ctx context.Context, host string) ([]string, error)
 }
 
 // NewVerifier creates a new bot verifier
@@ -181,19 +194,16 @@ func NewVerifierWithGeoIP(cacheTTL, dnsTimeout time.Duration, geoIP GeoIPProvide
 		maxCacheEntries: 50000,
 		resolver:        net.DefaultResolver,
 	}
-	// Default DNS seams call the resolver with a dnsTimeout-bounded context.
-	// They read v.resolver/v.dnsTimeout at call time so a test overriding either
-	// field (or the whole seam) takes effect. Verification runs inline on the
-	// per-collector signal-stream goroutine, so an unbounded lookup against a
-	// hostile PTR zone must not stall detection for that collector.
-	v.lookupAddr = func(addr string) ([]string, error) {
-		ctx, cancel := context.WithTimeout(context.Background(), v.dnsTimeout)
-		defer cancel()
+	// Default DNS seams call the resolver with the caller-supplied context.
+	// They read v.resolver at call time so a test overriding it (or the whole
+	// seam) takes effect. verifyDNS supplies a single dnsTimeout-bounded context
+	// covering the whole verification. Verification runs inline on the
+	// per-collector signal-stream goroutine, so the bounded total budget keeps a
+	// hostile PTR zone from stalling detection for that collector.
+	v.lookupAddr = func(ctx context.Context, addr string) ([]string, error) {
 		return v.resolver.LookupAddr(ctx, addr)
 	}
-	v.lookupHost = func(host string) ([]string, error) {
-		ctx, cancel := context.WithTimeout(context.Background(), v.dnsTimeout)
-		defer cancel()
+	v.lookupHost = func(ctx context.Context, host string) ([]string, error) {
 		return v.resolver.LookupHost(ctx, host)
 	}
 
@@ -305,8 +315,15 @@ func (v *Verifier) verifyDNS(ip net.IP, pattern *BotPattern) *VerificationResult
 		VerifiedAt: time.Now(),
 	}
 
-	// Reverse DNS lookup (seam honors dnsTimeout).
-	names, err := v.lookupAddr(ip.String())
+	// A single overall deadline bounds the whole verification (reverse PTR plus
+	// any forward-confirm lookup). Giving each lookup its own dnsTimeout let the
+	// total blow out to N*dnsTimeout and let a hostile PTR zone multiply the
+	// stall by chaining lookups; one shared deadline caps the total budget.
+	ctx, cancel := context.WithTimeout(context.Background(), v.dnsTimeout)
+	defer cancel()
+
+	// Reverse DNS lookup (shares the verification-wide deadline).
+	names, err := v.lookupAddr(ctx, ip.String())
 	if err != nil {
 		logrus.WithError(err).Debug("Reverse DNS lookup failed")
 		result.TransientFailure = isTransientDNSError(err)
@@ -354,7 +371,7 @@ func (v *Verifier) verifyDNS(ip net.IP, pattern *BotPattern) *VerificationResult
 
 	// Forward DNS verification (if required)
 	if pattern.RequireForward {
-		addrs, err := v.lookupHost(reverseDNS)
+		addrs, err := v.lookupHost(ctx, reverseDNS)
 		if err != nil {
 			logrus.WithError(err).Debug("Forward DNS lookup failed")
 			result.TransientFailure = isTransientDNSError(err)

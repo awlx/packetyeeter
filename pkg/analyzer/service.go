@@ -1126,9 +1126,14 @@ func (a *Analyzer) VerifyBot(ctx context.Context, req *apiv1.BotVerifyRequest) (
 		metrics.BotVerificationSuccess.WithLabelValues(string(result.BotType)).Inc()
 	}
 
-	// Only flag impersonation if the User-Agent matches a KNOWN bot pattern but verification fails
-	// Don't flag unknown/generic clients as impersonators
-	isImpersonation := !result.IsVerified && result.BotType != "" && result.BotType != "unknown"
+	// Only flag impersonation if the User-Agent matches a KNOWN bot pattern but
+	// verification definitively fails. A transient DNS failure within the
+	// forgiveness cap is NOT impersonation - a real crawler with a briefly-flaky
+	// PTR must not be reported as a spoofer - matching the HTTP handler's
+	// semantics. Unknown/generic clients are never flagged.
+	isImpersonation := !result.IsVerified &&
+		result.BotType != "" && result.BotType != "unknown" &&
+		!result.IsForgivenTransientFailure()
 
 	return &apiv1.BotVerifyResponse{
 		IsVerified:      result.IsVerified,

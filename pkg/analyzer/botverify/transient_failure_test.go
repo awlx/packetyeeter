@@ -1,6 +1,7 @@
 package botverify
 
 import (
+	"context"
 	"net"
 	"testing"
 	"time"
@@ -86,7 +87,7 @@ const googlebotUA = "Mozilla/5.0 (compatible; Googlebot/2.1)"
 
 // servfailLookup simulates an attacker-controlled PTR zone that answers
 // SERVFAIL forever (transient class, never NXDOMAIN).
-func servfailLookup(string) ([]string, error) {
+func servfailLookup(context.Context, string) ([]string, error) {
 	return nil, &net.DNSError{Err: "server misbehaving", IsTemporary: true}
 }
 
@@ -151,8 +152,10 @@ func TestDefinitiveResultResetsTransientCounter(t *testing.T) {
 
 	// Point the reverse lookup at a Googlebot PTR and make forward DNS
 	// resolve back to the IP, so verifyDNS returns a definitive success.
-	v.lookupAddr = func(string) ([]string, error) { return []string{"crawl-192-0-2-99.googlebot.com."}, nil }
-	v.lookupHost = func(string) ([]string, error) { return []string{ipStr}, nil }
+	v.lookupAddr = func(context.Context, string) ([]string, error) {
+		return []string{"crawl-192-0-2-99.googlebot.com."}, nil
+	}
+	v.lookupHost = func(context.Context, string) ([]string, error) { return []string{ipStr}, nil }
 
 	// Accumulate transient failures just under the cap.
 	v.lookupAddr = servfailLookup
@@ -168,7 +171,9 @@ func TestDefinitiveResultResetsTransientCounter(t *testing.T) {
 	}
 
 	// One definitive success resets the counter.
-	v.lookupAddr = func(string) ([]string, error) { return []string{"crawl-192-0-2-99.googlebot.com."}, nil }
+	v.lookupAddr = func(context.Context, string) ([]string, error) {
+		return []string{"crawl-192-0-2-99.googlebot.com."}, nil
+	}
 	res := v.Verify(ip, googlebotUA)
 	if !res.IsVerified {
 		t.Fatalf("expected definitive verification, got %+v", res)
