@@ -1274,6 +1274,105 @@ func ppsFromWindow(pr prevRate, ok bool, rate ebpf.ICMPRate) float64 {
 	return float64(rate.Count)
 }
 
+// The kernel rate/bad-flags maps are LRU_HASH and self-evict under churn, but
+// the userspace bookkeeping maps that shadow them (prevICMPRates, prevUDPRates,
+// their IPv6 variants, and prevBadFlagsSeen/prevBadFlagsSeenV6) are plain Go
+// maps that would otherwise grow for the process lifetime: every distinct
+// source ever observed leaves an entry behind even after the kernel forgets it.
+// Under a high-cardinality spoofed-source flood that is an unbounded memory
+// leak, and it leaves the IPv6 shadows growing while the IPv4 ones are bounded.
+//
+// pruneStaleState bounds them the same way the kernel does. Entry values carry
+// the kernel monotonic timestamp (bpf_ktime_get_ns) of when the source was last
+// seen, so the largest timestamp across all maps approximates "now" on the
+// kernel clock. Anything older than prevStateStaleWindowNs is dropped. A hard
+// per-map cap is a final safety valve against adversarial cardinality bursts
+// faster than the window: if a map still exceeds it, the map is reset, which at
+// worst re-emits already-deduplicated signals for one poll cycle.
+const (
+	prevStateStaleWindowNs uint64 = 300 * 1_000_000_000 // 5 minutes of kernel monotonic time
+	prevStateHardCap              = 1 << 18             // 262144 entries per map
+)
+
+func (c *Collector) pruneStaleState() {
+	maxClock := uint64(0)
+	for _, v := range c.prevICMPRates {
+		if v.lastTime > maxClock {
+			maxClock = v.lastTime
+		}
+	}
+	for _, v := range c.prevUDPRates {
+		if v.lastTime > maxClock {
+			maxClock = v.lastTime
+		}
+	}
+	for _, v := range c.prevICMPRatesV6 {
+		if v.lastTime > maxClock {
+			maxClock = v.lastTime
+		}
+	}
+	for _, v := range c.prevUDPRatesV6 {
+		if v.lastTime > maxClock {
+			maxClock = v.lastTime
+		}
+	}
+	for _, ts := range c.prevBadFlagsSeen {
+		if ts > maxClock {
+			maxClock = ts
+		}
+	}
+	for _, ts := range c.prevBadFlagsSeenV6 {
+		if ts > maxClock {
+			maxClock = ts
+		}
+	}
+
+	prunePrevRateMap(c.prevICMPRates, maxClock, c.Logger)
+	prunePrevRateMap(c.prevUDPRates, maxClock, c.Logger)
+	prunePrevRateMapV6(c.prevICMPRatesV6, maxClock, c.Logger)
+	prunePrevRateMapV6(c.prevUDPRatesV6, maxClock, c.Logger)
+	prunePrevSeenMap(c.prevBadFlagsSeen, maxClock, c.Logger)
+	prunePrevSeenMap(c.prevBadFlagsSeenV6, maxClock, c.Logger)
+}
+
+func prunePrevRateMap(m map[uint32]prevRate, maxClock uint64, logger *logrus.Logger) {
+	if maxClock > prevStateStaleWindowNs {
+		cutoff := maxClock - prevStateStaleWindowNs
+		for k, v := range m {
+			if v.lastTime < cutoff {
+				delete(m, k)
+			}
+		}
+	}
+	if len(m) > prevStateHardCap {
+		if logger != nil {
+			logger.WithField("size", len(m)).Warn("prev-rate state exceeded hard cap under high cardinality; resetting")
+		}
+		for k := range m {
+			delete(m, k)
+		}
+	}
+}
+
+func prunePrevRateMapV6(m map[[16]byte]prevRate, maxClock uint64, logger *logrus.Logger) {
+	if maxClock > prevStateStaleWindowNs {
+		cutoff := maxClock - prevStateStaleWindowNs
+		for k, v := range m {
+			if v.lastTime < cutoff {
+				delete(m, k)
+			}
+		}
+	}
+	if len(m) > prevStateHardCap {
+		if logger != nil {
+			logger.WithField("size", len(m)).Warn("prev-rate v6 state exceeded hard cap under high cardinality; resetting")
+		}
+		for k := range m {
+			delete(m, k)
+		}
+	}
+}
+
 func prunePrevSeenMap[K comparable](m map[K]uint64, maxClock uint64, logger *logrus.Logger) {
 	if maxClock > prevStateStaleWindowNs {
 		cutoff := maxClock - prevStateStaleWindowNs
@@ -1386,32 +1485,57 @@ func (c *Collector) gcExpiredBlocks() {
 
 // sendSignal sends a signal to the analyzer (thread-safe)
 func (c *Collector) sendSignal(signal *apiv1.Signal) {
-	// Try to send to queue (non-blocking)
+	// Fast path: non-blocking enqueue.
 	select {
 	case c.signalQueue <- signal:
-		// Successfully queued
-		ql := len(c.signalQueue)
-		metrics.CollectorSignalQueueDepth.Set(float64(ql))
-		if c.Logger != nil && c.Logger.IsLevelEnabled(logrus.DebugLevel) {
-			c.Logger.WithField("queue_len", ql).Debug("Signal queued")
-		}
+		c.recordSignalQueued()
+		return
 	default:
-		// Queue full - drop oldest and add new (ring buffer behavior)
-		select {
-		case <-c.signalQueue: // Drop oldest
-			c.signalQueue <- signal // Add new
-			metrics.CollectorSignalQueueDrops.Inc()
-			c.dropLogMu.Lock()
-			c.dropLogCount++
-			if time.Since(c.dropLogLast) > 5*time.Second {
-				c.Logger.WithField("drops", c.dropLogCount).Warn("Signal queue full, dropped oldest signals")
-				c.dropLogLast = time.Now()
-				c.dropLogCount = 0
-			}
-			c.dropLogMu.Unlock()
-		default:
-		}
 	}
+
+	// Queue full. Make room by dropping the oldest, then retry the enqueue
+	// exactly once - still non-blocking. Concurrent producers (the poll loop,
+	// perf/incident readers, and synchronous SPOE callbacks all call
+	// sendSignal) may refill the slot we just freed before our retry runs. The
+	// previous implementation used an unconditional `c.signalQueue <- signal`
+	// here, which blocks in exactly that race - stalling a synchronous SPOE
+	// callback, and with it HAProxy request handling and shutdown. Instead we
+	// drop THIS signal if the retry can't proceed: under sustained overload we
+	// always shed load rather than apply backpressure to the caller, which is
+	// the intended ring-buffer semantics.
+	select {
+	case <-c.signalQueue: // Drop oldest
+		c.recordSignalDrop()
+	default:
+		// Already drained by another producer; fall through to the retry.
+	}
+
+	select {
+	case c.signalQueue <- signal:
+		c.recordSignalQueued()
+	default:
+		c.recordSignalDrop()
+	}
+}
+
+func (c *Collector) recordSignalQueued() {
+	ql := len(c.signalQueue)
+	metrics.CollectorSignalQueueDepth.Set(float64(ql))
+	if c.Logger != nil && c.Logger.IsLevelEnabled(logrus.DebugLevel) {
+		c.Logger.WithField("queue_len", ql).Debug("Signal queued")
+	}
+}
+
+func (c *Collector) recordSignalDrop() {
+	metrics.CollectorSignalQueueDrops.Inc()
+	c.dropLogMu.Lock()
+	c.dropLogCount++
+	if time.Since(c.dropLogLast) > 5*time.Second {
+		c.Logger.WithField("drops", c.dropLogCount).Warn("Signal queue full, dropped signals")
+		c.dropLogLast = time.Now()
+		c.dropLogCount = 0
+	}
+	c.dropLogMu.Unlock()
 }
 
 // signalSendTimeout bounds how long signalSender waits for a single

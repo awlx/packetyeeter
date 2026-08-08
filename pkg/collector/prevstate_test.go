@@ -61,6 +61,24 @@ func TestPrunePrevSeenMapDropsStale(t *testing.T) {
 	}
 }
 
+func TestPrunePrevRateMapV6DropsStale(t *testing.T) {
+	now := prevStateStaleWindowNs * 2
+	var fresh, stale [16]byte
+	fresh[15] = 1
+	stale[15] = 2
+	m := map[[16]byte]prevRate{
+		fresh: {lastTime: now, count: 5},
+		stale: {lastTime: now - prevStateStaleWindowNs - 1, count: 3},
+	}
+	prunePrevRateMapV6(m, now, nil)
+	if _, ok := m[fresh]; !ok {
+		t.Errorf("fresh v6 rate entry was pruned")
+	}
+	if _, ok := m[stale]; ok {
+		t.Errorf("stale v6 rate entry was not pruned")
+	}
+}
+
 func TestPrunePrevSeenMapV6Key(t *testing.T) {
 	now := prevStateStaleWindowNs * 2
 	var fresh, stale [16]byte

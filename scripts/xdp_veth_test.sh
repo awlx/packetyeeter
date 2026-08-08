@@ -14,22 +14,49 @@
 set -euo pipefail
 
 # ---- config ----------------------------------------------------------------
-NS="yeetns"
-VETH_HOST="yeet0"        # collector attaches XDP here
-VETH_PEER="yeet1"        # traffic source, lives in the netns
+# Resource names are made unique per run so concurrent runs don't collide and,
+# critically, so cleanup only ever removes resources THIS run created. A short
+# random token keeps interface names within the 15-char kernel limit
+# (IFNAMSIZ): "yeet" + 4 hex + 1 digit = 9 chars.
+pick_names() {
+  local token
+  token="$(printf '%04x' $((RANDOM % 65536)))"
+  NS="yeetns_${token}_$$"
+  VETH_HOST="yeet${token}0"  # collector attaches XDP here
+  VETH_PEER="yeet${token}1"  # traffic source, lives in the netns
+}
+# Try a few tokens to find names that don't already exist. If we still collide,
+# refuse rather than risk adopting (and later deleting) someone else's veth/netns.
+resource_exists() {
+  ip link show "$VETH_HOST" >/dev/null 2>&1 && return 0
+  ip link show "$VETH_PEER" >/dev/null 2>&1 && return 0
+  ip netns list 2>/dev/null | awk '{print $1}' | grep -qx "$NS" && return 0
+  return 1
+}
+NS=""; VETH_HOST=""; VETH_PEER=""
+for _try in 1 2 3 4 5; do
+  pick_names
+  resource_exists || break
+  NS=""; VETH_HOST=""; VETH_PEER=""
+done
+
 HOST_V4="10.123.0.1"; PEER_V4="10.123.0.2"
 HOST_V6="fd00:dead::1";  PEER_V6="fd00:dead::2"
 PREFIX4=24; PREFIX6=64
 FLOOD_SECS=6
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-COLLECTOR_BIN="$REPO/bin/packetyeeter-collector"
-SINK_BIN="$REPO/bin/xdp_veth_sink"
-UDPFLOOD_BIN="$REPO/bin/xdp_veth_udpflood"
+BIN_DIR="$REPO/bin"
+COLLECTOR_BIN="$BIN_DIR/packetyeeter-collector"
+SINK_BIN="$BIN_DIR/xdp_veth_sink"
+UDPFLOOD_BIN="$BIN_DIR/xdp_veth_udpflood"
 COLLECTOR_LOG="$(mktemp /tmp/yeet-collector.XXXXXX.log)"
 SINK_LOG="$(mktemp /tmp/yeet-sink.XXXXXX.log)"
 SINK_ADDR="127.0.0.1:59999"
 COLLECTOR_PID=""
 SINK_PID=""
+# Ownership flags: cleanup only deletes what THIS run actually created.
+CREATED_NETNS=0
+CREATED_VETH=0
 
 log()  { printf '\033[1;36m[test]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[warn]\033[0m %s\n' "$*"; }
@@ -37,12 +64,17 @@ fail() { printf '\033[1;31m[fail]\033[0m %s\n' "$*"; exit 1; }
 
 if [[ $EUID -ne 0 ]]; then fail "must run as root (XDP attach + veth). Use: sudo $0"; fi
 
+if [[ -z "$VETH_HOST" || -z "$NS" ]] || resource_exists; then
+  fail "could not find free veth/netns names after several attempts; refusing to touch existing resources. Re-run, or clean up stale yeet* interfaces/namespaces yourself."
+fi
+
 cleanup() {
   set +e
   [[ -n "$COLLECTOR_PID" ]] && kill "$COLLECTOR_PID" 2>/dev/null && wait "$COLLECTOR_PID" 2>/dev/null
   [[ -n "$SINK_PID" ]] && kill "$SINK_PID" 2>/dev/null && wait "$SINK_PID" 2>/dev/null
-  ip link del "$VETH_HOST" 2>/dev/null           # deleting one end removes the pair
-  ip netns del "$NS" 2>/dev/null
+  # Only remove resources this run created. Deleting one veth end removes the pair.
+  [[ "$CREATED_VETH" -eq 1 ]] && ip link del "$VETH_HOST" 2>/dev/null
+  [[ "$CREATED_NETNS" -eq 1 ]] && ip netns del "$NS" 2>/dev/null
   log "cleaned up (logs kept: collector=$COLLECTOR_LOG sink=$SINK_LOG)"
 }
 trap cleanup EXIT
@@ -65,6 +97,7 @@ HAVE_BPFTOOL=0; command -v bpftool >/dev/null && HAVE_BPFTOOL=1 || \
 # directly: the `make collector` target regenerates protobuf via buf, which
 # isn't needed here (generated files are committed).
 log "building eBPF object + collector + signal sink"
+mkdir -p "$BIN_DIR"
 make -C "$REPO" bpf >/dev/null
 ( cd "$REPO" && go build -o "$COLLECTOR_BIN" ./cmd/collector )
 ( cd "$REPO" && go build -o "$SINK_BIN" ./scripts/xdp_veth_sink )
@@ -76,7 +109,9 @@ make -C "$REPO" bpf >/dev/null
 # ---- 2. veth pair + addresses ---------------------------------------------
 log "creating veth pair $VETH_HOST <-> $VETH_PEER (peer in netns $NS)"
 ip netns add "$NS"
+CREATED_NETNS=1
 ip link add "$VETH_HOST" type veth peer name "$VETH_PEER"
+CREATED_VETH=1
 ip link set "$VETH_PEER" netns "$NS"
 
 ip addr add "$HOST_V4/$PREFIX4" dev "$VETH_HOST"
