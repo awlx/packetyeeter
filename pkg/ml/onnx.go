@@ -254,22 +254,21 @@ func (m *ONNXModel) featuresToTensor(features aidetection.MLFeatures) []float32 
 	return m.featuresToTensorLegacy(features)
 }
 
-// copyTruncated copies as much of src into dst starting at offset as fits,
-// silently dropping any tail that would exceed dst's length. Used so smaller
-// auto-detected model sizes (100/106/110 features) don't panic when a
-// feature block sized for the full 126-feature layout doesn't fit.
-func copyTruncated(dst []float32, offset int, src []float32) {
-	if offset >= len(dst) {
-		return
-	}
-	end := offset + len(src)
-	if end > len(dst) {
-		end = len(dst)
-	}
-	copy(dst[offset:end], src)
-}
-
-// featuresToTensorAdvanced extracts 126 features from event history
+// featuresToTensorAdvanced builds the advanced feature vector. Only two widths
+// have an exact, index-by-index layout that can be constructed from this
+// repository's training/export contract (see docs/advanced_features.md and
+// scripts/extract_advanced_features.py):
+//
+//	126 - full advanced layout: temporal[0:25] path[25:45] header[45:70]
+//	      signal[70:95] fingerprint[95:105] behavioral[105:115] detection[115:126]
+//	116 - advanced layout without the fingerprint block, detection features
+//	      overlaid at [95:100]
+//
+// LoadONNXModel refuses any other width, so featuresToTensorAdvanced is only
+// ever reached with nFeatures 116 or 126. The default branch is defensive: it
+// never fabricates a truncated/misaligned vector (which would feed corrupted
+// inputs into an enforcement model). It returns an all-zero tensor of the
+// requested length and logs, so the failure is observable rather than silent.
 func (m *ONNXModel) featuresToTensorAdvanced(features aidetection.MLFeatures) []float32 {
 	// Allocate based on model's actual feature count
 	tensor := make([]float32, m.nFeatures)
@@ -277,6 +276,12 @@ func (m *ONNXModel) featuresToTensorAdvanced(features aidetection.MLFeatures) []
 	if features.EventHistory == nil {
 		logrus.Warn("Advanced feature extraction requested but no event history available")
 		return tensor // Return zeros
+	}
+
+	if m.nFeatures != 126 && m.nFeatures != 116 {
+		logrus.WithField("n_features", m.nFeatures).Error(
+			"CRITICAL: advanced feature extraction reached with an unsupported width; returning zero features to avoid misaligned inputs")
+		return tensor
 	}
 
 	extractor := &AdvancedFeatureExtractor{}
@@ -297,14 +302,11 @@ func (m *ONNXModel) featuresToTensorAdvanced(features aidetection.MLFeatures) []
 	signalFeats := extractor.ExtractSignalFeatures(*features.EventHistory)
 	copy(tensor[70:95], signalFeats)
 
-	// Fingerprint features (10) and behavioral features (10) normally occupy
-	// tensor[95:115]. Auto-detected model sizes 100/106/110 (see the probe
-	// list in loadONNXModelInternal) are narrower than that, so copyTruncated
-	// clamps each write to the tensor's actual capacity instead of writing
-	// the fixed offsets unconditionally, which would panic with a
-	// slice-bounds-out-of-range on those sizes.
+	// Fingerprint features (10) and behavioral features (10) occupy
+	// tensor[95:115]. Both supported widths (116 and 126) are >= 115, so these
+	// fixed-offset copies are always in bounds.
 	fingerprintFeats := extractor.ExtractFingerprintFeatures(*features.EventHistory, features.JA4, features.JA4H, features.JA4T)
-	copyTruncated(tensor, 95, fingerprintFeats)
+	copy(tensor[95:105], fingerprintFeats)
 
 	// Behavioral features (10) - requires splitting events into pre/post
 	// For now, use all events as both pre and post (simplified)
@@ -314,10 +316,10 @@ func (m *ONNXModel) featuresToTensorAdvanced(features aidetection.MLFeatures) []
 		features.EventHistory.Timestamps,
 		features.EventHistory.Timestamps,
 	)
-	copyTruncated(tensor, 105, behavioralFeats)
+	copy(tensor[105:115], behavioralFeats)
 
 	// Original detection features (11) - only if model supports 126 features
-	if m.nFeatures >= 126 {
+	if m.nFeatures == 126 {
 		tensor[115] = float32(features.Confidence)
 		tensor[116] = float32(features.SignalCount)
 		if features.WouldBlock {
@@ -337,7 +339,7 @@ func (m *ONNXModel) featuresToTensorAdvanced(features aidetection.MLFeatures) []
 		tensor[123] = float32(features.UserAgentCount)
 		tensor[124] = float32(features.ASN)
 		tensor[125] = float32(features.AsnReputation)
-	} else if m.nFeatures == 116 {
+	} else { // m.nFeatures == 116
 		// Old 116-feature model layout (no fingerprints, simplified detection features)
 		// Overwrite fingerprint section with detection features
 		tensor[95] = float32(features.Confidence)
@@ -349,11 +351,8 @@ func (m *ONNXModel) featuresToTensorAdvanced(features aidetection.MLFeatures) []
 		if features.JA4 != "" {
 			tensor[99] = 1.0
 		}
-		// Behavioral still at 105-115, but limit to what fits
-		if m.nFeatures > 115 {
-			// 116-feature model has room for 1 more feature
-			tensor[115] = behavioralFeats[9] // Last behavioral feature
-		}
+		// Behavioral still at 105-115; index 115 holds the last behavioral feature.
+		tensor[115] = behavioralFeats[9]
 	}
 
 	return tensor
@@ -573,6 +572,7 @@ func loadONNXModelInternal(modelPath string, threshold float64) (*ONNXModel, err
 
 	// Try to auto-detect feature count by testing inference with different sizes
 	nFeatures := 41 // Default fallback
+	detected := false
 
 	logrus.Info("Auto-detecting model feature count...")
 	for _, testSize := range []int{126, 116, 110, 106, 100, 144, 41, 50} {
@@ -617,6 +617,7 @@ func loadONNXModelInternal(modelPath string, threshold float64) (*ONNXModel, err
 
 		if err == nil {
 			nFeatures = testSize
+			detected = true
 			logrus.WithField("detected_features", nFeatures).Info("✓ Auto-detected feature count from model")
 			break
 		} else {
@@ -624,8 +625,26 @@ func loadONNXModelInternal(modelPath string, threshold float64) (*ONNXModel, err
 		}
 	}
 
-	if nFeatures == 41 {
-		logrus.Warn("Auto-detection failed, using default 41 features")
+	if !detected {
+		return nil, fmt.Errorf("could not auto-detect ONNX model feature width from probe sizes; refusing to load a model whose input shape is unknown")
+	}
+
+	// Only these widths have an exact, index-by-index feature layout that this
+	// build can construct (see docs/ml_feature_spec.md and
+	// docs/advanced_features.md):
+	//   41  - legacy aggregate model (featuresToTensorLegacy)
+	//   116 - advanced layout without the fingerprint block
+	//   126 - full advanced layout
+	// Any other detected width (100/106/110/144/50, ...) has no provable
+	// training/export contract in this repository. Loading it would force a
+	// generic truncation of the 126-feature layout, silently feeding
+	// misaligned/corrupted features into an enforcement model. Refuse instead,
+	// so the failure is loud and enforcement-safe.
+	switch nFeatures {
+	case 41, 116, 126:
+		// supported
+	default:
+		return nil, fmt.Errorf("ONNX model expects %d features, but only 41, 116, and 126 have a defined feature layout in this build (see docs/advanced_features.md); refusing to load to avoid feeding misaligned features into enforcement", nFeatures)
 	}
 
 	return &ONNXModel{
