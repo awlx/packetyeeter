@@ -78,8 +78,9 @@ type Config struct {
 	DisableDDoSCategory          bool
 	JA4DBCachePath               string
 	StateDir                     string
-	MaxCollectors                int  // Max concurrent collector streams (default 1024)
-	DryRun                       bool // Monitor mode - log detections but don't block
+	MaxCollectors                int      // Max concurrent collector streams (default 1024)
+	InspectorTrustedHosts        []string // Extra Host/Origin hostnames the inspector trusts for mutating requests (in addition to loopback), e.g. a reverse-proxy hostname
+	DryRun                       bool     // Monitor mode - log detections but don't block
 }
 
 // Analyzer is the AI/ML analysis daemon that receives signals from collectors

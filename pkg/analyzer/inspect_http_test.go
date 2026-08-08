@@ -42,7 +42,8 @@ func TestIsLoopbackHostname(t *testing.T) {
 // not be able to fire a side effect via a CORS-simple request, and a
 // DNS-rebound hostname must not be able to reach the loopback-only inspector.
 func TestSameOriginOnly(t *testing.T) {
-	handler := sameOriginOnly(stubOK)
+	a := &Analyzer{}
+	handler := a.sameOriginOnly(stubOK)
 
 	t.Run("same-origin request with no Origin/Referer is allowed (curl/tooling)", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:9092/api/feedback/allowlist/bulk-delete", nil)
@@ -132,6 +133,62 @@ func TestSameOriginOnly(t *testing.T) {
 		handler(w, req)
 		if w.Code != http.StatusForbidden {
 			t.Fatalf("expected 403, got %d: %s", w.Code, w.Body.String())
+		}
+	})
+}
+
+// #67.2: a read-only GET must pass through the guard untouched even from a
+// non-loopback host, so the mutation protection is never accidentally applied
+// to safe methods.
+func TestSameOriginOnly_ReadOnlyGetIsNeverBlocked(t *testing.T) {
+	a := &Analyzer{}
+	handler := a.sameOriginOnly(stubOK)
+
+	req := httptest.NewRequest(http.MethodGet, "http://attacker.example.com:9092/api/sessions", nil)
+	req.Host = "attacker.example.com:9092"
+	req.Header.Set("Origin", "https://evil.example.com")
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("read-only GET must not be blocked by the mutation guard, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// #67.2: a configured trusted host (e.g. a reverse proxy) is accepted for
+// mutating requests, but only the named host - not arbitrary hosts.
+func TestSameOriginOnly_ConfiguredTrustedHost(t *testing.T) {
+	a := &Analyzer{Config: Config{InspectorTrustedHosts: []string{"admin.internal"}}}
+	handler := a.sameOriginOnly(stubOK)
+
+	t.Run("trusted proxy host allowed", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "http://admin.internal/api/sessions/delete", nil)
+		req.Host = "admin.internal"
+		req.Header.Set("Origin", "https://admin.internal")
+		w := httptest.NewRecorder()
+		handler(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("configured trusted host should be allowed, got %d: %s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("untrusted host still rejected", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "http://other.internal/api/sessions/delete", nil)
+		req.Host = "other.internal"
+		w := httptest.NewRecorder()
+		handler(w, req)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("an unconfigured host must still be rejected, got %d", w.Code)
+		}
+	})
+
+	t.Run("trusted host but cross-origin to an untrusted origin is rejected", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "http://admin.internal/api/sessions/delete", nil)
+		req.Host = "admin.internal"
+		req.Header.Set("Origin", "https://evil.example.com")
+		w := httptest.NewRecorder()
+		handler(w, req)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("cross-origin request to a trusted host must still be rejected, got %d", w.Code)
 		}
 	})
 }

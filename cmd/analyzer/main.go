@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -19,6 +20,7 @@ func main() {
 		listenAddr       = flag.String("listen-addr", "0.0.0.0:9090", "gRPC listen address")
 		metricsAddr      = flag.String("metrics-addr", ":9091", "Prometheus metrics HTTP listen address")
 		inspectAddr      = flag.String("inspect-addr", "127.0.0.1:9092", "Inspector HTTP listen address")
+		inspectTrusted   = flag.String("inspect-trusted-hosts", "", "Comma-separated extra Host/Origin hostnames the inspector trusts for state-mutating requests, in addition to loopback (e.g. a reverse-proxy hostname)")
 		geoIPASNPath     = flag.String("geoip-asn", "", "Path to GeoLite2-ASN.mmdb")
 		geoIPCountryPath = flag.String("geoip-country", "", "Path to GeoLite2-Country.mmdb or GeoLite2-City.mmdb (optional, enables country enrichment)")
 		repThreshold     = flag.Float64("reputation-threshold", 75.0, "Reputation threshold for blocking")
@@ -53,10 +55,18 @@ func main() {
 	}
 	logrus.SetFormatter(&logrus.TextFormatter{FullTimestamp: true})
 
+	var inspectorTrustedHosts []string
+	for _, h := range strings.Split(*inspectTrusted, ",") {
+		if h = strings.TrimSpace(h); h != "" {
+			inspectorTrustedHosts = append(inspectorTrustedHosts, h)
+		}
+	}
+
 	cfg := analyzer.Config{
 		ListenAddr:                   *listenAddr,
 		MetricsAddr:                  *metricsAddr,
 		InspectorAddr:                *inspectAddr,
+		InspectorTrustedHosts:        inspectorTrustedHosts,
 		GeoIPASNPath:                 *geoIPASNPath,
 		GeoIPCountryPath:             *geoIPCountryPath,
 		ReputationThreshold:          *repThreshold,
