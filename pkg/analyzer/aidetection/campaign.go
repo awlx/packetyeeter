@@ -271,11 +271,16 @@ func (a *CampaignAggregator) Evaluate(now time.Time) []CampaignDetection {
 		if !ok {
 			continue
 		}
-		baseline := a.observeBaselineLocked(c, now)
-		detection.Baseline = baseline
+		// Dedup a still-firing campaign BEFORE feeding the baseline: observing on
+		// every evaluation tick fed a sustained campaign's own attack rate into
+		// the adaptive baseline, training it up toward that rate until the
+		// campaign no longer read as anomalous. Observe only on a fresh
+		// detection (at most once per Window per campaign) so the corroborating
+		// baseline is not self-poisoned by the campaign it is meant to score.
 		if c.lastReason == detection.Reason && !c.lastDetection.IsZero() && now.Sub(c.lastDetection) < a.cfg.Window {
 			continue
 		}
+		detection.Baseline = a.observeBaselineLocked(c, now)
 		c.lastReason = detection.Reason
 		c.lastDetection = now
 		detections = append(detections, detection)
@@ -482,7 +487,7 @@ func (a *CampaignAggregator) evaluateCampaignLocked(c *attackCampaign) (Campaign
 	}
 
 	return CampaignDetection{
-		ID:               stableCampaignID(c.key, c.firstSeen),
+		ID:               stableCampaignID(c.key),
 		Key:              c.key,
 		Vector:           c.vector,
 		Reason:           reason,
@@ -594,8 +599,13 @@ func campaignKey(vector SignalType, source SignalSource, collector, destSubnet s
 	return fmt.Sprintf("vector=%s|source=%s|collector=%s|dest_subnet=%s", vector, source, collector, destSubnet)
 }
 
-func stableCampaignID(key string, firstSeen time.Time) string {
-	return fmt.Sprintf("%x", fnv64(key+"|"+firstSeen.UTC().Format(time.RFC3339Nano)))
+// stableCampaignID derives an ID from the campaign's stable key only. It must
+// NOT incorporate firstSeen: pruneCampaignLocked slides firstSeen forward as old
+// events age out of the window, so hashing it would mint a new ID every cycle
+// for any campaign that outlives the window, breaking campaign_id correlation
+// across a single continuous campaign.
+func stableCampaignID(key string) string {
+	return fmt.Sprintf("%x", fnv64(key))
 }
 
 func fnv64(s string) uint64 {
