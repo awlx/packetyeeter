@@ -2,6 +2,7 @@ package analyzer
 
 import (
 	"context"
+	"math"
 	"net"
 	"testing"
 	"time"
@@ -129,17 +130,74 @@ func TestBroadcastReachesAllCollectors(t *testing.T) {
 	fakeB.expectNoCommand(t)
 }
 
-// W3: penalty metadata arrives over an unauthenticated gRPC plane; it must
-// never be able to target an arbitrary entity, only the signal's own source.
-func TestProcessSignalPenaltyMetadataCannotTargetArbitraryEntity(t *testing.T) {
+// #74.1: Broadcasting a block with zero connected collectors must NOT reserve
+// the dedup slot, so a collector connecting afterward still receives the block.
+func TestBroadcastWithNoCollectorsDoesNotReserveDedup(t *testing.T) {
+	a := newTestAnalyzer(t)
+
+	ip := net.ParseIP("192.0.2.55").To4()
+	// No collectors connected yet.
+	a.Broadcast(&apiv1.Command{Type: apiv1.CommandType_COMMAND_BLOCK_IP, Ip: ip, Reason: "no recipients"})
+
+	// The IP must not have been marked as recently blocked.
+	if a.wasRecentlyBlocked(net.IP(ip)) {
+		t.Fatal("broadcast with no collectors reserved the dedup slot; a reconnecting collector would miss the block")
+	}
+
+	// Now a collector connects and the same block is re-issued: it must be
+	// delivered (not suppressed as a duplicate).
+	fake := newFakeCollectorStream()
+	a.registerCollector(context.Background(), &collectorStream{stream: fake})
+	a.Broadcast(&apiv1.Command{Type: apiv1.CommandType_COMMAND_BLOCK_IP, Ip: ip, Reason: "after reconnect"})
+	fake.waitForCommand(t)
+}
+
+// #74.3: collector admission is bounded so an unauthenticated peer cannot grow
+// the collectors map without limit.
+func TestRegisterCollectorEnforcesMaxCollectors(t *testing.T) {
+	a := newTestAnalyzer(t)
+	a.Config.MaxCollectors = 2
+
+	id1 := a.registerCollector(context.Background(), &collectorStream{stream: newFakeCollectorStream()})
+	id2 := a.registerCollector(context.Background(), &collectorStream{stream: newFakeCollectorStream()})
+	id3 := a.registerCollector(context.Background(), &collectorStream{stream: newFakeCollectorStream()})
+
+	if id1 == "" || id2 == "" {
+		t.Fatalf("first two collectors should be admitted, got %q and %q", id1, id2)
+	}
+	if id3 != "" {
+		t.Fatalf("third collector should be refused past the cap, got id %q", id3)
+	}
+
+	a.collectorsMu.RLock()
+	count := len(a.collectors)
+	a.collectorsMu.RUnlock()
+	if count != 2 {
+		t.Fatalf("collectors map should be capped at 2, got %d", count)
+	}
+
+	// Freeing a slot lets a new collector in.
+	a.unregisterCollector(id1)
+	id4 := a.registerCollector(context.Background(), &collectorStream{stream: newFakeCollectorStream()})
+	if id4 == "" {
+		t.Fatal("a collector should be admitted after a slot is freed")
+	}
+}
+
+// The penalty_key/penalty_type/penalty_reason wire metadata is fully disabled:
+// it arrives over an unauthenticated gRPC plane with an attacker-controlled
+// source IP, so it must never penalize anyone - neither an arbitrary victim nor
+// the signal's own (spoofable) source. Reputation is driven only by signals the
+// analyzer actually scores.
+func TestProcessSignalPenaltyMetadataIsIgnored(t *testing.T) {
 	a := newTestAnalyzer(t)
 
 	victim := "203.0.113.9"
-	attacker := net.ParseIP("198.51.100.7").To4()
+	source := net.ParseIP("198.51.100.7").To4()
 
 	sig := &apiv1.Signal{
 		Type:   apiv1.SignalType_SIGNAL_TCP_METADATA,
-		Ip:     attacker,
+		Ip:     source,
 		Weight: 42,
 		Metadata: map[string]string{
 			"penalty_key":    victim,
@@ -152,29 +210,30 @@ func TestProcessSignalPenaltyMetadataCannotTargetArbitraryEntity(t *testing.T) {
 	if score := a.Reputation.GetScore(victim, reputation.TypeIP); score != 0 {
 		t.Fatalf("wire metadata penalized an arbitrary third-party entity: victim score = %v, want 0", score)
 	}
-	if score := a.Reputation.GetScore(net.IP(sig.Ip).String(), reputation.TypeIP); score != 42 {
-		t.Fatalf("penalty request must penalize the signal's own source IP: got score %v, want 42", score)
+	if score := a.Reputation.GetScore(net.IP(sig.Ip).String(), reputation.TypeIP); score != 0 {
+		t.Fatalf("wire penalty metadata must not penalize even the (spoofable) source IP: got score %v, want 0", score)
 	}
 }
 
-// W3 fail-closed: a penalty request with no source IP has nothing legitimate
-// to bind to and must be dropped entirely.
-func TestProcessSignalPenaltyMetadataWithoutSourceIPIsDropped(t *testing.T) {
+// A penalty request with a non-finite weight must never corrupt reputation.
+// (The whole metadata path is disabled, so this is a belt-and-suspenders guard.)
+func TestProcessSignalPenaltyMetadataWithBadWeightIsIgnored(t *testing.T) {
 	a := newTestAnalyzer(t)
 
-	victim := "203.0.113.9"
+	source := net.ParseIP("198.51.100.8").To4()
 	sig := &apiv1.Signal{
 		Type:   apiv1.SignalType_SIGNAL_TCP_METADATA,
-		Weight: 42,
+		Ip:     source,
+		Weight: math.Inf(1),
 		Metadata: map[string]string{
-			"penalty_key":  victim,
+			"penalty_key":  net.IP(source).String(),
 			"penalty_type": "ip",
 		},
 	}
 	a.processSignal(sig, &collectorStream{stream: newFakeCollectorStream()})
 
-	if score := a.Reputation.GetScore(victim, reputation.TypeIP); score != 0 {
-		t.Fatalf("sourceless penalty request must be dropped: victim score = %v, want 0", score)
+	if score := a.Reputation.GetScore(net.IP(source).String(), reputation.TypeIP); score != 0 || math.IsInf(score, 0) || math.IsNaN(score) {
+		t.Fatalf("non-finite penalty weight must not reach reputation: got %v", score)
 	}
 }
 

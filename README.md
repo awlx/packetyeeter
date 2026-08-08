@@ -314,6 +314,7 @@ sudo ./packetyeeter-collector -i eth0 -analyzer-addr 127.0.0.1:9090
 | `-ai-confidence-threshold` | `0.7` | Minimum AI confidence to flag a bot/scraper. |
 | `-ai-workers` | `16` | AI detection worker pool size. |
 | `-ai-queue-size` | `10000` | AI detection queue size. |
+| `-max-collectors` | `1024` | Maximum concurrent collector streams. Bounds fan-out and goroutines on the unauthenticated signal plane. |
 | `-ml-model` | `""` | Optional path to an ONNX ML model. |
 | `-ddos-min-incomplete` | `400` | Min incomplete handshakes for a DDoS categorization. |
 | `-ddos-min-pattern` | `800` | Min pattern matches for a DDoS categorization. |
