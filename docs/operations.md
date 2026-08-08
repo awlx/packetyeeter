@@ -19,7 +19,7 @@ Default listeners are convenient for labs but should be deliberately bound in pr
 | :--- | :--- | :--- | :--- |
 | Analyzer gRPC | `-listen-addr` | `0.0.0.0:9090` | Expose only to collectors over trusted networks or firewall rules. |
 | Analyzer metrics | `-metrics-addr` | `:9091` | Bind to loopback/management networks or restrict with firewall/VPN. |
-| Analyzer inspector | `-inspect-addr` | `127.0.0.1:9092` | Keep loopback unless placed behind trusted access controls. |
+| Analyzer inspector | `-inspect-addr` | `127.0.0.1:9092` | Keep loopback unless placed behind trusted access controls. State-mutating routes are protected by a same-origin/DNS-rebinding guard; behind a reverse proxy, add the proxy hostname to `-inspect-trusted-hosts` so mutating requests are accepted. Read-only GETs are never gated. |
 | Analyzer pprof | `-pprof-addr` | `:6060` when enabled | Enable only temporarily for diagnostics and bind securely. |
 | Collector metrics | `-metrics-addr` | `:2112` | Scrape from Prometheus over a trusted network. |
 | Collector management | `-socket` | `/var/run/packetyeeter-collector.sock` | Created with mode `0600` (owner-only); run `yeetctl` as the same user or relax with a group and chmod after start. |
@@ -37,10 +37,15 @@ The collector is intentionally less restricted because it loads eBPF, attaches X
 - Keep `-enable-high-cardinality-metrics=false` during normal operations; turn it on only for short diagnostic windows.
 - Set allowlists for monitoring systems, load balancers, bastion hosts, health checks, and upstream trusted proxies.
 - Watch `packetyeeter_*_blocks_total`, reputation scores, AI detections, SPOE queue depth/drops, and collector/analyzer logs before enabling enforcement.
+- Per-IP and per-JA4 reputation penalties now accumulate (previously the per-IP/JA4 score caps defaulted to 0, clamping those penalties to a no-op; only ASN scoring accrued). On upgrade, expect IP/JA4 reputation scores to rise for sources that repeatedly trip detections, which can cross ban thresholds that were previously never reached. Re-baseline in `-dry-run`, review reputation scores and `packetyeeter_*_blocks_total`, and tune allowlists/thresholds before enabling enforcement.
 - Treat UDP reflection campaign labels as observability metadata. The analyzer can distinguish common vectors such as DNS, NTP, SSDP, CLDAP, Memcached, and QUIC Initial only when existing signal metadata carries useful port or protocol hints; ambiguous UDP campaigns remain labeled `udp_flood`.
 - Treat adaptive campaign baselines as rollout context, not enforcement. During analyzer startup or a new service/vector mix, `baseline_enough_samples=false` means the EWMA is still warming up; compare `baseline_current_rate`, `baseline_rate`, and `baseline_multiplier` only after enough samples have accumulated for that service key.
 - The adaptive baseline caps how fast it can rise per observation (`MaxGrowthPerObservation`, default 1.5x) to resist slow-ramp attacks that try to normalize themselves into the baseline; if legitimate traffic grows unusually fast, the baseline may lag for a few observation cycles before catching up. See `docs/observability.md` for details and tuning guidance.
 - Campaign/carpet-bombing detections now penalize reputation (representative sample IP/ASN, scaled by campaign severity) the same way regular detections do, instead of bypassing reputation entirely - repeated campaign involvement from the same source/ASN accumulates over time. This does not change `WouldBlock`/enforcement behavior for campaigns; they remain observe-only.
+- On dual-stack hosts, the collector now emits IPv6 ICMP/UDP flood and
+  incomplete-handshake signals (previously IPv4-only). Expect new IPv6
+  detections after upgrading; stage with analyzer `-dry-run` and verify IPv6
+  allowlists (health checks, monitoring, upstream proxies) before enforcing.
 - Roll back by re-enabling dry-run or stopping collectors before changing eBPF-related systemd hardening.
 
 ## Modern DDoS runbook

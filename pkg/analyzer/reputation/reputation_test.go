@@ -58,6 +58,61 @@ func TestDecayExpiresEntriesPastMaxAge(t *testing.T) {
 	}
 }
 
+// TestDecayReconcilesASNStatsWithExpiredEntry is a regression test for a
+// leak: decay() deleted aged-out entries from sh.entries but left the
+// parallel sh.asnStats (Seen/Offenders IP sets) behind forever, since the
+// only reconciliation lived in SetASNScoreCap, which production never
+// calls. This verifies an ASN's asnStats is cleaned up in lockstep with its
+// reputation Entry when the entry ages out past maxEntryAge.
+func TestDecayReconcilesASNStatsWithExpiredEntry(t *testing.T) {
+	e := New(time.Hour, 0.95, 100)
+	e.SetMaxEntryAge(time.Minute)
+
+	asn := "AS64500"
+	e.ObserveIP(asn, "198.51.100.1")
+	e.PenalizeASN(asn, "198.51.100.1", 10.0, "test")
+
+	if total, offenders := e.GetASNStats(asn); total == 0 || offenders == 0 {
+		t.Fatalf("expected asnStats to be populated before decay, got total=%d offenders=%d", total, offenders)
+	}
+
+	entry := e.GetEntry(asn)
+	entry.LastSeen = time.Now().Add(-2 * time.Minute)
+	e.decay()
+
+	if score := e.GetScore(asn, TypeASN); score != 0 {
+		t.Fatalf("expected expired ASN entry to be removed, got score %.2f", score)
+	}
+	if total, offenders := e.GetASNStats(asn); total != 0 || offenders != 0 {
+		t.Fatalf("expected asnStats to be reconciled away with the expired ASN entry, got total=%d offenders=%d", total, offenders)
+	}
+}
+
+// TestDecayReconcilesASNStatsWithLowScoreEntry covers the other deletion
+// path in decay(): an entry whose score decays below the 0.1 cleanup
+// threshold (rather than aging out by LastSeen) must also drop its
+// asnStats.
+func TestDecayReconcilesASNStatsWithLowScoreEntry(t *testing.T) {
+	e := New(time.Hour, 0.01, 100) // aggressive decay so score falls below 0.1 in one tick
+
+	asn := "AS64501"
+	e.ObserveIP(asn, "198.51.100.2")
+	e.PenalizeASN(asn, "198.51.100.2", 5.0, "test")
+
+	if total, _ := e.GetASNStats(asn); total == 0 {
+		t.Fatalf("expected asnStats to be populated before decay")
+	}
+
+	e.decay()
+
+	if score := e.GetScore(asn, TypeASN); score != 0 {
+		t.Fatalf("expected low-score ASN entry to be removed, got score %.4f", score)
+	}
+	if total, offenders := e.GetASNStats(asn); total != 0 || offenders != 0 {
+		t.Fatalf("expected asnStats to be reconciled away with the low-score ASN entry, got total=%d offenders=%d", total, offenders)
+	}
+}
+
 func TestDecayHalfLifeDocumentsConfiguredForgiveness(t *testing.T) {
 	interval := 5 * time.Minute
 	e := New(interval, 0.95, 100)

@@ -96,12 +96,13 @@ func (a *EntropyAnalyzer) ProcessEntropy(srcIP net.IP, entropyScore uint8) {
 		}
 		a.profiles[ipStr] = profile
 
-		// Enforce max profiles
-		if len(a.profiles) > a.maxProfiles {
-			mapcleaner.RemoveOldestEntry(a.profiles, func(_ string, p *EntropyProfile) time.Time {
-				return p.LastObservedAt
-			})
-		}
+		// Enforce max profiles. Evict a batch (down to ~90% of cap) so the
+		// O(n) oldest-scan runs once per ~cap/10 inserts instead of on every
+		// new IP — under a spoofed-source flood that scan is per-packet work
+		// serialized behind a.mu.
+		mapcleaner.EnforceMaxSizeBatch(a.profiles, a.maxProfiles, func(_ string, p *EntropyProfile) time.Time {
+			return p.LastObservedAt
+		})
 
 		metrics.PayloadEntropyProfiles.Set(float64(len(a.profiles)))
 	}

@@ -25,6 +25,7 @@ func CalculateConfidence(
 	behavioralProfile *BehavioralProfile,
 	verified VerificationStatus,
 	reputationScore float64,
+	reputationBanThreshold float64,
 	score float64,
 ) float64 {
 	// Base confidence starts at 0.5
@@ -48,6 +49,19 @@ func CalculateConfidence(
 	if highSeverityCount > 0 {
 		severityScore := math.Min(float64(highSeverityCount)/3.0, 1.0)
 		confidence += severityScore * 0.2
+	}
+
+	// Reputation contribution (up to +0.2). Accumulated bad-actor history is
+	// deterministic evidence earned from prior detections, so it must actually
+	// influence confidence - previously this parameter was ignored entirely,
+	// which left the reputation-driven block path unreachable once ML was
+	// blending. Scale by how close the score is to the ban threshold; at/above
+	// the threshold this contributes its full weight. handleDetection
+	// additionally floors confidence for a source that has crossed the
+	// threshold so a strong-legitimate ML verdict cannot erase it.
+	if reputationBanThreshold > 0 && reputationScore > 0 {
+		repFrac := math.Min(reputationScore/reputationBanThreshold, 1.0)
+		confidence += repFrac * 0.2
 	}
 
 	// Verification status impact

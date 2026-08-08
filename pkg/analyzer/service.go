@@ -13,11 +13,15 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/keepalive"
+	"google.golang.org/grpc/peer"
+	"google.golang.org/grpc/status"
 
 	apiv1 "PacketYeeter/api/proto/v1"
 	"PacketYeeter/pkg/analyzer/aidetection"
@@ -41,6 +45,11 @@ const (
 	defaultReputationMaxAge      = 24 * time.Hour
 	defaultReputationASNMaxHosts = 5000
 	defaultPprofAddr             = ":6060"
+	// defaultMaxCollectors bounds how many collector streams may be registered
+	// at once. The signal plane is an unauthenticated gRPC listener, so without
+	// a cap a peer opening many concurrent streams grows the collectors map,
+	// the per-stream goroutines, and the Broadcast fan-out without limit.
+	defaultMaxCollectors = 1024
 )
 
 type Config struct {
@@ -69,7 +78,9 @@ type Config struct {
 	DisableDDoSCategory          bool
 	JA4DBCachePath               string
 	StateDir                     string
-	DryRun                       bool // Monitor mode - log detections but don't block
+	MaxCollectors                int      // Max concurrent collector streams (default 1024)
+	InspectorTrustedHosts        []string // Extra Host/Origin hostnames the inspector trusts for mutating requests (in addition to loopback), e.g. a reverse-proxy hostname
+	DryRun                       bool     // Monitor mode - log detections but don't block
 }
 
 // Analyzer is the AI/ML analysis daemon that receives signals from collectors
@@ -202,6 +213,7 @@ type Analyzer struct {
 	// Connected collectors
 	collectors   map[string]*collectorStream
 	collectorsMu sync.RWMutex
+	collectorSeq atomic.Uint64
 
 	// gRPC server
 	grpcServer *grpc.Server
@@ -256,6 +268,9 @@ func New(cfg Config) (*Analyzer, error) {
 	}
 	if cfg.PprofAddr == "" {
 		cfg.PprofAddr = defaultPprofAddr
+	}
+	if cfg.MaxCollectors <= 0 {
+		cfg.MaxCollectors = defaultMaxCollectors
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -548,18 +563,29 @@ func (a *Analyzer) Start() error {
 		}()
 	}
 
-	// Periodic cleanup of tracking maps to prevent memory leaks
+	// Periodic cleanup of tracking maps to prevent memory leaks, plus
+	// periodic publication of the rate-limiter activity gauges. The gauges
+	// used to be set inside checkRateLimit, which paid a GetStats map-lock
+	// round-trip and two gauge writes on every signal from every collector.
 	a.wg.Add(1)
 	go func() {
 		defer a.wg.Done()
-		ticker := time.NewTicker(5 * time.Minute)
-		defer ticker.Stop()
+		cleanupTicker := time.NewTicker(5 * time.Minute)
+		defer cleanupTicker.Stop()
+		gaugeTicker := time.NewTicker(10 * time.Second)
+		defer gaugeTicker.Stop()
 		for {
 			select {
 			case <-a.ctx.Done():
 				return
-			case <-ticker.C:
+			case <-cleanupTicker.C:
 				a.cleanupTrackingMaps()
+			case <-gaugeTicker.C:
+				if a.RateLimiter != nil {
+					ipCnt, asnCnt := a.RateLimiter.GetStats()
+					metrics.RateLimitActiveIPs.Set(float64(ipCnt))
+					metrics.RateLimitActiveASNs.Set(float64(asnCnt))
+				}
 			}
 		}
 	}()
@@ -577,24 +603,50 @@ func (a *Analyzer) Start() error {
 	return nil
 }
 
+// registerCollector keys the stream by peer address plus a monotonic sequence
+// number. A shared constant key (the old ctx.Value("collector-id") fallback,
+// which nothing ever set) let a second collector's connect overwrite the
+// first's stream and a disconnect evict a still-live sibling, silently
+// stopping Broadcast enforcement for the whole fleet.
+//
+// It refuses to register beyond Config.MaxCollectors and returns "" in that
+// case: the signal plane is unauthenticated, so an unbounded number of
+// concurrent streams would otherwise grow the collectors map, its per-stream
+// goroutines, and the Broadcast fan-out without limit. The caller closes the
+// stream when it gets an empty id.
+func (a *Analyzer) registerCollector(ctx context.Context, cs *collectorStream) string {
+	addr := "unknown"
+	if p, ok := peer.FromContext(ctx); ok && p.Addr != nil {
+		addr = p.Addr.String()
+	}
+	id := fmt.Sprintf("%s#%d", addr, a.collectorSeq.Add(1))
+
+	a.collectorsMu.Lock()
+	defer a.collectorsMu.Unlock()
+	if a.Config.MaxCollectors > 0 && len(a.collectors) >= a.Config.MaxCollectors {
+		return ""
+	}
+	a.collectors[id] = cs
+	return id
+}
+
+func (a *Analyzer) unregisterCollector(id string) {
+	a.collectorsMu.Lock()
+	delete(a.collectors, id)
+	a.collectorsMu.Unlock()
+}
+
 // StreamSignals implements the bidirectional streaming RPC
 func (a *Analyzer) StreamSignals(stream apiv1.AnalyzerService_StreamSignalsServer) error {
 	ctx := stream.Context()
-	collectorID := ctx.Value("collector-id")
-	if collectorID == nil {
-		collectorID = "unknown"
-	}
-
 	cs := &collectorStream{stream: stream}
-	a.collectorsMu.Lock()
-	a.collectors[collectorID.(string)] = cs
-	a.collectorsMu.Unlock()
-
-	defer func() {
-		a.collectorsMu.Lock()
-		delete(a.collectors, collectorID.(string))
-		a.collectorsMu.Unlock()
-	}()
+	collectorID := a.registerCollector(ctx, cs)
+	if collectorID == "" {
+		logrus.WithField("max_collectors", a.Config.MaxCollectors).
+			Warn("Refusing collector stream: max concurrent collectors reached")
+		return status.Error(codes.ResourceExhausted, "analyzer at collector capacity")
+	}
+	defer a.unregisterCollector(collectorID)
 
 	logrus.WithField("collector", collectorID).Info("Collector connected")
 
@@ -641,15 +693,16 @@ func (a *Analyzer) StreamSignals(stream apiv1.AnalyzerService_StreamSignalsServe
 }
 
 func (a *Analyzer) processSignal(sig *apiv1.Signal, cs *collectorStream) {
-	// Check for reputation penalty request
-	if sig.Metadata != nil {
-		if penaltyKey, ok := sig.Metadata["penalty_key"]; ok {
-			penaltyType := sig.Metadata["penalty_type"]
-			reason := sig.Metadata["penalty_reason"]
-			a.Reputation.Penalize(penaltyKey, reputation.EntityType(penaltyType), sig.Weight, reason)
-			return
-		}
-	}
+	// NOTE: penalty_key/penalty_type/penalty_reason wire metadata is
+	// deliberately NOT honored. The signal plane is an unauthenticated gRPC
+	// listener and the signal's own source IP (sig.Ip) is itself attacker-
+	// controlled, so honoring a metadata-driven penalty - even bound to the
+	// signal's source - lets any peer poison an arbitrary victim's reputation
+	// (set sig.Ip to the victim) and get it blocked fleet-wide, with an
+	// unvalidated (possibly non-finite/out-of-range) weight. No legitimate
+	// collector emits these fields; reputation is driven only by signals the
+	// analyzer actually processes and scores below. Until collectors are
+	// authenticated, the remote-triggered penalty shortcut stays disabled.
 
 	if sig.Ip == nil {
 		return
@@ -745,11 +798,19 @@ func (a *Analyzer) processSignal(sig *apiv1.Signal, cs *collectorStream) {
 
 	// Record connection pattern
 	if a.PatternTracker != nil && sig.TcpContext != nil {
+		// SIMPLIFIED: the proto TCPContext carries no packet size, dest
+		// port, connection id, or handshake-success field, so the pattern
+		// tracker's packet-size-uniformity, port-scan, and connection-reuse
+		// detectors receive no input through this path and cannot fire; only
+		// the TTL/window/MSS/ASN and incomplete-handshake patterns are live.
+		// Enabling the rest requires new TCPContext proto fields plus
+		// collector support.
 		meta := patterns.ConnectionMetadata{
-			TTL:        uint8(sig.TcpContext.Ttl),
-			WindowSize: uint16(sig.TcpContext.WindowSize),
-			MSS:        uint16(sig.TcpContext.Mss),
-			ASN:        asn,
+			TTL:                   uint8(sig.TcpContext.Ttl),
+			WindowSize:            uint16(sig.TcpContext.WindowSize),
+			MSS:                   uint16(sig.TcpContext.Mss),
+			ASN:                   asn,
+			IsIncompleteHandshake: sig.Type == apiv1.SignalType_SIGNAL_INCOMPLETE_HANDSHAKE,
 		}
 		a.PatternTracker.RecordConnection(ip, meta)
 	}
@@ -918,16 +979,31 @@ func (a *Analyzer) sendCommand(cs *collectorStream, cmd *apiv1.Command) {
 		return
 	}
 
-	// Dedup block commands per IP for a short TTL
-	if cmd.Type == apiv1.CommandType_COMMAND_BLOCK_IP && len(cmd.Ip) > 0 {
-		ip := net.IP(cmd.Ip)
-		if a.wasRecentlyBlocked(ip) {
-			logrus.WithFields(logrus.Fields{"ip": ip.String()}).Debug("Block command skipped (recently blocked)")
-			return
-		}
-		a.markBlocked(ip)
+	if a.isDuplicateBlockCommand(cmd) {
+		return
 	}
 
+	a.sendToStream(cs, cmd)
+}
+
+// isDuplicateBlockCommand dedups block commands per IP for a short TTL,
+// marking the IP as blocked when it is not a duplicate. It must run once per
+// block decision — never once per collector — or a multi-collector fan-out
+// suppresses the command for every collector after the first.
+func (a *Analyzer) isDuplicateBlockCommand(cmd *apiv1.Command) bool {
+	if cmd.Type != apiv1.CommandType_COMMAND_BLOCK_IP || len(cmd.Ip) == 0 {
+		return false
+	}
+	ip := net.IP(cmd.Ip)
+	if a.wasRecentlyBlocked(ip) {
+		logrus.WithFields(logrus.Fields{"ip": ip.String()}).Debug("Block command skipped (recently blocked)")
+		return true
+	}
+	a.markBlocked(ip)
+	return false
+}
+
+func (a *Analyzer) sendToStream(cs *collectorStream, cmd *apiv1.Command) {
 	cs.sendMu.Lock()
 	defer cs.sendMu.Unlock()
 
@@ -971,11 +1047,31 @@ func (a *Analyzer) Broadcast(cmd *apiv1.Command) {
 		logrus.WithFields(logrus.Fields{"cmd": cmd.String()}).Debug("Dry run: not broadcasting command")
 		return
 	}
-	a.collectorsMu.RLock()
-	defer a.collectorsMu.RUnlock()
 
+	// Snapshot recipients first. If there are none, do NOT reserve the dedup
+	// slot: reserving would mark the IP "recently blocked" for the TTL even
+	// though nothing enforced it, so a collector that (re)connects within the
+	// window would have the re-issued block suppressed and never receive it.
+	a.collectorsMu.RLock()
+	recipients := make([]*collectorStream, 0, len(a.collectors))
 	for _, cs := range a.collectors {
-		go a.sendCommand(cs, cmd)
+		recipients = append(recipients, cs)
+	}
+	a.collectorsMu.RUnlock()
+
+	if len(recipients) == 0 {
+		logrus.WithFields(logrus.Fields{"cmd": cmd.String()}).
+			Debug("No connected collectors; not broadcasting or reserving dedup slot")
+		return
+	}
+
+	if a.isDuplicateBlockCommand(cmd) {
+		return
+	}
+
+	// Fan-out is bounded by Config.MaxCollectors (see registerCollector).
+	for _, cs := range recipients {
+		go a.sendToStream(cs, cmd)
 	}
 }
 
@@ -1030,9 +1126,14 @@ func (a *Analyzer) VerifyBot(ctx context.Context, req *apiv1.BotVerifyRequest) (
 		metrics.BotVerificationSuccess.WithLabelValues(string(result.BotType)).Inc()
 	}
 
-	// Only flag impersonation if the User-Agent matches a KNOWN bot pattern but verification fails
-	// Don't flag unknown/generic clients as impersonators
-	isImpersonation := !result.IsVerified && result.BotType != "" && result.BotType != "unknown"
+	// Only flag impersonation if the User-Agent matches a KNOWN bot pattern but
+	// verification definitively fails. A transient DNS failure within the
+	// forgiveness cap is NOT impersonation - a real crawler with a briefly-flaky
+	// PTR must not be reported as a spoofer - matching the HTTP handler's
+	// semantics. Unknown/generic clients are never flagged.
+	isImpersonation := !result.IsVerified &&
+		result.BotType != "" && result.BotType != "unknown" &&
+		!result.IsForgivenTransientFailure()
 
 	return &apiv1.BotVerifyResponse{
 		IsVerified:      result.IsVerified,
@@ -1376,7 +1477,7 @@ func (a *Analyzer) updatePathEntropy(ip net.IP, path string) (float64, bool, boo
 	// prune
 	i := 0
 	for i < len(pw.Events) {
-		if now.Sub(pw.Events[i].Ts) <= window && len(pw.Events) <= maxEvents {
+		if now.Sub(pw.Events[i].Ts) <= window && len(pw.Events)-i <= maxEvents {
 			break
 		}
 		old := pw.Events[i]
@@ -1581,7 +1682,7 @@ func (a *Analyzer) trackHTTPErrors(ip net.IP, statusCode uint32, path string) (i
 	// Prune old events
 	i := 0
 	for i < len(w.Events) {
-		if now.Sub(w.Events[i].Ts) <= window && len(w.Events) <= maxEvents {
+		if now.Sub(w.Events[i].Ts) <= window && len(w.Events)-i <= maxEvents {
 			break
 		}
 		old := w.Events[i]

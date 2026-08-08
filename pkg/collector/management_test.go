@@ -118,6 +118,51 @@ func TestPrepareUnixSocket(t *testing.T) {
 	})
 }
 
+// The management socket discloses the blocked-IP set and must be owner-only.
+// Creating it must be atomic (0600 from the outset via umask), not left briefly
+// group/world-connectable before a chmod.
+func TestManagementSocketCreatedOwnerOnly(t *testing.T) {
+	socketPath := filepath.Join(shortTempDir(t), "collector.sock")
+	c := newTestCollector(t, socketPath)
+
+	if err := c.startManagementSocket(); err != nil {
+		t.Fatalf("start management socket: %v", err)
+	}
+	t.Cleanup(func() {
+		c.cancel()
+		c.stopManagementSocket()
+		c.wg.Wait()
+	})
+
+	info, err := os.Stat(socketPath)
+	if err != nil {
+		t.Fatalf("stat socket: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("management socket mode = %#o, want 0600 (owner-only)", perm)
+	}
+}
+
+// A world-writable parent directory without the sticky bit invites a
+// symlink-swap TOCTOU, so socket creation must refuse it.
+func TestManagementSocketRejectsWorldWritableParentDir(t *testing.T) {
+	dir := shortTempDir(t)
+	if err := os.Chmod(dir, 0o777); err != nil { // world-writable, no sticky
+		t.Fatalf("chmod dir: %v", err)
+	}
+	if err := checkSocketParentDir(filepath.Join(dir, "collector.sock")); err == nil {
+		t.Fatal("expected a world-writable non-sticky parent directory to be rejected")
+	}
+
+	// A sticky world-writable dir (like /tmp) is safe from cross-user renames.
+	if err := os.Chmod(dir, 0o777|os.ModeSticky); err != nil {
+		t.Fatalf("chmod sticky: %v", err)
+	}
+	if err := checkSocketParentDir(filepath.Join(dir, "collector.sock")); err != nil {
+		t.Fatalf("sticky world-writable dir should be accepted, got %v", err)
+	}
+}
+
 func shortTempDir(t *testing.T) string {
 	t.Helper()
 

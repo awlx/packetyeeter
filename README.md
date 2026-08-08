@@ -305,6 +305,7 @@ sudo ./packetyeeter-collector -i eth0 -analyzer-addr 127.0.0.1:9090
 | `-listen-addr` | `0.0.0.0:9090` | gRPC listen address for collectors. |
 | `-metrics-addr` | `:9091` | Prometheus metrics HTTP listen address. |
 | `-inspect-addr` | `127.0.0.1:9092` | Read-only HTTP inspector UI address. |
+| `-inspect-trusted-hosts` | `""` | Comma-separated extra Host/Origin hostnames the inspector trusts for state-mutating requests, in addition to loopback (e.g. a reverse-proxy hostname). Read-only GETs are never gated. |
 | `-geoip-asn` | `""` | Path to `GeoLite2-ASN.mmdb` for ASN enrichment. |
 | `-geoip-country` | `""` | Path to `GeoLite2-Country.mmdb` or `GeoLite2-City.mmdb` (optional). Enables country-level enrichment and the Inspector's "Threats by Country" panel; without it, country fields report "unknown". |
 | `-reputation-threshold` | `75.0` | Reputation score at which an entity is treated as a bad actor. |
@@ -314,6 +315,7 @@ sudo ./packetyeeter-collector -i eth0 -analyzer-addr 127.0.0.1:9090
 | `-ai-confidence-threshold` | `0.7` | Minimum AI confidence to flag a bot/scraper. |
 | `-ai-workers` | `16` | AI detection worker pool size. |
 | `-ai-queue-size` | `10000` | AI detection queue size. |
+| `-max-collectors` | `1024` | Maximum concurrent collector streams. Bounds fan-out and goroutines on the unauthenticated signal plane. |
 | `-ml-model` | `""` | Optional path to an ONNX ML model. |
 | `-ddos-min-incomplete` | `400` | Min incomplete handshakes for a DDoS categorization. |
 | `-ddos-min-pattern` | `800` | Min pattern matches for a DDoS categorization. |

@@ -16,6 +16,7 @@ func TestIncidentReasonName(t *testing.T) {
 		{IncidentUDPRate, "udp_rate"},
 		{IncidentUDPFrag, "udp_frag"},
 		{IncidentBadFlags, "bad_flags"},
+		{IncidentMalformed, "malformed"},
 		{0, "unknown"},
 		{99, "unknown"},
 	}
