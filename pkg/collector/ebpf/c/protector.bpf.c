@@ -467,6 +467,22 @@ static __always_inline void emit_incident_v6(struct xdp_md *ctx, struct in6_addr
 
 // Parse TCP timestamp option
 // Returns 1 if timestamp found, 0 otherwise
+//
+// The option walk is bounded to a small, fixed number of iterations. It is
+// inlined into the TC ingress SYN paths for both IPv4 and IPv6, and PR #63
+// changed the IPv4 caller to locate the TCP header via the variable IHL offset
+// (ipv4_tcp_header) rather than a fixed 20-byte offset - correct, but it feeds a
+// variable-offset base into this loop. The per-iteration branch states of a
+// variable-length option walk grow steeply with the iteration count, and at 10
+// iterations (inlined twice) the TC ingress program tipped over the verifier's
+// 1M-processed-instruction limit ("BPF program is too large"). Real TCP SYNs put
+// the timestamp option within the first few options (Linux/Windows/macOS all
+// place it at or before position ~6), so scanning the first
+// TCP_TS_MAX_OPTIONS options finds it in practice while keeping the program
+// comfortably within the verifier budget. Kept inlined (not a BPF-to-BPF
+// subprogram): passing PTR_TO_PACKET to a subprogram is only reliably
+// verifiable on Linux 5.10+, and this project targets Linux 5.4+.
+#define TCP_TS_MAX_OPTIONS 8
 static __always_inline int parse_tcp_timestamp(struct tcphdr *tcp, void *data_end, __u32 *ts_val, __u32 *ts_ecr) {
     // Initialize outputs
     *ts_val = 0;
@@ -515,7 +531,7 @@ static __always_inline int parse_tcp_timestamp(struct tcphdr *tcp, void *data_en
     int found = 0;
     
     #pragma unroll
-    for (int i = 0; i < 10; i++) {
+    for (int i = 0; i < TCP_TS_MAX_OPTIONS; i++) {
         // Skip if already found
         if (found) {
             continue;
@@ -988,7 +1004,10 @@ int tc_ingress_syn_monitor(struct __sk_buff *skb) {
             // MSS parsing disabled for now (eBPF verifier complexity)
             meta.mss = 0;
             
-            // TCP timestamp parsing - ENABLED for clock skew detection
+            // TCP timestamp parsing - ENABLED for clock skew detection.
+            // Uses the IHL-correct header; the option walk in
+            // parse_tcp_timestamp is bounded (TCP_TS_MAX_OPTIONS) so the
+            // variable IHL base does not blow the verifier's instruction budget.
             __u32 ts_val = 0, ts_ecr = 0;
             if (parse_tcp_timestamp(tcp, data_end, &ts_val, &ts_ecr)) {
                 meta.has_timestamp = 1;
@@ -999,7 +1018,7 @@ int tc_ingress_syn_monitor(struct __sk_buff *skb) {
                 meta.ts_val = 0;
                 meta.ts_ecr = 0;
             }
-            
+
             // IPv6 extension headers (always 0 for IPv4)
             meta.ipv6_ext_headers = 0;
 
