@@ -213,9 +213,19 @@ func (h *Handler) VerifyBot(ip net.IP, userAgent, asn, org string) *VerifyResult
 				}
 
 				return result
-			} else {
-				// Known bot pattern but failed verification (impersonation)
-				result.IsImpersonation = true
+			} else if dnsResult.TransientFailure && dnsResult.ConsecutiveTransientFailures <= maxConsecutiveTransientFailures {
+				// Verification could not complete (DNS timeout/SERVFAIL).
+				// This says nothing about the peer: a transient hiccup on a
+				// real Googlebot's PTR must not be treated as impersonation,
+				// and with the result briefly cached the per-request penalty
+				// below would otherwise ban a legitimate crawler within
+				// seconds. Leave the request unverified; re-verify shortly.
+				//
+				// Forgiveness is capped: the transient classification is
+				// attacker-influenceable (the peer controls its own PTR zone
+				// and can serve SERVFAIL forever), so past
+				// maxConsecutiveTransientFailures consecutive cycles the
+				// failure falls through to the impersonation branch below.
 				result.ErrorMessage = dnsResult.ErrorMessage
 
 				metrics.BotVerificationFailures.WithLabelValues(string(dnsResult.BotType), dnsResult.ErrorMessage).Inc()
@@ -225,8 +235,27 @@ func (h *Handler) VerifyBot(ip net.IP, userAgent, asn, org string) *VerifyResult
 					"user_agent": userAgent,
 					"bot_type":   dnsResult.BotType,
 					"error":      dnsResult.ErrorMessage,
-					"asn":        asn,
-					"org":        org,
+				}).Debug("Bot verification incomplete (transient DNS failure); not penalizing")
+
+				return result
+			} else {
+				// Known bot pattern but failed verification: either a
+				// definitive failure (NXDOMAIN, DNS mismatch) or a transient
+				// failure past the forgiveness cap — both are treated as
+				// impersonation.
+				result.IsImpersonation = true
+				result.ErrorMessage = dnsResult.ErrorMessage
+
+				metrics.BotVerificationFailures.WithLabelValues(string(dnsResult.BotType), dnsResult.ErrorMessage).Inc()
+
+				logrus.WithFields(logrus.Fields{
+					"ip":                 ip.String(),
+					"user_agent":         userAgent,
+					"bot_type":           dnsResult.BotType,
+					"error":              dnsResult.ErrorMessage,
+					"transient_failures": dnsResult.ConsecutiveTransientFailures,
+					"asn":                asn,
+					"org":                org,
 				}).Warn("Bot impersonation detected")
 
 				// Penalize bot impersonation attempts heavily
