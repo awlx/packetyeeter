@@ -5,8 +5,11 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
+	"net/netip"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -23,6 +26,23 @@ import (
 //go:embed static/inspector.html
 var inspectorFS embed.FS
 
+// maxSessionRecordingLineBytes bounds a single JSONL session record. Session
+// recordings are one JSON object per line and can legitimately exceed bufio's
+// default 64 KiB token limit; with the default limit, bufio.Scanner returns
+// ErrTooLong on a large record, which made loadSessionsFromDisk silently drop
+// such sessions and, worse, made deleteSessionFromDisk skip the whole file (so
+// a delete of a normal-but-large recording never took effect). A generous
+// explicit buffer covers real recordings while still bounding memory.
+const maxSessionRecordingLineBytes = 16 * 1024 * 1024 // 16 MiB
+
+// newSessionScanner returns a bufio.Scanner sized for large JSONL session
+// records instead of the default 64 KiB line limit.
+func newSessionScanner(r io.Reader) *bufio.Scanner {
+	s := bufio.NewScanner(r)
+	s.Buffer(make([]byte, 0, 64*1024), maxSessionRecordingLineBytes)
+	return s
+}
+
 // registerInspectorHandlers registers read-only inspection endpoints on the provided mux.
 // loadSessionsFromDisk reads all session recordings from disk
 func loadSessionsFromDisk(sessionsDir string) ([]map[string]interface{}, error) {
@@ -37,9 +57,8 @@ func loadSessionsFromDisk(sessionsDir string) ([]map[string]interface{}, error) 
 		if err != nil {
 			continue
 		}
-		defer f.Close()
 
-		scanner := bufio.NewScanner(f)
+		scanner := newSessionScanner(f)
 		for scanner.Scan() {
 			var session map[string]interface{}
 			if err := json.Unmarshal(scanner.Bytes(), &session); err != nil {
@@ -47,13 +66,21 @@ func loadSessionsFromDisk(sessionsDir string) ([]map[string]interface{}, error) 
 			}
 			sessions = append(sessions, session)
 		}
+		if err := scanner.Err(); err != nil {
+			logrus.WithError(err).WithField("file", file).Warn("Failed to fully read session recording")
+		}
+		// Close per iteration: a deferred close here would hold every
+		// recording file open until the whole scan finishes.
+		f.Close()
 	}
 	return sessions, nil
 }
 
-// deleteSessionFromDisk removes a session recording from disk
+// deleteSessionFromDisk removes a session recording from disk. Recordings are
+// written as recording-*.jsonl (see persistSessionRecording) — the same glob
+// loadSessionsFromDisk reads.
 func deleteSessionFromDisk(sessionsDir, sessionID string) error {
-	files, err := filepath.Glob(filepath.Join(sessionsDir, "sessions_*.jsonl"))
+	files, err := filepath.Glob(filepath.Join(sessionsDir, "recording-*.jsonl"))
 	if err != nil {
 		return err
 	}
@@ -65,14 +92,21 @@ func deleteSessionFromDisk(sessionsDir, sessionID string) error {
 			continue
 		}
 		var sessions []map[string]interface{}
-		scanner := bufio.NewScanner(f)
+		scanner := newSessionScanner(f)
 		for scanner.Scan() {
 			var session map[string]interface{}
 			if err := json.Unmarshal(scanner.Bytes(), &session); err == nil {
 				sessions = append(sessions, session)
 			}
 		}
+		scanErr := scanner.Err()
 		f.Close()
+		if scanErr != nil {
+			// Don't rewrite a file we couldn't fully read - that would drop
+			// the unread sessions.
+			logrus.WithError(scanErr).WithField("file", file).Warn("Skipping partially-read session recording")
+			continue
+		}
 
 		// Filter out the session to delete
 		var filtered []map[string]interface{}
@@ -87,6 +121,12 @@ func deleteSessionFromDisk(sessionsDir, sessionID string) error {
 
 		if !found {
 			continue
+		}
+
+		// Each recording file typically holds one session; remove the file
+		// outright when nothing remains.
+		if len(filtered) == 0 {
+			return os.Remove(file)
 		}
 
 		// Rewrite file without the deleted session
@@ -107,6 +147,105 @@ func deleteSessionFromDisk(sessionsDir, sessionID string) error {
 	}
 
 	return fmt.Errorf("session not found: %s", sessionID)
+}
+
+// isLoopbackHostname reports whether host (a hostname with any port already
+// stripped, as found in a Host, Origin, or Referer header) refers to the
+// local machine.
+func isLoopbackHostname(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		return false
+	}
+	return addr.IsLoopback()
+}
+
+// isTrustedInspectorHost reports whether host (a hostname with any port already
+// stripped) is trusted for state-mutating inspector requests: either a loopback
+// address/localhost, or one of the operator-configured InspectorTrustedHosts.
+// The configured list lets the inspector run behind a trusted reverse proxy or
+// on a trusted-management hostname without disabling CSRF/DNS-rebinding
+// protection - only the named hosts are trusted, everything else is still
+// rejected.
+func (a *Analyzer) isTrustedInspectorHost(host string) bool {
+	if isLoopbackHostname(host) {
+		return true
+	}
+	for _, h := range a.Config.InspectorTrustedHosts {
+		if strings.EqualFold(host, h) {
+			return true
+		}
+	}
+	return false
+}
+
+// isMutatingMethod reports whether an HTTP method can change server state and
+// therefore needs CSRF protection. Safe, read-only methods (GET/HEAD/OPTIONS)
+// are exempt so the same-origin gate never blocks a legitimate read.
+func isMutatingMethod(method string) bool {
+	switch method {
+	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+		return true
+	default:
+		return false
+	}
+}
+
+// sameOriginOnly wraps a state-mutating inspector handler with
+// defense-in-depth CSRF and DNS-rebinding protection. The inspector mux has
+// no authentication (it is meant to be reached only over loopback or a trusted
+// proxy), so without this a page the operator merely has open in another tab
+// could fire a cross-origin POST/DELETE against it - the handlers json.Decode
+// the body regardless of Content-Type, so a cross-origin text/plain POST is a
+// CORS-simple request that still triggers the side effect even though the
+// response is unreadable to the attacker page - or a DNS-rebinding attacker
+// could point a hostname at 127.0.0.1 to reach it directly.
+//
+// The protection only applies to mutating methods (POST/PUT/PATCH/DELETE);
+// read-only GET/HEAD/OPTIONS pass through untouched. A mutating request is
+// rejected unless:
+//   - the Host header it arrived on is trusted (loopback or a configured
+//     InspectorTrustedHosts entry; blocks DNS rebinding, since a rebound
+//     hostname is never a trusted name), and
+//   - whenever the browser sent an Origin or Referer header, its hostname is
+//     also trusted (blocks cross-site CSRF).
+//
+// Non-browser clients (curl, scripts, other same-host tooling) send neither
+// Origin nor Referer and are allowed through on the Host check alone, so
+// same-origin/localhost tooling keeps working unmodified.
+func (a *Analyzer) sameOriginOnly(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !isMutatingMethod(r.Method) {
+			next(w, r)
+			return
+		}
+
+		reqHost := r.Host
+		if h, _, err := net.SplitHostPort(reqHost); err == nil {
+			reqHost = h
+		}
+		if !a.isTrustedInspectorHost(reqHost) {
+			http.Error(w, "forbidden: untrusted host", http.StatusForbidden)
+			return
+		}
+
+		checkOrigin := r.Header.Get("Origin")
+		if checkOrigin == "" {
+			checkOrigin = r.Header.Get("Referer")
+		}
+		if checkOrigin != "" {
+			u, err := url.Parse(checkOrigin)
+			if err != nil || !a.isTrustedInspectorHost(u.Hostname()) {
+				http.Error(w, "forbidden: cross-origin request", http.StatusForbidden)
+				return
+			}
+		}
+
+		next(w, r)
+	}
 }
 
 func registerInspectorHandlers(a *Analyzer, mux *http.ServeMux) {
@@ -171,7 +310,7 @@ func registerInspectorHandlers(a *Analyzer, mux *http.ServeMux) {
 	})
 
 	// Feedback API endpoints
-	mux.HandleFunc("/api/feedback/report-fp", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/feedback/report-fp", a.sameOriginOnly(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -231,9 +370,9 @@ func registerInspectorHandlers(a *Analyzer, mux *http.ServeMux) {
 			"message": "false positive recorded for " + req.IP,
 			"labels":  req.Labels,
 		})
-	})
+	}))
 
-	mux.HandleFunc("/api/feedback/report-tp", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/feedback/report-tp", a.sameOriginOnly(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -283,7 +422,7 @@ func registerInspectorHandlers(a *Analyzer, mux *http.ServeMux) {
 		a.AIEngine.StartRecordingForIP(req.IP, "tp")
 
 		writeJSON(w, map[string]string{"status": "ok", "message": "true positive recorded for " + req.IP})
-	})
+	}))
 
 	mux.HandleFunc("/api/feedback/stats", func(w http.ResponseWriter, r *http.Request) {
 		stats := a.AIEngine.GetFeedbackStats()
@@ -336,7 +475,7 @@ func registerInspectorHandlers(a *Analyzer, mux *http.ServeMux) {
 		}
 	})
 
-	mux.HandleFunc("/api/sessions/delete", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/sessions/delete", a.sameOriginOnly(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost && r.Method != http.MethodDelete {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -357,7 +496,7 @@ func registerInspectorHandlers(a *Analyzer, mux *http.ServeMux) {
 			return
 		}
 		writeJSON(w, map[string]string{"status": "ok", "message": "session deleted"})
-	})
+	}))
 
 	mux.HandleFunc("/api/sessions/count", func(w http.ResponseWriter, r *http.Request) {
 		sessions, err := loadSessionsFromDisk("/var/cache/packetyeeter/sessions")
@@ -378,7 +517,7 @@ func registerInspectorHandlers(a *Analyzer, mux *http.ServeMux) {
 		writeJSON(w, activeRecordings)
 	})
 
-	mux.HandleFunc("/api/feedback/allowlist", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/feedback/allowlist", a.sameOriginOnly(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodDelete {
 			// Delete from allowlist
 			var req struct {
@@ -399,10 +538,10 @@ func registerInspectorHandlers(a *Analyzer, mux *http.ServeMux) {
 		// GET - return allowlist
 		allowlist := a.AIEngine.GetAllowlist()
 		writeJSON(w, allowlist)
-	})
+	}))
 
 	// Bulk delete from allowlist
-	mux.HandleFunc("/api/feedback/allowlist/bulk-delete", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/feedback/allowlist/bulk-delete", a.sameOriginOnly(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -426,10 +565,10 @@ func registerInspectorHandlers(a *Analyzer, mux *http.ServeMux) {
 			"message": fmt.Sprintf("removed %d IPs from allowlist", len(req.IPs)),
 			"count":   len(req.IPs),
 		})
-	})
+	}))
 
 	// Clear all learning window labels
-	mux.HandleFunc("/api/feedback/learning/clear", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/feedback/learning/clear", a.sameOriginOnly(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -440,10 +579,10 @@ func registerInspectorHandlers(a *Analyzer, mux *http.ServeMux) {
 			"message": fmt.Sprintf("cleared %d learning labels", count),
 			"count":   count,
 		})
-	})
+	}))
 
 	// Bulk delete from learning window
-	mux.HandleFunc("/api/feedback/learning/bulk-delete", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/feedback/learning/bulk-delete", a.sameOriginOnly(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -465,10 +604,10 @@ func registerInspectorHandlers(a *Analyzer, mux *http.ServeMux) {
 			"message": fmt.Sprintf("removed %d IPs from learning window", count),
 			"count":   count,
 		})
-	})
+	}))
 
 	// Manual recording start
-	mux.HandleFunc("/api/sessions/record", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/sessions/record", a.sameOriginOnly(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -497,10 +636,10 @@ func registerInspectorHandlers(a *Analyzer, mux *http.ServeMux) {
 			"ip":      req.IP,
 			"label":   req.Label,
 		})
-	})
+	}))
 
 	// Submit manual label
-	mux.HandleFunc("/api/labels/submit", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/labels/submit", a.sameOriginOnly(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -663,7 +802,7 @@ func registerInspectorHandlers(a *Analyzer, mux *http.ServeMux) {
 			"message":            "Label submission in progress",
 			"added_to_allowlist": req.Label == "human" || req.Label == "bot_legitimate",
 		})
-	})
+	}))
 
 	// Get learned patterns
 	mux.HandleFunc("/api/patterns", func(w http.ResponseWriter, r *http.Request) {
@@ -672,7 +811,7 @@ func registerInspectorHandlers(a *Analyzer, mux *http.ServeMux) {
 	})
 
 	// Delete a learned pattern
-	mux.HandleFunc("/api/patterns/delete", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/patterns/delete", a.sameOriginOnly(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost && r.Method != http.MethodDelete {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -690,7 +829,7 @@ func registerInspectorHandlers(a *Analyzer, mux *http.ServeMux) {
 		}
 		a.AIEngine.RemovePattern(req.Key)
 		writeJSON(w, map[string]string{"status": "ok"})
-	})
+	}))
 
 	// Export labeled dataset
 	mux.HandleFunc("/api/labels/export", func(w http.ResponseWriter, r *http.Request) {
@@ -761,7 +900,7 @@ func registerInspectorHandlers(a *Analyzer, mux *http.ServeMux) {
 	})
 
 	// Delete specific labeled sample
-	mux.HandleFunc("/api/labels/delete", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/labels/delete", a.sameOriginOnly(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost && r.Method != http.MethodDelete {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -823,7 +962,7 @@ func registerInspectorHandlers(a *Analyzer, mux *http.ServeMux) {
 		}
 
 		writeJSON(w, map[string]string{"status": "ok", "message": "label deleted"})
-	})
+	}))
 
 	// Traffic analytics endpoint
 	mux.HandleFunc("/api/analytics/traffic", func(w http.ResponseWriter, r *http.Request) {

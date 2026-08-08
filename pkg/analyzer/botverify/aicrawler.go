@@ -1,9 +1,9 @@
 package botverify
 
 import (
+	"PacketYeeter/pkg/utils/limitread"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"sync"
@@ -297,7 +297,9 @@ func (r *AICrawlerRegistry) fetchSource(client *http.Client, source AICrawlerSou
 		return nil, fmt.Errorf("HTTP %d fetching %s", resp.StatusCode, source.URL)
 	}
 
-	data, err := io.ReadAll(resp.Body)
+	// Crawler IP lists are a few hundred KB at most; a hostile or
+	// compromised source must not drive unbounded allocation.
+	data, err := limitread.ReadAll(resp.Body, 16<<20)
 	if err != nil {
 		return nil, err
 	}

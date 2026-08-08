@@ -65,6 +65,7 @@ const (
 	IncidentUDPRate     = 4
 	IncidentUDPFrag     = 5
 	IncidentBadFlags    = 6
+	IncidentMalformed   = 7
 )
 
 // IncidentReasonName returns a human-readable name for an incident reason
@@ -83,6 +84,8 @@ func IncidentReasonName(reason uint8) string {
 		return "udp_frag"
 	case IncidentBadFlags:
 		return "bad_flags"
+	case IncidentMalformed:
+		return "malformed"
 	default:
 		return "unknown"
 	}

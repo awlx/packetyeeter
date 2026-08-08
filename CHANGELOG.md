@@ -1,5 +1,47 @@
 # PacketYeeter Changelog
 
+## 2026-07-17 - IPv6 flood detection parity
+
+### Collector: report IPv6 ICMP/UDP floods
+**Problem**: The XDP program tracked IPv6 ICMP and UDP floods into the
+`icmp_rates_v6` / `udp_rates_v6` maps, but userspace only ever read the IPv4
+maps. On a dual-stack host, IPv6 floods were counted and rate-limited in the
+kernel but never turned into analyzer signals, so reputation/blocking never
+saw them.
+**Solution**: `sendICMPRates`/`sendUDPRates` now also drain the v6 maps
+(same 1000-pps threshold, same allowlist and dry-run gating as v4) and emit
+`SIGNAL_ICMP_FLOOD` / `SIGNAL_UDP_FLOOD` for IPv6 sources. Also normalized the
+IPv6 incomplete-handshake weight to the v4 formula (pps, clamped to 50000)
+instead of a raw per-poll count, and set the previously-unused
+`packetyeeter_udp_total_rate_pps` gauge.
+
+**Enforcement impact**: dual-stack collectors will now generate IPv6
+flood/handshake signals that can drive blocks. Stage the rollout with analyzer
+`-dry-run` and confirm IPv6 detections look right before enforcing, the same as
+any threshold change. IPv4-only deployments are unaffected.
+
+Validated end-to-end on a virtual veth pair (see
+`scripts/xdp_veth_test.sh`): before, an IPv6 flood produced 0 analyzer
+signals; after, the same flood produced IPv6 `SIGNAL_ICMP_FLOOD`/
+`SIGNAL_UDP_FLOOD` at the analyzer while IPv4 behavior was unchanged.
+
+## 2026-07-17 - Reputation per-IP / per-JA4 penalties activated
+
+**Fix**: The reputation engine's per-IP and per-JA4 score caps defaulted to 0,
+which clamped every IP and JA4 penalty back to 0 inside `penalizeLocked`. As a
+result all per-IP and per-JA4 reputation scoring was a silent no-op (only ASN
+scoring, whose cap defaulted to +Inf, accumulated). The caps now default to
++Inf (uncapped), matching ASN, so IP/JA4 penalties accumulate and can reach the
+ban threshold.
+
+**Enforcement impact**: this re-activates per-IP and per-JA4 reputation
+accumulation that was previously dormant. Sources that repeatedly trip
+detections will now accrue score and can cross `WouldBlock`/ban thresholds where
+before they never did. Stage it: run the analyzer with `-dry-run`, watch
+`packetyeeter_*_blocks_total`, reputation scores, and AI detections, and tune
+allowlists/thresholds before disabling dry-run. Operators who want a ceiling can
+set one explicitly via the score-cap setters.
+
 ## 2026-01-21 - Major Updates
 
 ### 1. YeetExplorer Pagination Fix

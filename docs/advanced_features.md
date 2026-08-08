@@ -158,6 +158,25 @@ original_would_block           # Binary: would block decision
 
 Plus additional derived features based on combinations and ratios.
 
+## Supported inference widths
+
+The Go inference path (`pkg/ml/onnx.go`) auto-detects the model's input width
+and only accepts widths for which it can construct an exact, index-by-index
+feature vector from the contracts in this repository:
+
+| Width | Layout |
+|-------|--------|
+| 41 | Legacy aggregate model (`featuresToTensorLegacy`) |
+| 116 | Advanced layout without the fingerprint block; detection features overlaid at indices 95–99 |
+| 126 | Full advanced layout: temporal[0:25] path[25:45] header[45:70] signal[70:95] fingerprint[95:105] behavioral[105:115] detection[115:126] |
+
+Any other detected width (e.g. 100/106/110/144) has **no** provable
+training/export contract here. `LoadONNXModel` refuses to load such a model
+rather than truncating the 126-feature layout to fit, which would silently feed
+misaligned features into an enforcement model. Retrain/export to one of the
+supported widths, or add an explicit versioned layout (and matching tests)
+before deploying a new width.
+
 ## Usage
 
 ### Step 1: Extract Features

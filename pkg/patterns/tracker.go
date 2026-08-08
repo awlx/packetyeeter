@@ -1,8 +1,10 @@
 package patterns
 
 import (
+	"maps"
 	"math"
 	"net"
+	"slices"
 	"sync"
 	"time"
 
@@ -93,7 +95,10 @@ func (pt *PatternTracker) RecordConnection(ip net.IP, meta ConnectionMetadata) {
 	pattern, exists := pt.patterns[ipStr]
 	if !exists {
 		pattern = &ConnectionPattern{
-			IP:            ip,
+			// Copy the caller's slice: net.IP passed in may be backed by a
+			// reused packet/scratch buffer, and pattern.IP is retained for the
+			// pattern's lifetime.
+			IP:            slices.Clone(ip),
 			FirstSeen:     time.Now(),
 			PortsAccessed: make(map[uint16]uint64),
 		}
@@ -101,7 +106,21 @@ func (pt *PatternTracker) RecordConnection(ip net.IP, meta ConnectionMetadata) {
 
 		// Enforce max patterns
 		if len(pt.patterns) > pt.maxPatterns {
-			pt.evictOldestPattern()
+			pt.evictOldestPatterns()
+		}
+	}
+
+	// Track inter-connection timing before LastSeen is overwritten below:
+	// the signal detectMechanicalTiming/IsBursty need is the gap between
+	// this connection and the previous one, not the (always ~0) gap between
+	// "now" and a timestamp set moments ago. A brand-new pattern has a zero
+	// LastSeen with nothing to diff against yet, so it seeds here without
+	// recording a sample rather than producing a bogus near-zero delta.
+	if !pattern.LastSeen.IsZero() {
+		timing := time.Since(pattern.LastSeen)
+		pattern.PacketTimings = append(pattern.PacketTimings, timing)
+		if len(pattern.PacketTimings) > 100 {
+			pattern.PacketTimings = pattern.PacketTimings[1:]
 		}
 	}
 
@@ -134,15 +153,6 @@ func (pt *PatternTracker) RecordConnection(ip net.IP, meta ConnectionMetadata) {
 		pattern.MSSValues = append(pattern.MSSValues, meta.MSS)
 		if len(pattern.MSSValues) > 50 {
 			pattern.MSSValues = pattern.MSSValues[1:]
-		}
-	}
-
-	// Track timing
-	if len(pattern.PacketTimings) > 0 {
-		timing := time.Since(pattern.LastSeen)
-		pattern.PacketTimings = append(pattern.PacketTimings, timing)
-		if len(pattern.PacketTimings) > 100 {
-			pattern.PacketTimings = pattern.PacketTimings[1:]
 		}
 	}
 
@@ -618,8 +628,11 @@ func (pt *PatternTracker) isSequentialPorts(sequence []uint16) bool {
 	return float64(sequential)/float64(checkLen-1) > 0.6
 }
 
-func (pt *PatternTracker) evictOldestPattern() {
-	mapcleaner.RemoveOldestEntry(pt.patterns, func(_ string, pattern *ConnectionPattern) time.Time {
+// evictOldestPatterns evicts a batch so the O(n) oldest-scan runs once per
+// batch instead of on every new IP — under a spoofed-source flood that scan is
+// per-packet work serialized behind pt.mu (~3.6ms per packet at the 100k cap).
+func (pt *PatternTracker) evictOldestPatterns() {
+	mapcleaner.EnforceMaxSizeBatch(pt.patterns, pt.maxPatterns, func(_ string, pattern *ConnectionPattern) time.Time {
 		return pattern.LastSeen
 	})
 }
@@ -683,7 +696,90 @@ func (pt *PatternTracker) GetPattern(ip net.IP) *ConnectionPattern {
 		return nil
 	}
 
-	// Return copy to prevent race conditions
-	patternCopy := *pattern
-	return &patternCopy
+	// Return a deep copy: a plain struct copy would alias the live map and
+	// slice backing arrays, which RecordConnection keeps mutating under
+	// pt.mu after this RLock is released.
+	return pattern.Clone()
+}
+
+// Clone returns a deep copy of the pattern that is safe to read and mutate
+// after the tracker's lock is released: every reference-typed field is copied
+// so the caller can neither observe later mutations of nor corrupt the live
+// pattern. Keep this in sync with the struct — a new slice/map field MUST be
+// cloned here or GetPattern silently starts aliasing it again.
+func (p *ConnectionPattern) Clone() *ConnectionPattern {
+	cp := *p
+	cp.IP = slices.Clone(p.IP)
+	cp.PacketSizes = slices.Clone(p.PacketSizes)
+	cp.PacketTimings = slices.Clone(p.PacketTimings)
+	cp.TTLValues = slices.Clone(p.TTLValues)
+	cp.WindowSizes = slices.Clone(p.WindowSizes)
+	cp.MSSValues = slices.Clone(p.MSSValues)
+	cp.PortsAccessed = maps.Clone(p.PortsAccessed)
+	cp.PortSequence = slices.Clone(p.PortSequence)
+	cp.ConnectionIDs = slices.Clone(p.ConnectionIDs)
+	cp.ReuseTimings = slices.Clone(p.ReuseTimings)
+	return &cp
+}
+
+// PatternSummary is the subset of pattern state the ML feature extractor needs.
+type PatternSummary struct {
+	ConnectionAttempts uint64
+	PortsAccessed      int
+	PacketTimings      int
+	Bursty             bool
+	FirstSeen          time.Time
+}
+
+// PatternSummary reads just the ML-feature fields under the lock, without
+// cloning the pattern's slices/maps. ok is false when no pattern is tracked for
+// ip. This keeps the per-signal feature path off the full deep-copy in
+// GetPattern, which the hot caller does not need.
+func (pt *PatternTracker) PatternSummary(ip net.IP) (PatternSummary, bool) {
+	pt.mu.RLock()
+	defer pt.mu.RUnlock()
+
+	pattern, exists := pt.patterns[ip.String()]
+	if !exists {
+		return PatternSummary{}, false
+	}
+	return PatternSummary{
+		ConnectionAttempts: pattern.ConnectionAttempts,
+		PortsAccessed:      len(pattern.PortsAccessed),
+		PacketTimings:      len(pattern.PacketTimings),
+		Bursty:             burstinessFromTimings(pattern.PacketTimings),
+		FirstSeen:          pattern.FirstSeen,
+	}, true
+}
+
+// burstinessFromTimings reports whether the inter-connection gaps are bursty,
+// i.e. clustered/irregular rather than evenly paced. It uses the coefficient of
+// variation (stddev/mean) of the gap distribution: CV > 1 means the spacing
+// varies more than its own average, the classic marker of bursty timing.
+//
+// This replaces the previous `len(PacketTimings) > 5` heuristic, which only
+// measured how many samples existed, not how they were distributed - any source
+// with a handful of connections was flagged "bursty" regardless of its actual
+// timing. The CV is computed in nanoseconds so it stays meaningful for the
+// sub-millisecond gaps typical of floods (units cancel in the ratio). At least
+// three gaps are required for the statistic to mean anything.
+func burstinessFromTimings(timings []time.Duration) bool {
+	if len(timings) < 3 {
+		return false
+	}
+	var sum float64
+	for _, t := range timings {
+		sum += float64(t)
+	}
+	mean := sum / float64(len(timings))
+	if mean <= 0 {
+		return false
+	}
+	var varianceSum float64
+	for _, t := range timings {
+		diff := float64(t) - mean
+		varianceSum += diff * diff
+	}
+	cv := math.Sqrt(varianceSum/float64(len(timings))) / mean
+	return cv > 1.0
 }
