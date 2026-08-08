@@ -829,4 +829,3 @@ func (d *Downloader) Stats() map[string]interface{} {
 		"update_age":   time.Since(d.DB.LastUpdated).String(),
 	}
 }
-
