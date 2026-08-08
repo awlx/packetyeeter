@@ -36,6 +36,7 @@ func main() {
 		disableDDoS      = flag.Bool("disable-ddos-category", false, "Disable DDoS category labeling (still detects other bots)")
 		aiWorkers        = flag.Int("ai-workers", 16, "AI engine worker count")
 		aiQueueSize      = flag.Int("ai-queue-size", 10000, "AI engine signal queue size")
+		maxCollectors    = flag.Int("max-collectors", 1024, "Maximum concurrent collector streams (bounds fan-out/goroutines on the unauthenticated signal plane)")
 		mlModelPath      = flag.String("ml-model", "", "Path to ONNX ML model file (optional, enables ML-based confidence adjustment)")
 		dryRun           = flag.Bool("dry-run", false, "Monitor mode - log detections but don't send BLOCK commands")
 		showVersion      = flag.Bool("version", false, "Print build version and exit")
@@ -74,6 +75,7 @@ func main() {
 		AIWorkers:                    *aiWorkers,
 		AIQueueSize:                  *aiQueueSize,
 		MLModelPath:                  *mlModelPath,
+		MaxCollectors:                *maxCollectors,
 		DryRun:                       *dryRun,
 	}
 
