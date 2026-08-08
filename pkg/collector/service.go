@@ -560,6 +560,7 @@ func (c *Collector) pollMaps() {
 			c.sendICMPRates()
 			c.sendUDPRates()
 			c.sendBadFlagsAlerts()
+			c.pruneStaleState()
 		}
 	}
 }
@@ -1211,6 +1212,111 @@ func computePPS(prev map[uint32]prevRate, ip uint32, rate ebpf.ICMPRate) float64
 		return float64(pr.count)
 	}
 	return float64(rate.Count)
+}
+
+// The kernel rate/bad-flags maps are LRU_HASH and self-evict under churn, but
+// the userspace bookkeeping maps that shadow them (prevICMPRates,
+// prevUDPRates, prevBadFlagsSeen and the IPv6 variants) are plain Go maps that
+// would otherwise grow for the process lifetime: every distinct source ever
+// observed leaves an entry behind even after the kernel forgets it. Under a
+// high-cardinality spoofed-source flood that is an unbounded memory leak.
+//
+// pruneStaleState bounds them the same way the kernel does. Entry values carry
+// the kernel monotonic timestamp (bpf_ktime_get_ns) of when the source was last
+// seen, so the largest timestamp across all maps approximates "now" on the
+// kernel clock. Anything older than prevStateStaleWindowNs is dropped. A hard
+// per-map cap is a final safety valve against adversarial cardinality bursts
+// faster than the window: if a map still exceeds it, the map is reset, which at
+// worst re-emits already-deduplicated signals for one poll cycle.
+const (
+	prevStateStaleWindowNs uint64 = 300 * 1_000_000_000 // 5 minutes of kernel monotonic time
+	prevStateHardCap              = 1 << 18             // 262144 entries per map
+)
+
+func (c *Collector) pruneStaleState() {
+	maxClock := uint64(0)
+	for _, v := range c.prevICMPRates {
+		if v.lastTime > maxClock {
+			maxClock = v.lastTime
+		}
+	}
+	for _, v := range c.prevUDPRates {
+		if v.lastTime > maxClock {
+			maxClock = v.lastTime
+		}
+	}
+	for _, ts := range c.prevBadFlagsSeen {
+		if ts > maxClock {
+			maxClock = ts
+		}
+	}
+	for _, ts := range c.prevBadFlagsSeenV6 {
+		if ts > maxClock {
+			maxClock = ts
+		}
+	}
+
+	prunePrevRateMap(c.prevICMPRates, maxClock, c.Logger)
+	prunePrevRateMap(c.prevUDPRates, maxClock, c.Logger)
+	prunePrevSeenMap(c.prevBadFlagsSeen, maxClock, c.Logger)
+	prunePrevSeenMap(c.prevBadFlagsSeenV6, maxClock, c.Logger)
+}
+
+func prunePrevRateMap(m map[uint32]prevRate, maxClock uint64, logger *logrus.Logger) {
+	if maxClock > prevStateStaleWindowNs {
+		cutoff := maxClock - prevStateStaleWindowNs
+		for k, v := range m {
+			if v.lastTime < cutoff {
+				delete(m, k)
+			}
+		}
+	}
+	if len(m) > prevStateHardCap {
+		if logger != nil {
+			logger.WithField("size", len(m)).Warn("prev-rate state exceeded hard cap under high cardinality; resetting")
+		}
+		for k := range m {
+			delete(m, k)
+		}
+	}
+}
+
+func prunePrevRateMapV6(m map[[16]byte]prevRate, maxClock uint64, logger *logrus.Logger) {
+	if maxClock > prevStateStaleWindowNs {
+		cutoff := maxClock - prevStateStaleWindowNs
+		for k, v := range m {
+			if v.lastTime < cutoff {
+				delete(m, k)
+			}
+		}
+	}
+	if len(m) > prevStateHardCap {
+		if logger != nil {
+			logger.WithField("size", len(m)).Warn("prev-rate v6 state exceeded hard cap under high cardinality; resetting")
+		}
+		for k := range m {
+			delete(m, k)
+		}
+	}
+}
+
+func prunePrevSeenMap[K comparable](m map[K]uint64, maxClock uint64, logger *logrus.Logger) {
+	if maxClock > prevStateStaleWindowNs {
+		cutoff := maxClock - prevStateStaleWindowNs
+		for k, ts := range m {
+			if ts < cutoff {
+				delete(m, k)
+			}
+		}
+	}
+	if len(m) > prevStateHardCap {
+		if logger != nil {
+			logger.WithField("size", len(m)).Warn("prev-seen state exceeded hard cap under high cardinality; resetting")
+		}
+		for k := range m {
+			delete(m, k)
+		}
+	}
 }
 
 // runBlockGC garbage collects expired blocks from eBPF maps

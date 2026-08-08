@@ -97,6 +97,7 @@ struct bad_flags_info {
 #define INCIDENT_UDP_RATE     4 // UDP rate limit exceeded
 #define INCIDENT_UDP_FRAG     5 // Fragmented UDP/IPv6 fragment extension header
 #define INCIDENT_BAD_FLAGS    6 // SYN+FIN / Xmas / NULL scan TCP flags
+#define INCIDENT_MALFORMED    7 // Unparseable/over-limit headers (fail-closed drop)
 
 struct incident_event {
     __u64 timestamp;
@@ -327,8 +328,19 @@ static __always_inline int check_rate_limit(void *map, void *key, __u32 limit, _
             // The value is shared across CPUs for a given source; a plain
             // read-modify-write loses increments under a same-source flood
             // spread over RX queues, which lets the flood stay under `limit`.
-            // Increment atomically and test the post-increment value.
-            __u64 count = __sync_fetch_and_add(&rate->count, 1) + 1;
+            // Increment atomically, then re-read the counter to test it.
+            //
+            // We deliberately do NOT use the value returned by
+            // __sync_fetch_and_add here: a fetching atomic add compiles to the
+            // BPF_ATOMIC | BPF_FETCH instruction, which requires BPF ISA v3 and
+            // Linux 5.12+. This project supports Linux 5.4+, where only the
+            // non-fetching atomic add (BPF_XADD) is available. Discarding the
+            // return value keeps clang emitting BPF_XADD. Re-reading the shared
+            // counter afterwards can observe a slightly higher value if other
+            // CPUs incremented concurrently, which only makes the limit trip
+            // marginally earlier under a flood - a safe direction.
+            __sync_fetch_and_add(&rate->count, 1);
+            __u64 count = rate->count;
             if (count > limit) {
                 return 1;
             }
@@ -633,37 +645,49 @@ struct ipv6_ext_hdr {
 // upper-layer protocol and the offset of its header. Dispatching on
 // ip6->nexthdr directly lets a single extension header hide the L4 protocol and
 // bypass every IPv6 check, so every L4 decision must run off this result.
-// Returns 0 on success (setting *l4_proto, *l4_hdr, *ext_count), or -1 if the
-// chain is truncated or longer than MAX_IPV6_EXT_HEADERS (fail closed: the
-// caller treats -1 as "cannot inspect"). A Fragment header stops the walk and
-// is returned as the protocol.
+//
+// Returns 0 on success, setting *l4_proto, *l4_hdr, *ext_count. Success
+// includes the case of exactly MAX_IPV6_EXT_HEADERS extension headers followed
+// by a valid upper-layer protocol: the L4 discovered at the supported limit is
+// still dispatched. A Fragment header stops the walk and is returned as the
+// protocol.
+//
+// Returns -1 only when the chain cannot be inspected: it is truncated (a header
+// runs past data_end) or it still carries an extension header after
+// MAX_IPV6_EXT_HEADERS have been walked (over-limit). The caller treats -1 as
+// "cannot inspect" and fails closed in enforcement mode while honoring
+// monitor/dry-run mode.
 static __always_inline int parse_ipv6_l4(struct ipv6hdr *ip6, void *data_end,
                                          __u8 *l4_proto, void **l4_hdr, __u8 *ext_count) {
     __u8 next = ip6->nexthdr;
     void *cur = (void *)(ip6 + 1);
     __u8 count = 0;
 
+    // Iterate one extra time (<= MAX) so that a chain of exactly
+    // MAX_IPV6_EXT_HEADERS extension headers still gets its trailing L4
+    // protocol dispatched instead of being rejected.
     #pragma unroll
-    for (int i = 0; i < MAX_IPV6_EXT_HEADERS; i++) {
-        if (next == IP6_EXT_HOPOPTS || next == IP6_EXT_ROUTING || next == IP6_EXT_DSTOPTS) {
-            struct ipv6_ext_hdr *eh = cur;
-            if ((void *)(eh + 1) > data_end)
-                return -1;
-            __u32 hdr_len = ((__u32)eh->hdr_ext_len + 1) * 8;
-            next = eh->next_hdr;
-            cur += hdr_len;
-            if (cur > data_end)
-                return -1;
-            count++;
-            continue;
+    for (int i = 0; i <= MAX_IPV6_EXT_HEADERS; i++) {
+        if (next != IP6_EXT_HOPOPTS && next != IP6_EXT_ROUTING && next != IP6_EXT_DSTOPTS) {
+            // Fragment header or a real upper-layer protocol: stop here.
+            *l4_proto = next;
+            *l4_hdr = cur;
+            *ext_count = count;
+            return 0;
         }
-        // Fragment header or a real upper-layer protocol: stop here.
-        *l4_proto = next;
-        *l4_hdr = cur;
-        *ext_count = count;
-        return 0;
+        if (count >= MAX_IPV6_EXT_HEADERS)
+            return -1; // still an extension header past the limit: over-limit
+        struct ipv6_ext_hdr *eh = cur;
+        if ((void *)(eh + 1) > data_end)
+            return -1;
+        __u32 hdr_len = ((__u32)eh->hdr_ext_len + 1) * 8;
+        next = eh->next_hdr;
+        cur += hdr_len;
+        if (cur > data_end)
+            return -1;
+        count++;
     }
-    return -1; // chain longer than we walk
+    return -1; // unreachable, but keeps the verifier and compiler happy
 }
 
 // --- XDP Program ---
@@ -849,8 +873,11 @@ int xdp_filter(struct xdp_md *ctx) {
         __u8 ext_count = 0;
         if (parse_ipv6_l4(ip6, data_end, &l4_proto, &l4_hdr, &ext_count) < 0) {
             // Extension-header chain truncated or longer than we walk: we
-            // cannot locate L4 to enforce on it. Pass (consistent with the
-            // program's other unparseable-packet paths).
+            // cannot locate L4 to enforce on it. Fail closed in enforcement
+            // (drop) rather than fail open, mirroring the deep-VLAN policy
+            // above, while honoring monitor/dry-run mode.
+            emit_incident_v6(ctx, &saddr, INCIDENT_MALFORMED, now);
+            if (!is_monitor) return XDP_DROP;
             return XDP_PASS;
         }
 
