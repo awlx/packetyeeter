@@ -98,8 +98,10 @@ func (a *Analyzer) extractMLFeatures(ip net.IP, asn string, reputationScore floa
 				}
 			}
 
-			// Check for timing patterns
-			features.IsBursty = s.PacketTimings > 5
+			// Check for timing patterns: bursty = irregular/clustered spacing
+			// between connections (high coefficient of variation), not merely
+			// "has more than a few samples".
+			features.IsBursty = s.Bursty
 		}
 	}
 

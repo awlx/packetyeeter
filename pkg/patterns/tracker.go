@@ -724,6 +724,7 @@ type PatternSummary struct {
 	ConnectionAttempts uint64
 	PortsAccessed      int
 	PacketTimings      int
+	Bursty             bool
 	FirstSeen          time.Time
 }
 
@@ -743,6 +744,39 @@ func (pt *PatternTracker) PatternSummary(ip net.IP) (PatternSummary, bool) {
 		ConnectionAttempts: pattern.ConnectionAttempts,
 		PortsAccessed:      len(pattern.PortsAccessed),
 		PacketTimings:      len(pattern.PacketTimings),
+		Bursty:             burstinessFromTimings(pattern.PacketTimings),
 		FirstSeen:          pattern.FirstSeen,
 	}, true
+}
+
+// burstinessFromTimings reports whether the inter-connection gaps are bursty,
+// i.e. clustered/irregular rather than evenly paced. It uses the coefficient of
+// variation (stddev/mean) of the gap distribution: CV > 1 means the spacing
+// varies more than its own average, the classic marker of bursty timing.
+//
+// This replaces the previous `len(PacketTimings) > 5` heuristic, which only
+// measured how many samples existed, not how they were distributed - any source
+// with a handful of connections was flagged "bursty" regardless of its actual
+// timing. The CV is computed in nanoseconds so it stays meaningful for the
+// sub-millisecond gaps typical of floods (units cancel in the ratio). At least
+// three gaps are required for the statistic to mean anything.
+func burstinessFromTimings(timings []time.Duration) bool {
+	if len(timings) < 3 {
+		return false
+	}
+	var sum float64
+	for _, t := range timings {
+		sum += float64(t)
+	}
+	mean := sum / float64(len(timings))
+	if mean <= 0 {
+		return false
+	}
+	var varianceSum float64
+	for _, t := range timings {
+		diff := float64(t) - mean
+		varianceSum += diff * diff
+	}
+	cv := math.Sqrt(varianceSum/float64(len(timings))) / mean
+	return cv > 1.0
 }
