@@ -8,26 +8,56 @@ import (
 	"PacketYeeter/pkg/utils/ewma"
 )
 
-// Deterministic high-severity signals (honeypot, an *exact* JA4H known-bot
-// match) must be recognized so a learned-legitimate allowlist match cannot
-// suppress them and a strong-legitimate ML verdict cannot erase them. A JA4H
-// bot match from a wildcard/coarse-prefix collision is not a reliable
-// attribution, so it must NOT get deterministic status - otherwise a legitimate
-// client whose fingerprint merely collides on the prefix becomes unblockable.
+// Deterministic high-severity signals (honeypot, a confirmed known-bot *exact*
+// JA4H match) must be recognized so a learned-legitimate allowlist match cannot
+// suppress them and a strong-legitimate ML verdict cannot erase them. Anything
+// weaker must NOT get deterministic status: a wildcard/coarse-prefix collision,
+// a non-bot JA4DB entry, or an exact match on JA4/JA4T rather than the HTTP
+// fingerprint - otherwise a legitimate client that merely collides on a prefix
+// or fingerprint becomes unblockable.
 func TestContainsDeterministicHighSeverity(t *testing.T) {
 	if !containsDeterministicHighSeverity([]Signal{{Type: SignalHoneypot}}) {
 		t.Error("honeypot must be high-severity")
 	}
-	exact := []Signal{{Type: SignalWindowAnomaly}, {Type: SignalJA4HBotMatch, Metadata: map[string]interface{}{"match_type": "exact"}}}
-	if !containsDeterministicHighSeverity(exact) {
-		t.Error("exact JA4H bot match must be high-severity")
+
+	exact := []Signal{
+		{Type: SignalWindowAnomaly},
+		{Type: SignalJA4HBotMatch, Metadata: map[string]interface{}{"known_bot": true, "fp_type": "ja4h", "match_type": "exact"}},
 	}
-	wildcard := []Signal{{Type: SignalWindowAnomaly}, {Type: SignalJA4HBotMatch, Metadata: map[string]interface{}{"match_type": "wildcard_tls"}}}
+	if !containsDeterministicHighSeverity(exact) {
+		t.Error("confirmed known-bot exact JA4H match must be high-severity")
+	}
+
+	wildcard := []Signal{
+		{Type: SignalJA4HBotMatch, Metadata: map[string]interface{}{"known_bot": true, "fp_type": "ja4h", "match_type": "wildcard_tls"}},
+	}
 	if containsDeterministicHighSeverity(wildcard) {
 		t.Error("wildcard JA4H bot match must NOT be deterministic high-severity")
 	}
+
+	nonBot := []Signal{
+		{Type: SignalJA4HBotMatch, Metadata: map[string]interface{}{"known_bot": false, "fp_type": "ja4h", "match_type": "exact"}},
+	}
+	if containsDeterministicHighSeverity(nonBot) {
+		t.Error("a non-bot exact JA4H match must NOT be deterministic high-severity")
+	}
+
+	exactJA4 := []Signal{
+		{Type: SignalJA4HBotMatch, Metadata: map[string]interface{}{"known_bot": true, "fp_type": "ja4", "match_type": "exact"}},
+	}
+	if containsDeterministicHighSeverity(exactJA4) {
+		t.Error("an exact JA4 (not JA4H) match must NOT be deterministic high-severity")
+	}
+
+	exactJA4T := []Signal{
+		{Type: SignalJA4HBotMatch, Metadata: map[string]interface{}{"known_bot": true, "fp_type": "ja4t", "match_type": "exact"}},
+	}
+	if containsDeterministicHighSeverity(exactJA4T) {
+		t.Error("an exact JA4T (not JA4H) match must NOT be deterministic high-severity")
+	}
+
 	if containsDeterministicHighSeverity([]Signal{{Type: SignalJA4HBotMatch}}) {
-		t.Error("JA4H bot match without a match_type must NOT be deterministic high-severity")
+		t.Error("JA4H bot match without metadata must NOT be deterministic high-severity")
 	}
 	if containsDeterministicHighSeverity([]Signal{{Type: SignalWindowAnomaly}, {Type: SignalNoCookies}}) {
 		t.Error("low-severity-only signals must not be high-severity")

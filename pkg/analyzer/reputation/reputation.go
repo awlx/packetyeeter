@@ -165,6 +165,11 @@ func (e *Engine) getJA4ScoreCap() float64  { return math.Float64frombits(e.ja4Sc
 func (e *Engine) getASNScoreCap() float64  { return math.Float64frombits(e.asnScoreCapBits.Load()) }
 func (e *Engine) getBanThreshold() float64 { return math.Float64frombits(e.banThresholdBits.Load()) }
 
+// BanThreshold returns the score at or above which an entity is treated as a
+// bad actor. Exposed so detection code can grade how close a source is to the
+// deterministic bad-actor line and floor its confidence accordingly.
+func (e *Engine) BanThreshold() float64 { return e.getBanThreshold() }
+
 // DecayHalfLife returns the duration for a score to decay by half under the
 // configured interval and factor. A non-positive duration means decay is not
 // configured; a factor outside (0,1) has no finite half-life.

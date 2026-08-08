@@ -622,6 +622,7 @@ func (a *Analyzer) processHTTPRequest(sig *apiv1.Signal, ip net.IP, asn string, 
 							"ja4_info":    info,
 							"match_type":  res.MatchType,
 							"fp_type":     res.FingerprintType,
+							"known_bot":   isKnownBot,
 							"user_agent":  userAgent,
 						})
 					}

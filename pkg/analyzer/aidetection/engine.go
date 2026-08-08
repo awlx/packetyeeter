@@ -1994,13 +1994,24 @@ func containsDeterministicHighSeverity(signals []Signal) bool {
 		case SignalHoneypot:
 			return true
 		case SignalJA4HBotMatch:
-			// Only an exact JA4DB match is a reliable, deterministic
-			// attribution. A wildcard/coarse-prefix collision (or a match with
-			// no recorded type) is uncertain, so it must not bypass the
-			// learned-legitimate allowlist or floor confidence - it still
-			// contributes its weight to scoring. Absent/non-string match_type
-			// fails closed to "not deterministic" (fewer false-positive blocks).
-			if mt, _ := signals[i].Metadata["match_type"].(string); mt == "exact" {
+			// A JA4DB match only counts as deterministic when ALL of the
+			// following hold, so nothing spoofable or uncertain can bypass
+			// learned-legitimate suppression / floor confidence:
+			//   - known_bot: the matched entry is actually a known bot, not a
+			//     browser/library/device that merely happens to be catalogued;
+			//   - fp_type == "ja4h": the match is on the HTTP fingerprint, the
+			//     reliable bot-attribution fingerprint. An exact JA4 or JA4T
+			//     match is not sufficient on its own;
+			//   - match_type == "exact": a wildcard/coarse-prefix collision is
+			//     an uncertain attribution.
+			// Any of these being absent/non-matching fails closed to "not
+			// deterministic" (the signal still contributes its weight to
+			// scoring), which favors fewer false-positive blocks.
+			md := signals[i].Metadata
+			knownBot, _ := md["known_bot"].(bool)
+			fpType, _ := md["fp_type"].(string)
+			matchType, _ := md["match_type"].(string)
+			if knownBot && fpType == "ja4h" && matchType == "exact" {
 				return true
 			}
 		}
@@ -2161,11 +2172,34 @@ func (e *Engine) handleDetection(key string, signals []Signal, ewmaBaseline, con
 	// match), which do not depend on the identity the allowlist vouches for.
 	ddosDetected, ddosInfo := e.isDDoSPattern(signals, asnFloodWeight)
 
+	// Whether the source has crossed the reputation ban threshold: accumulated
+	// deterministic bad-actor evidence. Computed here so it can both prevent a
+	// spoofable learned-legitimate pattern from suppressing a known bad actor
+	// and (below) floor confidence so a strong-legitimate ML verdict cannot veto
+	// it. reputationScore is also read for grading confidence.
+	reputationScore := 0.0
+	reputationBanThreshold := 0.0
+	reputationIsBad := false
+	if e.reputation != nil {
+		reputationBanThreshold = e.reputation.BanThreshold()
+		if firstSignal.IP != nil {
+			reputationScore = e.reputation.GetScore(firstSignal.IP.String(), reputation.TypeIP)
+			if e.reputation.IsBad(firstSignal.IP.String(), reputation.TypeIP) {
+				reputationIsBad = true
+			}
+		}
+		// A JA4H that has itself accumulated past the threshold is an
+		// identity-level bad actor independent of the (spoofable) IP.
+		if ja4h != "" && e.reputation.IsBad(ja4h, reputation.TypeJA4) {
+			reputationIsBad = true
+		}
+	}
+
 	// Check if this traffic pattern has been learned as legitimate
 	if e.feedback != nil {
 		if matched, label, patternConfidence, patternKey := e.feedback.CheckPattern(userAgent, firstSignal.ASN, ja4h); matched {
 			if label == "legitimate" && patternConfidence >= 0.7 &&
-				!ddosDetected && !containsDeterministicHighSeverity(signals) {
+				!ddosDetected && !containsDeterministicHighSeverity(signals) && !reputationIsBad {
 				// A known legitimate pattern with no overriding high-severity or
 				// DDoS evidence - skip detection.
 				logrus.WithFields(logrus.Fields{
@@ -2263,12 +2297,6 @@ func (e *Engine) handleDetection(key string, signals []Signal, ewmaBaseline, con
 	}
 	behavioralProfile := e.GetBehavioralProfile(profileKey)
 
-	// Get reputation score
-	reputationScore := 0.0
-	if e.reputation != nil && firstSignal.IP != nil {
-		reputationScore = e.reputation.GetScore(firstSignal.IP.String(), reputation.TypeIP)
-	}
-
 	// Compute score (sum of weights, default 1) with per-type caps
 	typeCaps := map[SignalType]float64{
 		SignalIncompleteHandshake: 6,
@@ -2324,6 +2352,7 @@ func (e *Engine) handleDetection(key string, signals []Signal, ewmaBaseline, con
 		behavioralProfile,
 		verified,
 		reputationScore,
+		reputationBanThreshold,
 		score,
 	)
 
@@ -2373,11 +2402,12 @@ func (e *Engine) handleDetection(key string, signals []Signal, ewmaBaseline, con
 		}
 	}
 
-	// Honeypot hits and exact JA4H known-bot matches are deterministic
-	// high-severity signals; lift rule confidence to the floor blendMLConfidence protects so a
+	// Honeypot hits, exact JA4H known-bot matches, and a source that has crossed
+	// the reputation ban threshold are deterministic high-severity evidence;
+	// lift rule confidence to the floor blendMLConfidence protects so a
 	// strong-legitimate ML verdict cannot cap them down to legitimate (mirrors
 	// the known-scanner boost above).
-	if containsDeterministicHighSeverity(signals) {
+	if containsDeterministicHighSeverity(signals) || reputationIsBad {
 		confidence = math.Max(confidence, strongRuleConfidenceFloor)
 	}
 
