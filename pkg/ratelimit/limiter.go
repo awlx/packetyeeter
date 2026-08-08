@@ -67,12 +67,26 @@ func (tb *TokenBucket) Allow() bool {
 	return false
 }
 
-// setRate updates the bucket's refill rate and capacity in place, clamping
-// any currently held tokens to the new capacity so a lowered limit takes
-// effect immediately instead of only after the existing burst drains.
+// setRate updates the bucket's refill rate and capacity in place. Before
+// switching, it settles token accrual up to now at the OLD rate and advances
+// lastSeen, so the interval that straddles the change is credited at the rate
+// that was actually in effect during it (rather than retroactively at the new
+// rate on the bucket's next Allow call). It then installs the new rate and
+// capacity, clamping any held tokens to the new capacity so a lowered limit
+// takes effect immediately instead of only after the existing burst drains.
 func (tb *TokenBucket) setRate(rate, capacity float64) {
 	tb.mu.Lock()
 	defer tb.mu.Unlock()
+
+	now := time.Now()
+	elapsed := now.Sub(tb.lastSeen).Seconds()
+	if elapsed > 0 {
+		tb.tokens += elapsed * tb.rate
+		if tb.tokens > tb.capacity {
+			tb.tokens = tb.capacity
+		}
+		tb.lastSeen = now
+	}
 
 	tb.rate = rate
 	tb.capacity = capacity
@@ -113,6 +127,18 @@ type Config struct {
 	MaxAge          time.Duration // How long to keep unused limiters (default: 10min)
 	MaxIPEntries    int           // Hard cap on tracked per-IP limiters (default: 200000)
 	MaxASNEntries   int           // Hard cap on tracked per-ASN limiters (default: 50000)
+
+	// IPRateExact / ASNRateExact, when non-nil, set the per-IP / per-ASN rate
+	// exactly - including an explicit 0, which means "no sustained rate" (once
+	// the initial burst drains, further requests are denied). The plain
+	// IPRate/ASNRate float fields treat 0 as "unset" and substitute the
+	// default, so an operator who genuinely wants a zero rate cannot express it
+	// through them. These optional pointer fields exist to carry that intent
+	// without changing the meaning of the existing fields (backward compatible:
+	// leave them nil to keep the historical default-on-zero behavior). When set,
+	// they take precedence over IPRate/ASNRate.
+	IPRateExact  *float64
+	ASNRateExact *float64
 }
 
 // DefaultConfig returns sensible rate limit defaults
@@ -135,10 +161,17 @@ func NewLimiter(cfg Config) *Limiter {
 	// check let a partial config reach cleanupLoop with CleanupInterval==0,
 	// where time.NewTicker(0) panics on a background goroutine.
 	defaults := DefaultConfig()
-	if cfg.IPRate <= 0 {
+	// An explicit exact rate (including 0) always wins and is never defaulted.
+	// Otherwise fall back to the historical behavior: treat a non-positive
+	// IPRate/ASNRate as "unset" and substitute the default.
+	if cfg.IPRateExact != nil {
+		cfg.IPRate = *cfg.IPRateExact
+	} else if cfg.IPRate <= 0 {
 		cfg.IPRate = defaults.IPRate
 	}
-	if cfg.ASNRate <= 0 {
+	if cfg.ASNRateExact != nil {
+		cfg.ASNRate = *cfg.ASNRateExact
+	} else if cfg.ASNRate <= 0 {
 		cfg.ASNRate = defaults.ASNRate
 	}
 	if cfg.IPBurst <= 0 {
@@ -183,15 +216,27 @@ func NewLimiter(cfg Config) *Limiter {
 	return l
 }
 
-// evictOldestLocked removes the least-recently-used entry from m to keep a
-// limiter map bounded when it is full. Caller must hold l.mu.
-// SIMPLIFIED: linear scan for the oldest entry; fine at the default
-// hundred-thousand-entry cap. Switch to an intrusive LRU list if profiling
-// shows eviction cost matters at larger caps.
+// evictionSampleSize bounds how many entries evictOldestLocked inspects when
+// making room in a full limiter map. It approximates LRU (Redis-style sampled
+// eviction) in O(evictionSampleSize) instead of scanning the whole map.
+const evictionSampleSize = 8
+
+// evictOldestLocked removes an approximately-least-recently-used entry from m to
+// keep a limiter map bounded when it is full. Caller must hold l.mu.
+//
+// A full linear scan for the true LRU entry is O(n) under the exclusive lock,
+// and it runs on every insert once the map sits at its cap. Under an adversarial
+// distinct-source flood the map stays pinned at cap, so an O(n) scan per new
+// source (n up to hundreds of thousands) serialized behind l.mu is exactly the
+// contention an attacker wants. Instead we sample a small, constant number of
+// entries (Go randomizes map-iteration start, so the first K are a pseudo-random
+// sample) and evict the oldest of the sample. That is O(evictionSampleSize)
+// regardless of map size and still preferentially sheds cold entries.
 func evictOldestLocked(m map[string]*TokenBucket) {
 	var oldestKey string
 	var oldestSeen time.Time
 	found := false
+	sampled := 0
 
 	for key, tb := range m {
 		tb.mu.Lock()
@@ -202,6 +247,11 @@ func evictOldestLocked(m map[string]*TokenBucket) {
 			oldestKey = key
 			oldestSeen = lastSeen
 			found = true
+		}
+
+		sampled++
+		if sampled >= evictionSampleSize {
+			break
 		}
 	}
 
