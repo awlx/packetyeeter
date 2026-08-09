@@ -262,6 +262,13 @@ func (a *Analyzer) processHTTPRequest(sig *apiv1.Signal, ip net.IP, asn string, 
 		return
 	}
 
+	// Feed sustained-download detection. This has to happen before the
+	// verified-bot early return below: verified crawlers are exactly the class
+	// the tracker's raised thresholds exist for, and skipping them here would
+	// mean the one client type most likely to walk the whole namespace is never
+	// measured at all.
+	a.observeSustainedRequest(ip, ctx)
+
 	// Update HTTP rate metrics
 	ipRate, asnRate := a.updateHTTPRate(ip, asn)
 	metrics.HTTPDetections.Inc()
@@ -361,6 +368,10 @@ func (a *Analyzer) processHTTPRequest(sig *apiv1.Signal, ip net.IP, asn string, 
 		if result.IsVerified {
 			// Create observation for verified bot (for training data)
 			a.recordVerifiedBot(ip, userAgent, asn, org, result, sig)
+			// Raises this client's sustained-download thresholds rather than
+			// exempting it: a verified crawler that starts mirroring the site
+			// is still caught, it just has to try harder.
+			a.markSustainedVerifiedBot(ip)
 			return // Don't penalize verified bots/crawlers
 		}
 		// Impersonation is already handled and penalized by BotHandler

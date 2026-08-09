@@ -20,7 +20,6 @@ func main() {
 		iface           = flag.String("i", "eth0", "Network interface to attach to")
 		analyzerAddr    = flag.String("analyzer-addr", "127.0.0.1:9090", "Analyzer gRPC address")
 		metricsAddr     = flag.String("metrics-addr", ":2112", "Prometheus metrics HTTP listen address")
-		haproxyPort     = flag.Int("haproxy-port", 8765, "HAProxy peer protocol port")
 		spoePort        = flag.Int("spoe-port", 9876, "SPOE agent port")
 		socketPath      = flag.String("socket", "/var/run/packetyeeter-collector.sock", "Unix socket for CLI")
 		geoIPASNPath    = flag.String("geoip-asn", "", "Path to GeoLite2-ASN.mmdb")
@@ -30,6 +29,8 @@ func main() {
 		pollInterval    = flag.Duration("poll-interval", 1*time.Second, "How often to poll eBPF maps")
 		signalQueueSize = flag.Int("signal-queue-size", 10000, "Collector signal queue size")
 		dryRun          = flag.Bool("dry-run", false, "Monitor mode: log/count the collector's own kernel-space detections (bad flags, SYN flood, ICMP/UDP rate limits) without dropping traffic")
+		egressAccount   = flag.Bool("egress-accounting", false, "Count bytes transmitted to each client on the TC egress path and report them to the analyzer (feeds sustained-download detection)")
+		egressMinBytes  = flag.Uint64("egress-min-bytes", 1<<20, "Smallest per-poll egress byte delta that produces a signal")
 		showVersion     = flag.Bool("version", false, "Print build version and exit")
 		verbose         = flag.Bool("v", false, "Verbose logging")
 	)
@@ -50,7 +51,6 @@ func main() {
 		AnalyzerAddr:    *analyzerAddr,
 		MetricsAddr:     *metricsAddr,
 		SPOEAddr:        fmt.Sprintf(":%d", *spoePort),
-		HAProxyPort:     *haproxyPort,
 		SocketPath:      *socketPath,
 		GeoIPASNPath:    *geoIPASNPath,
 		AllowlistCIDRs:  *allowlist,
@@ -59,6 +59,9 @@ func main() {
 		PollInterval:    *pollInterval,
 		SignalQueueSize: *signalQueueSize,
 		DryRun:          *dryRun,
+
+		EgressAccounting: *egressAccount,
+		EgressMinBytes:   *egressMinBytes,
 	}
 
 	coll, err := collector.New(cfg, logger)

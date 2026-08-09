@@ -128,7 +128,6 @@ func TestKernelBlockEnforcement(t *testing.T) {
 		AnalyzerAddr:    analyzerAddr,
 		MetricsAddr:     "127.0.0.1:0",
 		SPOEAddr:        "127.0.0.1:0",
-		HAProxyPort:     0,
 		SocketPath:      t.TempDir() + "/collector.sock",
 		BlockDuration:   5 * time.Minute,
 		PollInterval:    200 * time.Millisecond,

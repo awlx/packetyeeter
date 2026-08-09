@@ -36,7 +36,6 @@ type Config struct {
 	AnalyzerAddr    string
 	MetricsAddr     string
 	SPOEAddr        string // e.g., ":9876"
-	HAProxyPort     int
 	SocketPath      string
 	GeoIPASNPath    string
 	AllowlistCIDRs  string // Comma-separated CIDRs
@@ -45,6 +44,16 @@ type Config struct {
 	PollInterval    time.Duration // How often to poll eBPF maps and send to analyzer
 	SignalQueueSize int           // Collector signal queue size (default 10000)
 	DryRun          bool          // If true, the collector's own kernel-space detections (bad flags, SYN flood, ICMP/UDP rate limits) log/count but never drop traffic
+
+	// EgressAccounting enables the eBPF TC egress per-client byte counters that
+	// feed the analyzer's sustained-download detection. Off by default: it adds
+	// a map lookup and an atomic add per egress packet, and the detection it
+	// feeds is only meaningful for workloads that serve bulk downloads.
+	EgressAccounting bool
+	// EgressMinBytes is the smallest per-poll byte delta that produces a
+	// signal. It exists to keep ordinary browsing traffic off the signal
+	// queue; sustained transfers clear it easily.
+	EgressMinBytes uint64
 }
 
 // Collector is a thin relay layer that:
@@ -99,6 +108,11 @@ type Collector struct {
 	prevBadFlagsSeen   map[uint32]uint64
 	prevBadFlagsSeenV6 map[[16]byte]uint64
 
+	// Last cumulative egress byte counters, so each poll reports only what the
+	// client moved during that poll rather than the counter's whole history.
+	prevEgressBytes   map[uint32]prevEgress
+	prevEgressBytesV6 map[[16]byte]prevEgress
+
 	// SYN timestamp cache for eBPF <-> SPOE correlation
 	synCache    sync.Map // IP string -> time.Time
 	synCacheTTL time.Duration
@@ -140,6 +154,8 @@ func New(cfg Config, logger *logrus.Logger) (*Collector, error) {
 		prevUDPRatesV6:     make(map[[16]byte]prevRate),
 		prevBadFlagsSeen:   make(map[uint32]uint64),
 		prevBadFlagsSeenV6: make(map[[16]byte]uint64),
+		prevEgressBytes:    make(map[uint32]prevEgress),
+		prevEgressBytesV6:  make(map[[16]byte]prevEgress),
 	}
 
 	// Load GeoIP database
@@ -208,6 +224,17 @@ func (c *Collector) Start(ctx context.Context) error {
 			c.Logger.WithError(err).Warn("Failed to enable kernel-space monitor mode; enforcement may still drop traffic")
 		} else {
 			c.Logger.Warn("Collector running in DRY-RUN / monitor mode: kernel-space detections will log but not drop traffic")
+		}
+	}
+
+	// Enable per-client egress byte accounting on the TC egress path. This
+	// feeds the analyzer's sustained-download detection and is off by default
+	// because it costs a map lookup and an atomic add per egress packet.
+	if c.Config.EgressAccounting {
+		if err := c.Maps.SetEgressAccounting(true); err != nil {
+			c.Logger.WithError(err).Warn("Failed to enable egress byte accounting; sustained-download detection will see no volume")
+		} else {
+			c.Logger.WithField("min_bytes", c.Config.EgressMinBytes).Info("Egress byte accounting enabled")
 		}
 	}
 
@@ -582,6 +609,7 @@ func (c *Collector) pollMaps() {
 			c.sendICMPRates()
 			c.sendUDPRates()
 			c.sendBadFlagsAlerts()
+			c.sendEgressVolume()
 			c.pruneStaleState()
 		}
 	}
@@ -1422,6 +1450,7 @@ func (c *Collector) pruneStaleState() {
 	prunePrevRateMapV6(c.prevUDPRatesV6, maxClock, c.Logger)
 	prunePrevSeenMap(c.prevBadFlagsSeen, maxClock, c.Logger)
 	prunePrevSeenMap(c.prevBadFlagsSeenV6, maxClock, c.Logger)
+	c.pruneEgressState(time.Now())
 }
 
 func prunePrevRateMap(m map[uint32]prevRate, maxClock uint64, logger *logrus.Logger) {

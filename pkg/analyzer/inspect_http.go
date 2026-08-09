@@ -1129,6 +1129,9 @@ func registerInspectorHandlers(a *Analyzer, mux *http.ServeMux) {
 			"total_requests":             len(history),
 		})
 	})
+
+	registerEnforcementInspectorHandlers(a, mux)
+	registerSustainedInspectorHandlers(a, mux)
 }
 
 func writeJSON(w http.ResponseWriter, v interface{}) {

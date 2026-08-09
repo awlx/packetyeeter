@@ -16,7 +16,6 @@ ExecStart=/opt/packetyeeter/collector/packetyeeter-collector \
     -i ${INTERFACE} \
     -analyzer-addr ${ANALYZER_ADDR} \
     -metrics-addr ${METRICS_ADDR} \
-    -haproxy-port ${HAPROXY_PORT} \
     -spoe-port ${SPOE_PORT} \
     -socket ${SOCKET_PATH} \
     -geoip-asn ${GEOIP_ASN_PATH} \

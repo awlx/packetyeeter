@@ -67,10 +67,6 @@ PacketYeeter is a high-performance, eBPF-based DDoS protection and traffic filte
         *   `packetyeeter_latency_by_asn_seconds` (Histogram): Latency distribution per ASN.
         *   `packetyeeter_abuse_by_asn_total` (Counter): Anomalies and blocks grouped by ASN.
 
-8.  **HAProxy Stick-Table Integration (Layer 7)**
-    *   Implements the HAProxy Peer Protocol (v2).
-    *   Allows PacketYeeter to act as a "peer" to HAProxy, receiving stick-table updates (e.g., HTTP req rate limits, error rates) and blocking corresponding IPs at the XDP layer.
-
 9.  **HAProxy SPOE / L7 Analytics (JA4H + AI Heuristics)**
     *   **Goal**: Detect proxies/bots via protocol latency, JA4H fingerprinting, and behavioral signals.
     *   **Mechanism**: HAProxy SPOE sends timestamps + HTTP features (JA4H via Lua, host, UA, headers, cookies) to PacketYeeter.
@@ -106,10 +102,28 @@ PacketYeeter is a high-performance, eBPF-based DDoS protection and traffic filte
 
 > **Dashboards**: Prom/Influx dashboards map panels to metrics; see `docs/observability.md`.
 
-11. **Monitor / Dry-Run Mode**
+8.  **Sustained-Download Detection (Volume & Breadth)**
+    *   **Goal**: Catch scrapers, mirrors, and enumeration — abuse defined by *duration and breadth* rather than by rate. A client that stays under every per-second limit but sustains that rate for an hour across thousands of distinct resources is invisible to a rate limiter and obvious over a five-minute window.
+    *   **Two independent selection paths**, evaluated over the same sliding window:
+        *   **Volume**: many requests, many distinct resources, spread over many sections, moving a large number of bytes. Catches bulk mirroring and content theft.
+        *   **Shape**: many distinct resources spread thinly across many sections, with **no byte floor at all**. Catches enumeration, which would otherwise need a byte threshold low enough to sweep up legitimate traffic. A `resources-per-section` ceiling is what keeps ordinary deep usage (a CI job hammering a handful of sections) out of this path.
+    *   **Where the inputs come from**:
+        *   *Breadth* comes from the existing SPOE feed — `host` and `path` are already in the HTTP context, so no HAProxy configuration change is needed.
+        *   *Bytes* come from **eBPF TC egress per-client counters** (collector `-egress-accounting`), not from HAProxy. HAProxy cannot report transferred bytes over SPOE: its byte counters are stream-scoped, `on-http-response` fires before the body is transferred, and a fresh stream is allocated for each request on a keep-alive connection. The egress counters see real wire bytes, including streamed and chunked responses. Without `-egress-accounting` only the shape path can fire.
+    *   **Privacy**: hostnames and paths are reduced to 64-bit hashes on the way in and never retained. The tracker only ever counts and compares distinct values, so it never needs to read them back.
+    *   **Reputation raises thresholds, it does not exempt**: a verified crawler (Googlebot and friends, verified by the existing bot verifier) gets its request and byte floors multiplied by `-sustained-reputation-factor`. A verified crawler that starts mirroring the site is still caught, it just has to try harder. Resource and section floors are *not* raised — breadth is not an entitlement. Operator-allowlisted IPs are skipped entirely, consistent with the rest of the analyzer.
+    *   **Enforcement hold, with a hard ceiling**: blocking a client destroys the byte evidence that selected it, so a selected client stays selected for `-sustained-hold-seconds`. Release is judged on requests and breadth only — never bytes — and every leg must hold. `-sustained-max-hold-seconds` bounds this, because once enforcement has removed the evidence nothing measurable separates a false positive from a suppressed true positive. Good-reputation clients leave at the floor rather than the ceiling.
+    *   **Detect-only by default**: `-sustained-enabled` turns on measurement; `-sustained-enforce` is a *separate* flag that turns decisions into blocks. Tune against `GET /api/sustained` on the inspector, which reports per client which thresholds it is under (`blockers`) and how close it is to each (`margins`), plus a tri-state `watching` / `would_block` / `blocking` action.
+    *   **Metrics**: `packetyeeter_sustained_decisions_total{path,outcome}`, `packetyeeter_sustained_tracked_clients`, `packetyeeter_sustained_held_clients`, `packetyeeter_sustained_client_evictions_total`, `packetyeeter_sustained_reputation_deferrals_total`, plus the collector-side inputs `packetyeeter_egress_volume_signals_total` and `packetyeeter_egress_bytes_reported_total`.
+
+11. **Monitor / Dry-Run Mode & Runtime Enforcement Kill Switch**
     *   Run the analyzer with `-dry-run` to log detections and update metrics **without** sending BLOCK commands to the collector.
     *   Run the collector with `-dry-run` to put its own kernel-space detections (bad flags, SYN-flood blocklist, ICMP/UDP rate limits) into log-only mode **without** dropping matching traffic.
     *   The two flags are independent; for a full dry-run rollout, enable both.
+    *   **Runtime kill switch**: `POST /api/enforcement/stop` on the analyzer's inspector (same-origin guarded) suppresses **every** enforcing command — from all detectors, not just one — while leaving detection, scoring, metrics, and the reporting surfaces running. `-dry-run` is a deployment decision fixed at startup; this is an incident response reachable in seconds, for when something is being blocked that should not be and there is no time to work out which detector is responsible.
+        *   *Relieving* commands (unblock, allowlist) are deliberately **not** suppressed. The switch is pulled precisely when a block is wrong, so stopping the commands that undo a block would make things worse.
+        *   Deliberately one-way. Resuming requires a config change and a restart, which leaves a record of the decision. State is not persisted, so a restart returns to the deployed configuration.
+        *   `GET /api/enforcement` reports the current state. `packetyeeter_enforcement_stopped` (gauge) and `packetyeeter_enforcement_suppressed_commands_total` (counter) expose it to alerting.
 
 12. **Observability & Metrics**
     *   **Prometheus Exporters**: Each daemon exposes its own metrics endpoint (collector default `:2112`, analyzer default `:9091`) covering block counts, pps rates, reputation, and attack types.
@@ -286,7 +300,6 @@ sudo ./packetyeeter-collector -i eth0 -analyzer-addr 127.0.0.1:9090
 | `-i` | `eth0` | Network interface to attach eBPF programs to. |
 | `-analyzer-addr` | `127.0.0.1:9090` | Analyzer gRPC address to connect to. |
 | `-metrics-addr` | `:2112` | Prometheus metrics HTTP listen address. |
-| `-haproxy-port` | `8765` | HAProxy Peer protocol port. |
 | `-spoe-port` | `9876` | HAProxy SPOE agent port. |
 | `-socket` | `/var/run/packetyeeter-collector.sock` | UNIX socket for `yeetctl`. |
 | `-geoip-asn` | `""` | Path to `GeoLite2-ASN.mmdb` for ASN enrichment. |
@@ -295,6 +308,8 @@ sudo ./packetyeeter-collector -i eth0 -analyzer-addr 127.0.0.1:9090
 | `-block-duration` | `5m` | Default duration to keep an IP blocked. |
 | `-poll-interval` | `1s` | How often to poll the eBPF maps. |
 | `-signal-queue-size` | `10000` | Collector → analyzer signal queue size. |
+| `-egress-accounting` | `false` | Enable per-client eBPF TC egress byte counters. Required for the analyzer's sustained-download **volume** path; off by default because it adds two per-client maps and a counter update per egress packet. |
+| `-egress-min-bytes` | `1048576` | Minimum bytes accumulated in one poll interval before a client is reported to the analyzer. Keeps ordinary browsing out of the signal stream. |
 | `-dry-run` | `false` | Monitor mode: the collector's own kernel-space detections (bad flags, SYN-flood blocklist, ICMP/UDP rate limits) log/count but never drop traffic. Independent of the analyzer's `-dry-run`, which only suppresses BLOCK commands sent back over gRPC. |
 | `-v` | `false` | Verbose logging. |
 
@@ -325,7 +340,23 @@ sudo ./packetyeeter-collector -i eth0 -analyzer-addr 127.0.0.1:9090
 | `-enable-high-cardinality-metrics` | `false` | Emit per-IP / per-JA4H high-cardinality metrics. |
 | `-enable-pprof` | `false` | Enable the pprof HTTP server. |
 | `-pprof-addr` | `:6060` | pprof listen address. |
-| `-dry-run` | `false` | Log detections but do not send BLOCK commands (Monitor Mode). |
+| `-sustained-enabled` | `false` | Enable sustained-download detection (measurement only; see `-sustained-enforce`). |
+| `-sustained-enforce` | `false` | Turn sustained-download decisions into BLOCK commands. Deliberately separate from `-sustained-enabled` so a deployment can run detect-only for as long as tuning takes. |
+| `-sustained-window-seconds` | `300` | Sliding window length. |
+| `-sustained-evaluation-interval-seconds` | `10` | How often tracked clients are evaluated. |
+| `-sustained-publish-interval-seconds` | `60` | Minimum gap between decisions for the same client. |
+| `-sustained-min-requests` | `1000` | Minimum requests in the window (both paths). |
+| `-sustained-min-bytes` | `5368709120` | Minimum egress bytes in the window. **Volume path only** — the shape path has no byte floor. Needs collector `-egress-accounting`. |
+| `-sustained-min-resources` | `500` | Minimum distinct resources in the window (both paths). Not raised by reputation. |
+| `-sustained-min-sections` | `100` | Minimum distinct sections (host + first path segment) in the window (both paths). Not raised by reputation. |
+| `-sustained-max-resources-per-section-percent` | `120` | Shape-path ceiling on the resources-per-section ratio, as a percentage. Below it a client is spreading thinly across sections (enumeration); above it, concentrating (ordinary deep usage). |
+| `-sustained-max-clients` | `20000` | Maximum clients tracked concurrently. A growing `packetyeeter_sustained_client_evictions_total` means detection is only being applied to an arbitrary subset. |
+| `-sustained-max-resources-per-client` | `500` | Maximum distinct resources retained per client. `0` uses the resource minimum. |
+| `-sustained-hold-seconds` | `600` | How long a selected client stays selected after it stops clearing thresholds, since blocking destroys the byte evidence. Negative disables the hold. |
+| `-sustained-max-hold-seconds` | `1200` | Hard ceiling on the hold. This is the only bound on the cost of a false positive. |
+| `-sustained-release-factor-percent` | `100` | Percentage of the thresholds a held client must stay above (on requests, resources and sections) to remain held. |
+| `-sustained-reputation-factor` | `4` | Multiplier applied to the request and byte floors for verified good-reputation clients. Resource and section floors are unaffected. |
+| `-dry-run` | `false` | Log detections but do not send BLOCK commands (Monitor Mode). Also suppresses sustained-download blocks. |
 | `-v` | `false` | Verbose logging. |
 
 > Threat intelligence uses the free, **keyless** Shodan InternetDB API — no API key is required.

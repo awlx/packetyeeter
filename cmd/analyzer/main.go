@@ -12,6 +12,7 @@ import (
 	"github.com/sirupsen/logrus"
 
 	"PacketYeeter/pkg/analyzer"
+	"PacketYeeter/pkg/analyzer/sustained"
 	"PacketYeeter/pkg/buildinfo"
 )
 
@@ -41,8 +42,28 @@ func main() {
 		maxCollectors    = flag.Int("max-collectors", 1024, "Maximum concurrent collector streams (bounds fan-out/goroutines on the unauthenticated signal plane)")
 		mlModelPath      = flag.String("ml-model", "", "Path to ONNX ML model file (optional, enables ML-based confidence adjustment)")
 		dryRun           = flag.Bool("dry-run", false, "Monitor mode - log detections but don't send BLOCK commands")
-		showVersion      = flag.Bool("version", false, "Print build version and exit")
-		verbose          = flag.Bool("v", false, "Verbose logging")
+
+		sustainedDefaults = sustained.DefaultConfig()
+
+		sustainedEnabled   = flag.Bool("sustained-enabled", false, "Enable sustained-download detection (volume and breadth over a sliding window)")
+		sustainedEnforce   = flag.Bool("sustained-enforce", false, "Block sustained-download detections instead of only reporting them")
+		sustainedWindow    = flag.Int("sustained-window-seconds", sustainedDefaults.WindowSeconds, "Sustained-download sliding window length in seconds")
+		sustainedEvalEvery = flag.Int("sustained-evaluation-interval-seconds", sustainedDefaults.EvaluationIntervalSeconds, "How often sustained-download clients are evaluated")
+		sustainedPublish   = flag.Int("sustained-publish-interval-seconds", sustainedDefaults.PublishIntervalSeconds, "Minimum gap between sustained-download decisions for the same client")
+		sustainedMinReq    = flag.Uint64("sustained-min-requests", sustainedDefaults.MinimumRequests, "Sustained-download: minimum requests in the window")
+		sustainedMinBytes  = flag.Uint64("sustained-min-bytes", sustainedDefaults.MinimumBytes, "Sustained-download: minimum egress bytes in the window (volume path only)")
+		sustainedMinRes    = flag.Int("sustained-min-resources", sustainedDefaults.MinimumResources, "Sustained-download: minimum distinct resources in the window")
+		sustainedMinSect   = flag.Int("sustained-min-sections", sustainedDefaults.MinimumSections, "Sustained-download: minimum distinct sections in the window")
+		sustainedMaxRatio  = flag.Int("sustained-max-resources-per-section-percent", sustainedDefaults.MaximumResourcesPerSectionPercent, "Sustained-download: resources-per-section ceiling for the shape path, as a percentage")
+		sustainedMaxClient = flag.Int("sustained-max-clients", sustainedDefaults.MaximumClients, "Sustained-download: maximum clients tracked concurrently")
+		sustainedMaxRes    = flag.Int("sustained-max-resources-per-client", sustainedDefaults.MaximumResourcesPerClient, "Sustained-download: maximum distinct resources retained per client (0 uses the resource minimum)")
+		sustainedHold      = flag.Int("sustained-hold-seconds", sustainedDefaults.HoldSeconds, "Sustained-download: how long a selected client stays selected after it stops clearing thresholds (negative disables the hold)")
+		sustainedMaxHold   = flag.Int("sustained-max-hold-seconds", sustainedDefaults.MaximumHoldSeconds, "Sustained-download: hard ceiling on the enforcement hold")
+		sustainedRelease   = flag.Int("sustained-release-factor-percent", sustainedDefaults.ReleaseFactorPercent, "Sustained-download: percentage of the thresholds a held client must stay above to remain held")
+		sustainedRepFactor = flag.Int64("sustained-reputation-factor", sustainedDefaults.ReputationFactor, "Sustained-download: threshold multiplier applied to verified good-reputation clients")
+
+		showVersion = flag.Bool("version", false, "Print build version and exit")
+		verbose     = flag.Bool("v", false, "Verbose logging")
 	)
 	flag.Parse()
 	if *showVersion {
@@ -87,6 +108,24 @@ func main() {
 		MLModelPath:                  *mlModelPath,
 		MaxCollectors:                *maxCollectors,
 		DryRun:                       *dryRun,
+		Sustained: sustained.Config{
+			Enabled:                           *sustainedEnabled,
+			Enforce:                           *sustainedEnforce,
+			WindowSeconds:                     *sustainedWindow,
+			EvaluationIntervalSeconds:         *sustainedEvalEvery,
+			PublishIntervalSeconds:            *sustainedPublish,
+			MinimumRequests:                   *sustainedMinReq,
+			MinimumBytes:                      *sustainedMinBytes,
+			MinimumResources:                  *sustainedMinRes,
+			MinimumSections:                   *sustainedMinSect,
+			MaximumResourcesPerSectionPercent: *sustainedMaxRatio,
+			MaximumClients:                    *sustainedMaxClient,
+			MaximumResourcesPerClient:         *sustainedMaxRes,
+			HoldSeconds:                       *sustainedHold,
+			MaximumHoldSeconds:                *sustainedMaxHold,
+			ReleaseFactorPercent:              *sustainedRelease,
+			ReputationFactor:                  *sustainedRepFactor,
+		},
 	}
 
 	a, err := analyzer.New(cfg)

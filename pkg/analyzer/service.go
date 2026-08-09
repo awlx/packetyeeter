@@ -31,6 +31,7 @@ import (
 	"PacketYeeter/pkg/analyzer/entropy"
 	"PacketYeeter/pkg/analyzer/ja4db"
 	"PacketYeeter/pkg/analyzer/reputation"
+	"PacketYeeter/pkg/analyzer/sustained"
 	"PacketYeeter/pkg/analyzer/threatintel"
 	"PacketYeeter/pkg/geoip"
 	"PacketYeeter/pkg/metrics"
@@ -81,6 +82,7 @@ type Config struct {
 	MaxCollectors                int      // Max concurrent collector streams (default 1024)
 	InspectorTrustedHosts        []string // Extra Host/Origin hostnames the inspector trusts for mutating requests (in addition to loopback), e.g. a reverse-proxy hostname
 	DryRun                       bool     // Monitor mode - log detections but don't block
+	Sustained                    sustained.Config
 }
 
 // Analyzer is the AI/ML analysis daemon that receives signals from collectors
@@ -174,6 +176,16 @@ type Analyzer struct {
 	MLModel        *ml.ModelManager
 	ModelWatcher   *ml.ModelWatcher // Watches for model file changes
 
+	// Sustained-download detection. Nil when the feature is disabled, so every
+	// observation hook must stay nil-safe.
+	Sustained         *sustained.Tracker
+	sustainedVerified *verifiedBotSet
+	// Last-seen tracker totals, so the running counts it reports can be
+	// converted into Prometheus counter increments. Touched only by the
+	// evaluation goroutine.
+	sustainedLastEvictions uint64
+	sustainedLastDeferrals uint64
+
 	// Signal builder
 	SignalBuilder *aidetection.SignalBuilder
 
@@ -197,6 +209,9 @@ type Analyzer struct {
 	// Latency anomaly throttle
 	latencyAnomalyThrottle map[string]time.Time
 	latencyMu              sync.Mutex
+
+	// Runtime enforcement kill switch, checked wherever commands are issued.
+	enforcement enforcementState
 
 	// Recent block dedup
 	recentBlocks   map[string]time.Time
@@ -479,6 +494,10 @@ func (a *Analyzer) Start() error {
 		}
 	}
 
+	// Initialize sustained-download detection. Constructed after the AI engine
+	// because it consults the engine's allowlist.
+	a.initSustained()
+
 	logrus.Info("✅ All analyzer components initialized successfully")
 	// Start gRPC Server
 	lis, err := net.Listen("tcp", a.Config.ListenAddr)
@@ -503,6 +522,11 @@ func (a *Analyzer) Start() error {
 	// Start background tasks
 	a.wg.Add(1)
 	go a.runBaselineCalibrator()
+
+	if a.Sustained != nil {
+		a.wg.Add(1)
+		go a.runSustainedEvaluator()
+	}
 
 	// Start metrics server
 	a.metricsServer = metrics.StartMetricsServer(a.Config.MetricsAddr)
@@ -726,6 +750,15 @@ func (a *Analyzer) processSignal(sig *apiv1.Signal, cs *collectorStream) {
 	// Handle HTTP Request signals from SPOE collector
 	if sig.Type == apiv1.SignalType_SIGNAL_HTTP_REQUEST && sig.HttpContext != nil {
 		a.processHTTPRequest(sig, ip, asn, cs)
+		return
+	}
+
+	// Egress volume signals carry byte counts read from the collector's eBPF
+	// TC egress counters. They feed sustained-download detection and nothing
+	// else: on their own bytes cannot select a client, so there is no scoring
+	// or rate-limiting path to fall through to here.
+	if sig.Type == apiv1.SignalType_SIGNAL_EGRESS_VOLUME {
+		a.observeSustainedBytes(sig, ip)
 		return
 	}
 
@@ -984,6 +1017,13 @@ func (a *Analyzer) sendCommand(cs *collectorStream, cmd *apiv1.Command) {
 		return
 	}
 
+	// Checked before the dedup reservation below: a suppressed command must not
+	// mark the IP as recently blocked, or the block would stay suppressed for
+	// the dedup TTL after enforcement is restored.
+	if a.suppressedByKillSwitch(cmd) {
+		return
+	}
+
 	if a.isDuplicateBlockCommand(cmd) {
 		return
 	}
@@ -1050,6 +1090,10 @@ func (a *Analyzer) wasRecentlyBlocked(ip net.IP) bool {
 func (a *Analyzer) Broadcast(cmd *apiv1.Command) {
 	if a.Config.DryRun {
 		logrus.WithFields(logrus.Fields{"cmd": cmd.String()}).Debug("Dry run: not broadcasting command")
+		return
+	}
+
+	if a.suppressedByKillSwitch(cmd) {
 		return
 	}
 
