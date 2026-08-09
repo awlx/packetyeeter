@@ -24,7 +24,11 @@
   "refresh": "30s",
   "schemaVersion": 38,
   "style": "dark",
-  "tags": ["packetyeeter", "ddos", "bot"],
+  "tags": [
+    "packetyeeter",
+    "ddos",
+    "bot"
+  ],
   "templating": {
     "list": [
       {
@@ -46,138 +50,1419 @@
   "timezone": "browser",
   "title": "PacketYeeter Overview (Influx)",
   "uid": "packetyeeter-influx",
-  "version": 1,
+  "version": 2,
   "panels": [
-    {"type": "row", "title": "Overview", "collapsed": false, "gridPos": {"h":1,"w":24,"x":0,"y":0}},
+    {
+      "type": "row",
+      "title": "Overview",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "id": 1
+    },
     {
       "type": "stat",
       "title": "Blocks/sec (UDP/TCP/ICMP/HTTP)",
-      "datasource": {"type": "influxdb", "uid": "${DS_INFLUXDB}"},
-      "gridPos": {"h":4,"w":6,"x":0,"y":1},
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 1
+      },
       "targets": [
-        {"query": "SELECT non_negative_derivative(max(\"counter\"), 1s) FROM \"packetyeeter_udp_blocks_total\" WHERE $timeFilter GROUP BY time($__interval) fill(null)", "rawQuery": true, "refId": "A"},
-        {"query": "SELECT non_negative_derivative(max(\"counter\"), 1s) FROM \"packetyeeter_tcp_blocks_total\" WHERE $timeFilter GROUP BY time($__interval) fill(null)", "rawQuery": true, "refId": "B"},
-        {"query": "SELECT non_negative_derivative(max(\"counter\"), 1s) FROM \"packetyeeter_icmp_blocks_total\" WHERE $timeFilter GROUP BY time($__interval) fill(null)", "rawQuery": true, "refId": "C"},
-        {"query": "SELECT non_negative_derivative(max(\"counter\"), 1s) FROM \"packetyeeter_http_flood_blocks_total\" WHERE $timeFilter GROUP BY time($__interval) fill(null)", "rawQuery": true, "refId": "D"}
+        {
+          "query": "SELECT non_negative_derivative(max(\"counter\"), 1s) FROM \"packetyeeter_udp_blocks_total\" WHERE $timeFilter GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "A"
+        },
+        {
+          "query": "SELECT non_negative_derivative(max(\"counter\"), 1s) FROM \"packetyeeter_tcp_blocks_total\" WHERE $timeFilter GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "B"
+        },
+        {
+          "query": "SELECT non_negative_derivative(max(\"counter\"), 1s) FROM \"packetyeeter_icmp_blocks_total\" WHERE $timeFilter GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "C"
+        },
+        {
+          "query": "SELECT non_negative_derivative(max(\"counter\"), 1s) FROM \"packetyeeter_http_flood_blocks_total\" WHERE $timeFilter GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "D"
+        }
       ],
-      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "values": false}, "orientation": "horizontal", "colorMode": "value"}
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false
+        },
+        "orientation": "horizontal",
+        "colorMode": "value"
+      },
+      "id": 2
     },
     {
       "type": "stat",
       "title": "Detections/sec (UDP/TCP/ICMP/HTTP)",
-      "datasource": {"type": "influxdb", "uid": "${DS_INFLUXDB}"},
-      "gridPos": {"h":4,"w":6,"x":6,"y":1},
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 1
+      },
       "targets": [
-        {"query": "SELECT non_negative_derivative(max(\"counter\"), 1s) FROM \"packetyeeter_udp_detections_total\" WHERE $timeFilter GROUP BY time($__interval) fill(null)", "rawQuery": true, "refId": "A"},
-        {"query": "SELECT non_negative_derivative(max(\"counter\"), 1s) FROM \"packetyeeter_tcp_detections_total\" WHERE $timeFilter GROUP BY time($__interval) fill(null)", "rawQuery": true, "refId": "B"},
-        {"query": "SELECT non_negative_derivative(max(\"counter\"), 1s) FROM \"packetyeeter_icmp_detections_total\" WHERE $timeFilter GROUP BY time($__interval) fill(null)", "rawQuery": true, "refId": "C"},
-        {"query": "SELECT non_negative_derivative(max(\"counter\"), 1s) FROM \"packetyeeter_http_detections_total\" WHERE $timeFilter GROUP BY time($__interval) fill(null)", "rawQuery": true, "refId": "D"}
+        {
+          "query": "SELECT non_negative_derivative(max(\"counter\"), 1s) FROM \"packetyeeter_udp_detections_total\" WHERE $timeFilter GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "A"
+        },
+        {
+          "query": "SELECT non_negative_derivative(max(\"counter\"), 1s) FROM \"packetyeeter_tcp_detections_total\" WHERE $timeFilter GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "B"
+        },
+        {
+          "query": "SELECT non_negative_derivative(max(\"counter\"), 1s) FROM \"packetyeeter_icmp_detections_total\" WHERE $timeFilter GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "C"
+        },
+        {
+          "query": "SELECT non_negative_derivative(max(\"counter\"), 1s) FROM \"packetyeeter_http_detections_total\" WHERE $timeFilter GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "D"
+        }
       ],
-      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "values": false}, "orientation": "horizontal", "colorMode": "value"}
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false
+        },
+        "orientation": "horizontal",
+        "colorMode": "value"
+      },
+      "id": 3
     },
     {
       "type": "stat",
       "title": "Active Rate-limited IPs/ASNs",
-      "datasource": {"type": "influxdb", "uid": "${DS_INFLUXDB}"},
-      "gridPos": {"h":4,"w":6,"x":12,"y":1},
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 1
+      },
       "targets": [
-        {"query": "SELECT max(\"gauge\") FROM \"packetyeeter_rate_limit_active_ips\" WHERE $timeFilter", "rawQuery": true, "refId": "A"},
-        {"query": "SELECT max(\"gauge\") FROM \"packetyeeter_rate_limit_active_asns\" WHERE $timeFilter", "rawQuery": true, "refId": "B"}
+        {
+          "query": "SELECT max(\"gauge\") FROM \"packetyeeter_rate_limit_active_ips\" WHERE $timeFilter",
+          "rawQuery": true,
+          "refId": "A"
+        },
+        {
+          "query": "SELECT max(\"gauge\") FROM \"packetyeeter_rate_limit_active_asns\" WHERE $timeFilter",
+          "rawQuery": true,
+          "refId": "B"
+        }
       ],
-      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "values": false}, "orientation": "horizontal", "colorMode": "value"}
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false
+        },
+        "orientation": "horizontal",
+        "colorMode": "value"
+      },
+      "id": 4
     },
     {
       "type": "stat",
       "title": "Currently Blocked IPs/ASNs (60s)",
-      "datasource": {"type": "influxdb", "uid": "${DS_INFLUXDB}"},
-      "gridPos": {"h":4,"w":6,"x":18,"y":1},
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 1
+      },
       "targets": [
-        {"query": "SELECT max(\"gauge\") FROM \"packetyeeter_rate_limit_currently_blocked_ips\" WHERE $timeFilter", "rawQuery": true, "refId": "A"},
-        {"query": "SELECT max(\"gauge\") FROM \"packetyeeter_rate_limit_currently_blocked_asns\" WHERE $timeFilter", "rawQuery": true, "refId": "B"}
+        {
+          "query": "SELECT max(\"gauge\") FROM \"packetyeeter_rate_limit_currently_blocked_ips\" WHERE $timeFilter",
+          "rawQuery": true,
+          "refId": "A"
+        },
+        {
+          "query": "SELECT max(\"gauge\") FROM \"packetyeeter_rate_limit_currently_blocked_asns\" WHERE $timeFilter",
+          "rawQuery": true,
+          "refId": "B"
+        }
       ],
-      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "values": false}, "orientation": "horizontal", "colorMode": "value"}
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false
+        },
+        "orientation": "horizontal",
+        "colorMode": "value"
+      },
+      "id": 5
     },
     {
       "type": "stat",
       "title": "ML Overrides (1h)",
-      "datasource": {"type": "influxdb", "uid": "${DS_INFLUXDB}"},
-      "gridPos": {"h":4,"w":6,"x":18,"y":1},
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 5
+      },
       "targets": [
-        {"query": "SELECT max(\"counter\") - min(\"counter\") FROM \"packetyeeter_ml_blocks_overridden_total\" WHERE time > now() - 1h", "rawQuery": true, "refId": "A"}
+        {
+          "query": "SELECT max(\"counter\") - min(\"counter\") FROM \"packetyeeter_ml_blocks_overridden_total\" WHERE time > now() - 1h",
+          "rawQuery": true,
+          "refId": "A"
+        }
       ],
-      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "values": false}, "orientation": "horizontal", "colorMode": "value"}
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false
+        },
+        "orientation": "horizontal",
+        "colorMode": "value"
+      },
+      "id": 6
     },
-
-    {"type": "timeseries", "title": "Block Rate (per second)", "datasource": {"type": "influxdb", "uid": "${DS_INFLUXDB}"}, "gridPos": {"h":8,"w":12,"x":0,"y":5}, "targets": [
-      {"query": "SELECT non_negative_derivative(max(\"counter\"),1s) FROM \"packetyeeter_udp_blocks_total\" WHERE $timeFilter GROUP BY time($__interval) fill(null)", "rawQuery": true, "refId": "A", "alias": "UDP"},
-      {"query": "SELECT non_negative_derivative(max(\"counter\"),1s) FROM \"packetyeeter_tcp_blocks_total\" WHERE $timeFilter GROUP BY time($__interval) fill(null)", "rawQuery": true, "refId": "B", "alias": "TCP"},
-      {"query": "SELECT non_negative_derivative(max(\"counter\"),1s) FROM \"packetyeeter_icmp_blocks_total\" WHERE $timeFilter GROUP BY time($__interval) fill(null)", "rawQuery": true, "refId": "C", "alias": "ICMP"},
-      {"query": "SELECT non_negative_derivative(max(\"counter\"),1s) FROM \"packetyeeter_http_flood_blocks_total\" WHERE $timeFilter GROUP BY time($__interval) fill(null)", "rawQuery": true, "refId": "D", "alias": "HTTP"}
-    ]},
-    {"type": "timeseries", "title": "Detection Rate (per second)", "datasource": {"type": "influxdb", "uid": "${DS_INFLUXDB}"}, "gridPos": {"h":8,"w":12,"x":12,"y":5}, "targets": [
-      {"query": "SELECT non_negative_derivative(max(\"counter\"),1s) FROM \"packetyeeter_udp_detections_total\" WHERE $timeFilter GROUP BY time($__interval) fill(null)", "rawQuery": true, "refId": "A", "alias": "UDP"},
-      {"query": "SELECT non_negative_derivative(max(\"counter\"),1s) FROM \"packetyeeter_tcp_detections_total\" WHERE $timeFilter GROUP BY time($__interval) fill(null)", "rawQuery": true, "refId": "B", "alias": "TCP"},
-      {"query": "SELECT non_negative_derivative(max(\"counter\"),1s) FROM \"packetyeeter_icmp_detections_total\" WHERE $timeFilter GROUP BY time($__interval) fill(null)", "rawQuery": true, "refId": "C", "alias": "ICMP"},
-      {"query": "SELECT non_negative_derivative(max(\"counter\"),1s) FROM \"packetyeeter_http_detections_total\" WHERE $timeFilter GROUP BY time($__interval) fill(null)", "rawQuery": true, "refId": "D", "alias": "HTTP"}
-    ]},
-
-    {"type": "row", "title": "HTTP & Rate Limiting", "collapsed": false, "gridPos": {"h":1,"w":24,"x":0,"y":13}},
-    {"type": "table", "title": "Top 10 IPs by HTTP RPS", "datasource": {"type": "influxdb", "uid": "${DS_INFLUXDB}"}, "gridPos": {"h":8,"w":12,"x":0,"y":14}, "targets": [
-      {"query": "SELECT max(\"gauge\") FROM \"packetyeeter_http_requests_per_second_by_ip\" WHERE $timeFilter GROUP BY \"ip\"", "rawQuery": true, "refId": "A"}
-    ], "transformations": [{"id": "organize", "options": {"order": ["ip", "Max"], "renameByName": {"Max":"rps"}}}]},
-    {"type": "table", "title": "Top 10 ASNs by HTTP RPS", "datasource": {"type": "influxdb", "uid": "${DS_INFLUXDB}"}, "gridPos": {"h":8,"w":12,"x":12,"y":14}, "targets": [
-      {"query": "SELECT max(\"gauge\") FROM \"packetyeeter_http_requests_per_second_by_asn\" WHERE $timeFilter GROUP BY \"asn\",\"org\"", "rawQuery": true, "refId": "A"}
-    ], "transformations": [{"id": "organize", "options": {"order": ["asn","org","Max"], "renameByName": {"Max":"rps"}}}]},
-    {"type": "timeseries", "title": "Rate Limit Exceeded (ip/asn)", "datasource": {"type": "influxdb", "uid": "${DS_INFLUXDB}"}, "gridPos": {"h":6,"w":12,"x":0,"y":22}, "targets": [
-      {"query": "SELECT non_negative_derivative(max(\"counter\"),1s) FROM \"packetyeeter_rate_limit_exceeded_total\" WHERE $timeFilter AND \"type\"='ip' GROUP BY time($__interval) fill(null)", "rawQuery": true, "refId": "A", "alias": "ip"},
-      {"query": "SELECT non_negative_derivative(max(\"counter\"),1s) FROM \"packetyeeter_rate_limit_exceeded_total\" WHERE $timeFilter AND \"type\"='asn' GROUP BY time($__interval) fill(null)", "rawQuery": true, "refId": "B", "alias": "asn"}
-    ]},
-    {"type": "timeseries", "title": "Proxy Lag & SPOE Anomalies", "datasource": {"type": "influxdb", "uid": "${DS_INFLUXDB}"}, "gridPos": {"h":6,"w":12,"x":12,"y":22}, "targets": [
-      {"query": "SELECT max(\"gauge\") FROM \"packetyeeter_proxy_lag_max_ms\" WHERE $timeFilter GROUP BY time($__interval) fill(null)", "rawQuery": true, "refId": "A", "alias": "proxy_lag_ms"},
-      {"query": "SELECT non_negative_derivative(max(\"counter\"),1s) FROM \"packetyeeter_spoe_anomaly_total\" WHERE $timeFilter GROUP BY time($__interval) fill(null)", "rawQuery": true, "refId": "B", "alias": "spoe_anomaly_rate"}
-    ]},
-
-    {"type": "row", "title": "ML & Bot Detection", "collapsed": false, "gridPos": {"h":1,"w":24,"x":0,"y":28}},
-    {"type": "stat", "title": "ML Bot Probability", "datasource": {"type": "influxdb", "uid": "${DS_INFLUXDB}"}, "gridPos": {"h":4,"w":6,"x":0,"y":29}, "targets": [
-      {"query": "SELECT max(\"gauge\") FROM \"packetyeeter_ml_bot_probability\" WHERE $timeFilter", "rawQuery": true, "refId": "A"}
-    ]},
-    {"type": "stat", "title": "ML Predictions/sec", "datasource": {"type": "influxdb", "uid": "${DS_INFLUXDB}"}, "gridPos": {"h":4,"w":6,"x":6,"y":29}, "targets": [
-      {"query": "SELECT non_negative_derivative(max(\"counter\"),1s) FROM \"packetyeeter_ml_predictions_total\" WHERE $timeFilter GROUP BY time($__interval) fill(null)", "rawQuery": true, "refId": "A"}
-    ]},
-    {"type": "stat", "title": "ML Overrides/sec", "datasource": {"type": "influxdb", "uid": "${DS_INFLUXDB}"}, "gridPos": {"h":4,"w":6,"x":12,"y":29}, "targets": [
-      {"query": "SELECT non_negative_derivative(max(\"counter\"),1s) FROM \"packetyeeter_ml_blocks_overridden_total\" WHERE $timeFilter GROUP BY time($__interval) fill(null)", "rawQuery": true, "refId": "A"}
-    ]},
-    {"type": "piechart", "title": "ML Predictions by Category (1h)", "datasource": {"type": "influxdb", "uid": "${DS_INFLUXDB}"}, "gridPos": {"h":6,"w":6,"x":18,"y":29}, "targets": [
-      {"query": "SELECT max(\"counter\") - min(\"counter\") FROM \"packetyeeter_ml_predictions_by_category_total\" WHERE time > now()-1h GROUP BY \"category\",\"is_bot\"", "rawQuery": true, "refId": "A"}
-    ], "options": {"legend": {"displayMode": "table"}, "pieType": "donut"}},
-    {"type": "timeseries", "title": "Bot Detection Rate by Category", "datasource": {"type": "influxdb", "uid": "${DS_INFLUXDB}"}, "gridPos": {"h":6,"w":12,"x":0,"y":33}, "targets": [
-      {"query": "SELECT non_negative_derivative(max(\"counter\"),1s) FROM \"packetyeeter_bot_detections_by_category_total\" WHERE $timeFilter GROUP BY time($__interval),\"category\" fill(null)", "rawQuery": true, "refId": "A"}
-    ]},
-    {"type": "piechart", "title": "Bot Verification Results (1h)", "datasource": {"type": "influxdb", "uid": "${DS_INFLUXDB}"}, "gridPos": {"h":6,"w":6,"x":12,"y":33}, "targets": [
-      {"query": "SELECT max(\"counter\") - min(\"counter\" ) FROM \"packetyeeter_bot_verification_results_total\" WHERE time > now()-1h GROUP BY \"status\"", "rawQuery": true, "refId": "A"}
-    ], "options": {"legend": {"displayMode": "table"}, "pieType": "pie"}},
-    {"type": "piechart", "title": "Bot Verification Failures (1h)", "datasource": {"type": "influxdb", "uid": "${DS_INFLUXDB}"}, "gridPos": {"h":6,"w":6,"x":18,"y":33}, "targets": [
-      {"query": "SELECT max(\"counter\") - min(\"counter\") FROM \"packetyeeter_bot_verification_failures_total\" WHERE time > now()-1h GROUP BY \"bot_type\",\"failure_reason\"", "rawQuery": true, "refId": "A"}
-    ], "options": {"legend": {"displayMode": "table"}, "pieType": "pie"}},
-    {"type": "timeseries", "title": "JA4DB Hits by Type", "datasource": {"type": "influxdb", "uid": "${DS_INFLUXDB}"}, "gridPos": {"h":6,"w":12,"x":0,"y":39}, "targets": [
-      {"query": "SELECT non_negative_derivative(max(\"counter\"),1s) FROM \"packetyeeter_ja4db_hits_by_type_total\" WHERE $timeFilter GROUP BY time($__interval),\"match_type\",\"app_category\" fill(null)", "rawQuery": true, "refId": "A"}
-    ]},
-
-    {"type": "row", "title": "Threat Intel & Baseline", "collapsed": false, "gridPos": {"h":1,"w":24,"x":0,"y":45}},
-    {"type": "stat", "title": "Threat Enrichments/sec", "datasource": {"type": "influxdb", "uid": "${DS_INFLUXDB}"}, "gridPos": {"h":4,"w":6,"x":0,"y":46}, "targets": [
-      {"query": "SELECT non_negative_derivative(max(\"counter\"),1s) FROM \"packetyeeter_threat_intel_enrichments_total\" WHERE $timeFilter GROUP BY time($__interval) fill(null)", "rawQuery": true, "refId": "A"}
-    ]},
-    {"type": "stat", "title": "Known Scanners", "datasource": {"type": "influxdb", "uid": "${DS_INFLUXDB}"}, "gridPos": {"h":4,"w":6,"x":6,"y":46}, "targets": [
-      {"query": "SELECT max(\"gauge\") FROM \"packetyeeter_threat_intel_known_scanners\" WHERE $timeFilter", "rawQuery": true, "refId": "A"}
-    ]},
-    {"type": "stat", "title": "Calibrated ASNs", "datasource": {"type": "influxdb", "uid": "${DS_INFLUXDB}"}, "gridPos": {"h":4,"w":6,"x":12,"y":46}, "targets": [
-      {"query": "SELECT max(\"gauge\") FROM \"packetyeeter_baseline_calibrated_asns\" WHERE $timeFilter", "rawQuery": true, "refId": "A"}
-    ]},
-    {"type": "timeseries", "title": "Baseline Anomalies/sec", "datasource": {"type": "influxdb", "uid": "${DS_INFLUXDB}"}, "gridPos": {"h":6,"w":12,"x":0,"y":50}, "targets": [
-      {"query": "SELECT non_negative_derivative(max(\"counter\"),1s) FROM \"packetyeeter_baseline_anomalies_total\" WHERE $timeFilter GROUP BY time($__interval) fill(null)", "rawQuery": true, "refId": "A"}
-    ]},
-    {"type": "timeseries", "title": "AI Signals by Source", "datasource": {"type": "influxdb", "uid": "${DS_INFLUXDB}"}, "gridPos": {"h":6,"w":12,"x":12,"y":50}, "targets": [
-      {"query": "SELECT non_negative_derivative(max(\"counter\"),1s) FROM \"packetyeeter_ai_signals_by_source_total\" WHERE $timeFilter GROUP BY time($__interval),\"source\" fill(null)", "rawQuery": true, "refId": "A"}
-    ]}
+    {
+      "type": "timeseries",
+      "title": "Block Rate (per second)",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 6,
+        "y": 5
+      },
+      "targets": [
+        {
+          "query": "SELECT non_negative_derivative(max(\"counter\"),1s) FROM \"packetyeeter_udp_blocks_total\" WHERE $timeFilter GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "A",
+          "alias": "UDP"
+        },
+        {
+          "query": "SELECT non_negative_derivative(max(\"counter\"),1s) FROM \"packetyeeter_tcp_blocks_total\" WHERE $timeFilter GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "B",
+          "alias": "TCP"
+        },
+        {
+          "query": "SELECT non_negative_derivative(max(\"counter\"),1s) FROM \"packetyeeter_icmp_blocks_total\" WHERE $timeFilter GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "C",
+          "alias": "ICMP"
+        },
+        {
+          "query": "SELECT non_negative_derivative(max(\"counter\"),1s) FROM \"packetyeeter_http_flood_blocks_total\" WHERE $timeFilter GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "D",
+          "alias": "HTTP"
+        }
+      ],
+      "id": 7
+    },
+    {
+      "type": "timeseries",
+      "title": "Detection Rate (per second)",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 13
+      },
+      "targets": [
+        {
+          "query": "SELECT non_negative_derivative(max(\"counter\"),1s) FROM \"packetyeeter_udp_detections_total\" WHERE $timeFilter GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "A",
+          "alias": "UDP"
+        },
+        {
+          "query": "SELECT non_negative_derivative(max(\"counter\"),1s) FROM \"packetyeeter_tcp_detections_total\" WHERE $timeFilter GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "B",
+          "alias": "TCP"
+        },
+        {
+          "query": "SELECT non_negative_derivative(max(\"counter\"),1s) FROM \"packetyeeter_icmp_detections_total\" WHERE $timeFilter GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "C",
+          "alias": "ICMP"
+        },
+        {
+          "query": "SELECT non_negative_derivative(max(\"counter\"),1s) FROM \"packetyeeter_http_detections_total\" WHERE $timeFilter GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "D",
+          "alias": "HTTP"
+        }
+      ],
+      "id": 8
+    },
+    {
+      "type": "row",
+      "title": "HTTP & Rate Limiting",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 21
+      },
+      "id": 9
+    },
+    {
+      "type": "table",
+      "title": "Top 10 IPs by HTTP RPS",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 22
+      },
+      "targets": [
+        {
+          "query": "SELECT max(\"gauge\") FROM \"packetyeeter_http_requests_per_second_by_ip\" WHERE $timeFilter GROUP BY \"ip\"",
+          "rawQuery": true,
+          "refId": "A"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "order": [
+              "ip",
+              "Max"
+            ],
+            "renameByName": {
+              "Max": "rps"
+            }
+          }
+        }
+      ],
+      "id": 10
+    },
+    {
+      "type": "table",
+      "title": "Top 10 ASNs by HTTP RPS",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 22
+      },
+      "targets": [
+        {
+          "query": "SELECT max(\"gauge\") FROM \"packetyeeter_http_requests_per_second_by_asn\" WHERE $timeFilter GROUP BY \"asn\",\"org\"",
+          "rawQuery": true,
+          "refId": "A"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "order": [
+              "asn",
+              "org",
+              "Max"
+            ],
+            "renameByName": {
+              "Max": "rps"
+            }
+          }
+        }
+      ],
+      "id": 11
+    },
+    {
+      "type": "timeseries",
+      "title": "Rate Limit Exceeded (ip/asn)",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 0,
+        "y": 30
+      },
+      "targets": [
+        {
+          "query": "SELECT non_negative_derivative(max(\"counter\"),1s) FROM \"packetyeeter_rate_limit_exceeded_total\" WHERE $timeFilter AND \"type\"='ip' GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "A",
+          "alias": "ip"
+        },
+        {
+          "query": "SELECT non_negative_derivative(max(\"counter\"),1s) FROM \"packetyeeter_rate_limit_exceeded_total\" WHERE $timeFilter AND \"type\"='asn' GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "B",
+          "alias": "asn"
+        }
+      ],
+      "id": 12
+    },
+    {
+      "type": "timeseries",
+      "title": "Proxy Lag & SPOE Anomalies",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 12,
+        "y": 30
+      },
+      "targets": [
+        {
+          "query": "SELECT max(\"gauge\") FROM \"packetyeeter_proxy_lag_max_ms\" WHERE $timeFilter GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "A",
+          "alias": "proxy_lag_ms"
+        },
+        {
+          "query": "SELECT non_negative_derivative(max(\"counter\"),1s) FROM \"packetyeeter_spoe_anomaly_total\" WHERE $timeFilter GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "B",
+          "alias": "spoe_anomaly_rate"
+        }
+      ],
+      "id": 13
+    },
+    {
+      "type": "row",
+      "title": "ML & Bot Detection",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 36
+      },
+      "id": 14
+    },
+    {
+      "type": "stat",
+      "title": "ML Bot Probability",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 37
+      },
+      "targets": [
+        {
+          "query": "SELECT max(\"gauge\") FROM \"packetyeeter_ml_bot_probability\" WHERE $timeFilter",
+          "rawQuery": true,
+          "refId": "A"
+        }
+      ],
+      "id": 15
+    },
+    {
+      "type": "stat",
+      "title": "ML Predictions/sec",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 37
+      },
+      "targets": [
+        {
+          "query": "SELECT non_negative_derivative(max(\"counter\"),1s) FROM \"packetyeeter_ml_predictions_total\" WHERE $timeFilter GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "A"
+        }
+      ],
+      "id": 16
+    },
+    {
+      "type": "stat",
+      "title": "ML Overrides/sec",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 37
+      },
+      "targets": [
+        {
+          "query": "SELECT non_negative_derivative(max(\"counter\"),1s) FROM \"packetyeeter_ml_blocks_overridden_total\" WHERE $timeFilter GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "A"
+        }
+      ],
+      "id": 17
+    },
+    {
+      "type": "piechart",
+      "title": "ML Predictions by Category (1h)",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 18,
+        "y": 37
+      },
+      "targets": [
+        {
+          "query": "SELECT max(\"counter\") - min(\"counter\") FROM \"packetyeeter_ml_predictions_by_category_total\" WHERE time > now()-1h GROUP BY \"category\",\"is_bot\"",
+          "rawQuery": true,
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "table"
+        },
+        "pieType": "donut"
+      },
+      "id": 18
+    },
+    {
+      "type": "timeseries",
+      "title": "Bot Detection Rate by Category",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 0,
+        "y": 43
+      },
+      "targets": [
+        {
+          "query": "SELECT non_negative_derivative(max(\"counter\"),1s) FROM \"packetyeeter_bot_detections_by_category_total\" WHERE $timeFilter GROUP BY time($__interval),\"category\" fill(null)",
+          "rawQuery": true,
+          "refId": "A"
+        }
+      ],
+      "id": 19
+    },
+    {
+      "type": "piechart",
+      "title": "Bot Verification Results (1h)",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 12,
+        "y": 43
+      },
+      "targets": [
+        {
+          "query": "SELECT max(\"counter\") - min(\"counter\" ) FROM \"packetyeeter_bot_verification_results_total\" WHERE time > now()-1h GROUP BY \"status\"",
+          "rawQuery": true,
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "table"
+        },
+        "pieType": "pie"
+      },
+      "id": 20
+    },
+    {
+      "type": "piechart",
+      "title": "Bot Verification Failures (1h)",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 18,
+        "y": 43
+      },
+      "targets": [
+        {
+          "query": "SELECT max(\"counter\") - min(\"counter\") FROM \"packetyeeter_bot_verification_failures_total\" WHERE time > now()-1h GROUP BY \"bot_type\",\"failure_reason\"",
+          "rawQuery": true,
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "table"
+        },
+        "pieType": "pie"
+      },
+      "id": 21
+    },
+    {
+      "type": "timeseries",
+      "title": "JA4DB Hits by Type",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 0,
+        "y": 49
+      },
+      "targets": [
+        {
+          "query": "SELECT non_negative_derivative(max(\"counter\"),1s) FROM \"packetyeeter_ja4db_hits_by_type_total\" WHERE $timeFilter GROUP BY time($__interval),\"match_type\",\"app_category\" fill(null)",
+          "rawQuery": true,
+          "refId": "A"
+        }
+      ],
+      "id": 22
+    },
+    {
+      "type": "row",
+      "title": "Threat Intel & Baseline",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 55
+      },
+      "id": 23
+    },
+    {
+      "type": "stat",
+      "title": "Threat Enrichments/sec",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 56
+      },
+      "targets": [
+        {
+          "query": "SELECT non_negative_derivative(max(\"counter\"),1s) FROM \"packetyeeter_threat_intel_enrichments_total\" WHERE $timeFilter GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "A"
+        }
+      ],
+      "id": 24
+    },
+    {
+      "type": "stat",
+      "title": "Known Scanners",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 56
+      },
+      "targets": [
+        {
+          "query": "SELECT max(\"gauge\") FROM \"packetyeeter_threat_intel_known_scanners\" WHERE $timeFilter",
+          "rawQuery": true,
+          "refId": "A"
+        }
+      ],
+      "id": 25
+    },
+    {
+      "type": "stat",
+      "title": "Calibrated ASNs",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 56
+      },
+      "targets": [
+        {
+          "query": "SELECT max(\"gauge\") FROM \"packetyeeter_baseline_calibrated_asns\" WHERE $timeFilter",
+          "rawQuery": true,
+          "refId": "A"
+        }
+      ],
+      "id": 26
+    },
+    {
+      "type": "timeseries",
+      "title": "Baseline Anomalies/sec",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 0,
+        "y": 60
+      },
+      "targets": [
+        {
+          "query": "SELECT non_negative_derivative(max(\"counter\"),1s) FROM \"packetyeeter_baseline_anomalies_total\" WHERE $timeFilter GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "A"
+        }
+      ],
+      "id": 27
+    },
+    {
+      "type": "timeseries",
+      "title": "AI Signals by Source",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 12,
+        "y": 60
+      },
+      "targets": [
+        {
+          "query": "SELECT non_negative_derivative(max(\"counter\"),1s) FROM \"packetyeeter_ai_signals_by_source_total\" WHERE $timeFilter GROUP BY time($__interval),\"source\" fill(null)",
+          "rawQuery": true,
+          "refId": "A"
+        }
+      ],
+      "id": 28
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 66
+      },
+      "panels": [],
+      "title": "Sustained Download & Enforcement",
+      "type": "row",
+      "id": 29
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 0,
+        "y": 67
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "last",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "alias": "$tag_path / $tag_outcome",
+          "query": "SELECT non_negative_derivative(max(\"counter\"), 1s) FROM \"packetyeeter_sustained_decisions_total\" WHERE $timeFilter GROUP BY time($__interval), \"path\", \"outcome\" fill(null)",
+          "rawQuery": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Sustained Decisions (rate/sec)",
+      "type": "timeseries",
+      "id": 30
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 12,
+        "y": 67
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name"
+      },
+      "targets": [
+        {
+          "alias": "Tracked",
+          "query": "SELECT last(\"gauge\") FROM \"packetyeeter_sustained_tracked_clients\" WHERE $timeFilter",
+          "rawQuery": true,
+          "refId": "A"
+        },
+        {
+          "alias": "Held",
+          "query": "SELECT last(\"gauge\") FROM \"packetyeeter_sustained_held_clients\" WHERE $timeFilter",
+          "rawQuery": true,
+          "refId": "B"
+        },
+        {
+          "alias": "Evictions",
+          "query": "SELECT max(\"counter\") FROM \"packetyeeter_sustained_client_evictions_total\" WHERE $timeFilter",
+          "rawQuery": true,
+          "refId": "C"
+        }
+      ],
+      "title": "Sustained Tracker",
+      "type": "stat",
+      "id": 31
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "options": {
+                "0": {
+                  "color": "green",
+                  "index": 0,
+                  "text": "Enforcing"
+                },
+                "1": {
+                  "color": "red",
+                  "index": 1,
+                  "text": "STOPPED"
+                }
+              },
+              "type": "value"
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 18,
+        "y": 67
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name"
+      },
+      "targets": [
+        {
+          "alias": "Enforcement Stopped",
+          "query": "SELECT last(\"gauge\") FROM \"packetyeeter_enforcement_stopped\" WHERE $timeFilter",
+          "rawQuery": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Enforcement Kill-Switch",
+      "type": "stat",
+      "id": 32
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 73
+      },
+      "panels": [],
+      "title": "Pipeline Backpressure",
+      "type": "row",
+      "id": 33
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 0,
+        "y": 74
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "last",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "alias": "AI Engine",
+          "query": "SELECT max(\"gauge\") FROM \"packetyeeter_ai_engine_queue_depth\" WHERE $timeFilter GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "A"
+        },
+        {
+          "alias": "Collector Signals",
+          "query": "SELECT max(\"gauge\") FROM \"packetyeeter_collector_signal_queue_depth\" WHERE $timeFilter GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "B"
+        },
+        {
+          "alias": "Threat Intel Enrich",
+          "query": "SELECT max(\"gauge\") FROM \"packetyeeter_threat_intel_enrich_queue_depth\" WHERE $timeFilter GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "C"
+        }
+      ],
+      "title": "Queue Depth",
+      "type": "timeseries",
+      "id": 34
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 12,
+        "y": 74
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "last",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "alias": "AI Engine",
+          "query": "SELECT non_negative_derivative(max(\"counter\"), 1s) FROM \"packetyeeter_ai_engine_queue_drops_total\" WHERE $timeFilter GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "A"
+        },
+        {
+          "alias": "Collector Signals",
+          "query": "SELECT non_negative_derivative(max(\"counter\"), 1s) FROM \"packetyeeter_collector_signal_queue_drops_total\" WHERE $timeFilter GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "B"
+        },
+        {
+          "alias": "Threat Intel Enrich",
+          "query": "SELECT non_negative_derivative(max(\"counter\"), 1s) FROM \"packetyeeter_threat_intel_enrich_queue_drops_total\" WHERE $timeFilter GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "C"
+        }
+      ],
+      "title": "Queue Drops (rate/sec)",
+      "type": "timeseries",
+      "id": 35
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 80
+      },
+      "panels": [],
+      "title": "Attack Campaigns",
+      "type": "row",
+      "id": 36
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 0,
+        "y": 81
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "last",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "alias": "$tag_vector",
+          "query": "SELECT non_negative_derivative(max(\"counter\"), 1s) FROM \"packetyeeter_attack_campaign_detections_total\" WHERE $timeFilter GROUP BY time($__interval), \"vector\" fill(null)",
+          "rawQuery": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Campaign Observations by Vector (rate/sec)",
+      "type": "timeseries",
+      "id": 37
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 12,
+        "y": 81
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "last",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "alias": "$tag_vector / $tag_reason",
+          "query": "SELECT non_negative_derivative(max(\"counter\"), 1s) FROM \"packetyeeter_carpet_bombing_detections_total\" WHERE $timeFilter GROUP BY time($__interval), \"vector\", \"reason\" fill(null)",
+          "rawQuery": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Carpet-Bombing Observations (rate/sec)",
+      "type": "timeseries",
+      "id": 38
+    }
   ]
 }

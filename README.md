@@ -391,10 +391,13 @@ PacketYeeter is designed to be monitored via **Prometheus** and **Grafana**.
     (`-inspect-addr`) for live inspection of sessions, detections, and reputation.
     Keep it bound to loopback or behind trusted access controls.
 
-3.  **Grafana Dashboard**:
-    A production-ready dashboard is included: `grafana-dashboard.json`. Import it
-    into Grafana with a Prometheus data source configured. The default dashboard
-    excludes IPs; build a private dashboard if IP visibility is needed. See
+3.  **Grafana Dashboards**:
+    Two dashboards are included, both built against an InfluxDB data source:
+    `grafana-dashboard.json` (full detail) and `grafana-dashboard.influx.json`
+    (condensed overview). Import either and select your InfluxDB data source for
+    the `DS_INFLUXDB` variable. The default dashboards exclude IPs; panels that
+    depend on `-enable-high-cardinality-metrics` stay empty until that flag is
+    set, and per-IP breakdowns belong in a private dashboard. See
     [`examples/prometheus-scrape.yml`](examples/prometheus-scrape.yml) for a
     minimal Prometheus scrape config and
     [`examples/prometheus-alerts.yml`](examples/prometheus-alerts.yml) for

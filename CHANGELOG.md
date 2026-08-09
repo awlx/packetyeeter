@@ -55,6 +55,35 @@ Collector perf readers now count and warn on kernel-reported lost samples via
 Previously `perf.Record.LostSamples` was ignored, making overload look like a
 clean absence of detections.
 
+## 2026-08-09 - Grafana dashboard refresh
+
+### Bring the checked-in dashboards back in sync with `pkg/metrics`
+**Problem**: The dashboards had drifted from the code. Three panel targets
+queried measurements that no longer exist (`packetyeeter_baseline_anomalies`,
+`packetyeeter_baseline_stats`, `packetyeeter_ml_stats`) and rendered as empty
+panels, and 57 of the registered metrics were not graphed anywhere. That
+included the entire sustained-download subsystem, the enforcement kill-switch,
+and every queue depth/drop gauge -- exactly the series an operator needs during
+a staged rollout to tell "detection is quiet" apart from "detection is not
+running".
+
+**Solution**: Fixed the three stale targets and added rows covering the
+remaining metrics: sustained download, enforcement safety, pipeline
+backpressure, attack campaigns and carpet bombing, clock skew and payload
+entropy, ML/AI engine health, and protocol/SPOE/reputation. Both dashboards now
+cover every metric registered in `pkg/metrics` plus the reputation gauges.
+
+**Privacy**: unchanged. Panels backed by per-IP, per-JA4H, or per-user-agent
+series aggregate those labels away -- the per-IP detection counter is summed
+inside a subquery so the address never reaches the panel, and `threat_intel_info`
+and `ai_recent_detections` are reduced to series counts. Those panels stay empty
+unless the analyzer runs with `-enable-high-cardinality-metrics`.
+
+Also repacked `gridPos` in both files. The main dashboard had 18 overlapping
+panel rectangles and the overview had 2, which Grafana silently reflowed on
+import, so the checked-in layout did not match what operators actually saw.
+Panels now carry unique ids.
+
 ## 2026-08-09 - Sustained-download detection
 
 ### Detect slow, patient bulk scrapers

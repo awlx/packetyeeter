@@ -229,10 +229,27 @@ Suggested campaign-level Grafana panels:
 | Baseline multiplier p95 | `histogram_quantile(0.95, sum by (le, vector, protocol, dst_port_bucket, enough_samples) (rate(packetyeeter_campaign_baseline_multiplier_bucket[15m])))` |
 | Baseline rate by service key | `packetyeeter_campaign_baseline_rate` |
 
-The checked-in `grafana-dashboard.json` already contains broad protection, AI,
-and baseline panels. The campaign panels above are intentionally documented as a
-focused panel plan instead of expanding the dashboard JSON in this PR; they can
-be added to local/private dashboards without introducing high-cardinality views.
+The checked-in dashboards cover every metric registered in `pkg/metrics` plus
+the reputation gauges, so a metric added to the code without a matching panel
+shows up as a coverage gap:
+
+| Dashboard | Scope |
+| :--- | :--- |
+| `grafana-dashboard.json` | Full detail: protection, AI/ML, baselines, campaigns, sustained download, enforcement safety, queue backpressure. |
+| `grafana-dashboard.influx.json` | Condensed operator overview. |
+
+The campaign panels above ship in `grafana-dashboard.json` under the
+*Attack Campaigns & Carpet Bombing* row. Panels backed by per-IP, per-JA4H, or
+per-user-agent series stay empty unless the analyzer runs with
+`-enable-high-cardinality-metrics`, and they aggregate those labels away so the
+shared dashboards never render a client address.
+
+Both files use the classic (schema V1) dashboard format, which Grafana 12 still
+accepts. If your Grafana runs with the experimental `dashboardNewLayouts`
+toggle, import fails with `Annotations is not an array` because the V2 save-model
+transform rejects the V1 `annotations.list` object. Import with that toggle
+disabled; the dashboards are deliberately not shipped in schema V2, since V2
+dashboards cannot be viewed at all without the toggle.
 
 ## Alerts and scrape config
 
