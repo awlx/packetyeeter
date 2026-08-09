@@ -110,6 +110,43 @@ func TestCampaignAggregatorExpiresOldSignals(t *testing.T) {
 	}
 }
 
+func TestActiveCampaignsCountsOnlyDetectedCampaigns(t *testing.T) {
+	agg := NewCampaignAggregator(testCampaignConfig())
+	now := time.Date(2026, 7, 3, 9, 0, 0, 0, time.UTC)
+
+	for i := 1; i < agg.cfg.MinSignals; i++ {
+		agg.Record(Signal{
+			Type:      SignalUDPFlood,
+			Source:    SourceUDP,
+			IP:        net.ParseIP(fmt.Sprintf("198.51.100.%d", i)),
+			Weight:    1,
+			Timestamp: now.Add(time.Duration(i) * time.Second),
+			Metadata: map[string]interface{}{
+				"dest_ip":      fmt.Sprintf("203.0.113.%d", i),
+				"collector_id": "collector-a",
+			},
+		})
+	}
+	if active := agg.ActiveCampaigns(now.Add(time.Minute)); active != 0 {
+		t.Fatalf("sub-threshold buckets reported as active attacks: %d", active)
+	}
+
+	agg.Record(Signal{
+		Type:      SignalUDPFlood,
+		Source:    SourceUDP,
+		IP:        net.ParseIP("198.51.100.4"),
+		Weight:    1,
+		Timestamp: now.Add(4 * time.Second),
+		Metadata: map[string]interface{}{
+			"dest_ip":      "203.0.113.4",
+			"collector_id": "collector-a",
+		},
+	})
+	if active := agg.ActiveCampaigns(now.Add(time.Minute)); active != 1 {
+		t.Fatalf("detected campaign count = %d, want 1", active)
+	}
+}
+
 // TestCampaignAggregatorSingleScopeDoesNotDoubleCount verifies that when an
 // attack only ever touches a single destination subnet and a single
 // collector, the per-collector and global aggregate rollups (which internally

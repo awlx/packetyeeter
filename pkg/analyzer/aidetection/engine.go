@@ -1561,26 +1561,6 @@ func (e *Engine) handleCampaignDetection(detection CampaignDetection) {
 		confidence = e.campaignConfidence(detection)
 	}
 
-	// Penalize reputation for the campaign's contributing source(s)/ASN(s),
-	// proportional to campaign severity. To avoid a per-source-IP hot loop
-	// under carpet bombing (which can involve thousands of weak sources),
-	// this only penalizes the representative sample IP/ASN once per
-	// detection cycle - mirroring the single Penalize/PenalizeASN calls used
-	// by the regular (non-campaign) detection path - scaled by a severity
-	// multiplier so broader/repeated campaigns accumulate proportionally
-	// larger penalties over time.
-	if e.reputation != nil {
-		severity := campaignSeverityMultiplier(detection, e.campaigns.cfg)
-		if detection.SampleIP != nil {
-			e.reputation.Penalize(detection.SampleIP.String(), reputation.TypeIP, 10.0*confidence*severity, "campaign detection")
-		}
-		if detection.SampleASN != "" && detection.SampleASN != "Unknown" {
-			e.markASNAbusive(detection.SampleASN, detection.SampleOrg, detection.SampleIP)
-			scale := e.asnPenaltyScale(detection.SampleASN)
-			e.reputation.PenalizeASN(detection.SampleASN, sampleIPOrEmpty(detection.SampleIP), 2.0*confidence*severity*scale, "campaign detection")
-		}
-	}
-
 	metadata := map[string]interface{}{
 		"campaign_id":       detection.ID,
 		"campaign_key":      detection.Key,

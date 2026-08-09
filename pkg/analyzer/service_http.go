@@ -31,21 +31,15 @@ var (
 // of those words). Matched case-insensitively against the user agent.
 var honestCrawlerMarkers = []string{"facebookexternalhit", "ia_archiver"}
 
-// ja4MatchSignal derives the signal type/weight to emit for a JA4DB match and
-// whether the "ja4_info" metadata should be included. Both are gated to exact
-// matches: a "wildcard_tls" match only shares a coarse JA4 prefix with an
-// unrelated DB entry (see ja4db.ja4WildcardPrefix) and is not a reliable
-// attribution, so it must not be classified as a browser signal nor carry
-// ja4_info - aidetection's CategorizeBot trusts a supplied ja4_info verbatim
-// (without re-verifying match type) to short-circuit bot detection for
-// browsers, so leaking it on a wildcard match would let an attacker-crafted
-// fingerprint that merely collides on the coarse prefix evade detection.
-func ja4MatchSignal(isBrowser bool, matchType string) (sigType aidetection.SignalType, weight float64, includeJA4Info bool) {
-	exactMatch := matchType == "exact"
-	if isBrowser && exactMatch {
-		return aidetection.SignalBrowserDetected, 1.0, true
+// ja4MatchSignal emits detection signals only for exact, classified matches.
+// Wildcard matches are useful enrichment but are too coarse for attribution,
+// and an exact catalog entry that is neither a browser nor a known bot is not
+// inherently suspicious.
+func ja4MatchSignal(isKnownBot bool, matchType string) (sigType aidetection.SignalType, weight float64, includeJA4Info, emit bool) {
+	if matchType == "exact" && isKnownBot {
+		return aidetection.SignalJA4HBotMatch, 20.0, true, true
 	}
-	return aidetection.SignalJA4HBotMatch, 20.0, exactMatch
+	return "", 0, false, false
 }
 
 // isKnownHonestUA reports whether the user agent honestly self-identifies as
@@ -631,22 +625,24 @@ func (a *Analyzer) processHTTPRequest(sig *apiv1.Signal, ip net.IP, asn string, 
 				if a.SignalBuilder != nil {
 					// Only emit when we have some JA4DB info to act on
 					if info != "" || entry.Application != "" || entry.Library != "" || entry.Device != "" {
-						sigType, weight, includeJA4Info := ja4MatchSignal(isBrowser, res.MatchType)
-						metadata := map[string]interface{}{
-							"application": entry.Application,
-							"library":     entry.Library,
-							"device":      entry.Device,
-							"verified":    entry.Verified,
-							"obs_count":   entry.ObservationCount,
-							"match_type":  res.MatchType,
-							"fp_type":     res.FingerprintType,
-							"known_bot":   isKnownBot,
-							"user_agent":  userAgent,
+						sigType, weight, includeJA4Info, emit := ja4MatchSignal(isKnownBot, res.MatchType)
+						if emit {
+							metadata := map[string]interface{}{
+								"application": entry.Application,
+								"library":     entry.Library,
+								"device":      entry.Device,
+								"verified":    entry.Verified,
+								"obs_count":   entry.ObservationCount,
+								"match_type":  res.MatchType,
+								"fp_type":     res.FingerprintType,
+								"known_bot":   isKnownBot,
+								"user_agent":  userAgent,
+							}
+							if includeJA4Info {
+								metadata["ja4_info"] = info
+							}
+							a.SignalBuilder.EmitJA4Match(ip, asn, org, fp, sig.Ja4H, sig.Ja4T, sigType, weight, metadata)
 						}
-						if includeJA4Info {
-							metadata["ja4_info"] = info
-						}
-						a.SignalBuilder.EmitJA4Match(ip, asn, org, fp, sig.Ja4H, sig.Ja4T, sigType, weight, metadata)
 					}
 				}
 			}

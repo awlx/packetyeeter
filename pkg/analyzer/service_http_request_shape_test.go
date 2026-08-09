@@ -53,56 +53,45 @@ func TestIsProtocolOrBackgroundRequest(t *testing.T) {
 
 // TestJA4MatchSignalGatesOnExactMatch verifies that a JA4DB "wildcard_tls"
 // match (which only shares the coarse JA4 prefix with an unrelated entry,
-// see ja4db.ja4WildcardPrefix) is never classified as a browser signal and
-// never carries ja4_info - both of which would otherwise let an
-// attacker-crafted fingerprint that merely collides on the coarse prefix
-// impersonate a browser and evade bot detection.
-func TestJA4MatchSignalGatesOnExactMatch(t *testing.T) {
+// see ja4db.ja4WildcardPrefix) and unclassified catalog entries remain
+// enrichment-only rather than becoming bot detections.
+func TestJA4MatchSignalRequiresExactClassifiedMatch(t *testing.T) {
 	cases := []struct {
 		name               string
-		isBrowser          bool
+		isKnownBot         bool
 		matchType          string
 		wantSigType        aidetection.SignalType
 		wantWeight         float64
 		wantIncludeJA4Info bool
+		wantEmit           bool
 	}{
 		{
-			name:               "exact browser match: browser signal with ja4_info",
-			isBrowser:          true,
-			matchType:          "exact",
-			wantSigType:        aidetection.SignalBrowserDetected,
-			wantWeight:         1.0,
-			wantIncludeJA4Info: true,
+			name:      "wildcard match: enrichment only",
+			matchType: "wildcard_tls",
 		},
 		{
-			name:               "wildcard browser-looking match: NOT a browser signal, no ja4_info",
-			isBrowser:          true,
-			matchType:          "wildcard_tls",
-			wantSigType:        aidetection.SignalJA4HBotMatch,
-			wantWeight:         20.0,
-			wantIncludeJA4Info: false,
-		},
-		{
-			name:               "exact non-browser match: bot-match signal with ja4_info",
-			isBrowser:          false,
+			name:               "exact known bot match: bot signal with ja4_info",
+			isKnownBot:         true,
 			matchType:          "exact",
 			wantSigType:        aidetection.SignalJA4HBotMatch,
 			wantWeight:         20.0,
 			wantIncludeJA4Info: true,
+			wantEmit:           true,
 		},
 		{
-			name:               "wildcard non-browser match: bot-match signal, no ja4_info",
-			isBrowser:          false,
-			matchType:          "wildcard_tls",
-			wantSigType:        aidetection.SignalJA4HBotMatch,
-			wantWeight:         20.0,
-			wantIncludeJA4Info: false,
+			name:       "wildcard known bot match: enrichment only",
+			isKnownBot: true,
+			matchType:  "wildcard_tls",
+		},
+		{
+			name:      "exact unclassified match: enrichment only",
+			matchType: "exact",
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			sigType, weight, includeJA4Info := ja4MatchSignal(tc.isBrowser, tc.matchType)
+			sigType, weight, includeJA4Info, emit := ja4MatchSignal(tc.isKnownBot, tc.matchType)
 			if sigType != tc.wantSigType {
 				t.Errorf("sigType = %v, want %v", sigType, tc.wantSigType)
 			}
@@ -111,6 +100,9 @@ func TestJA4MatchSignalGatesOnExactMatch(t *testing.T) {
 			}
 			if includeJA4Info != tc.wantIncludeJA4Info {
 				t.Errorf("includeJA4Info = %v, want %v", includeJA4Info, tc.wantIncludeJA4Info)
+			}
+			if emit != tc.wantEmit {
+				t.Errorf("emit = %v, want %v", emit, tc.wantEmit)
 			}
 		})
 	}

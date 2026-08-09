@@ -1,5 +1,15 @@
 # PacketYeeter Changelog
 
+## 2026-08-09 - Reduce JA4 and campaign false positives
+
+- Coarse JA4DB wildcard matches and unclassified catalog entries remain
+  enrichment-only instead of being emitted as high-severity known-bot signals.
+  Detection signals now require an exact browser or known-bot classification.
+- Observe-only campaign detections no longer mutate the reputation of an
+  arbitrary representative source or ASN.
+- `packetyeeter_active_attack_campaigns` now counts campaigns that meet
+  detection criteria instead of all retained aggregation buckets.
+
 ## 2026-08-09 - Honor optional ML enforcement configuration
 
 **Problem**: The direct reputation-block path always constructed a separate,

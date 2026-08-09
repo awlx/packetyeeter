@@ -360,7 +360,9 @@ func (a *CampaignAggregator) ActiveCampaigns(now time.Time) int {
 			delete(a.campaigns, key)
 			continue
 		}
-		active++
+		if _, detected := a.evaluateCampaignLocked(c); detected {
+			active++
+		}
 	}
 	return active
 }
@@ -583,38 +585,6 @@ func campaignRuleConfidence(detection CampaignDetection, cfg CampaignConfig) flo
 	}
 
 	return clampConfidence(confidence)
-}
-
-// campaignSeverityMultiplier scales reputation penalties for a campaign
-// detection with how far it exceeds the configured breadth thresholds, so
-// larger/broader campaigns (and repeated campaign involvement) accumulate
-// proportionally larger reputation penalties over time. It is capped to keep
-// a single detection cycle from applying an unbounded penalty even for very
-// large carpet-bombing campaigns.
-func campaignSeverityMultiplier(detection CampaignDetection, cfg CampaignConfig) float64 {
-	const maxMultiplier = 5.0
-	multiplier := 1.0
-
-	if cfg.MinSignals > 0 {
-		multiplier = math.Max(multiplier, float64(detection.SignalCount)/float64(cfg.MinSignals))
-	}
-	if cfg.MinDestIPs > 0 && detection.DestinationIPs > 0 {
-		multiplier = math.Max(multiplier, float64(detection.DestinationIPs)/float64(cfg.MinDestIPs))
-	}
-	if cfg.MinDestSubnets > 0 && detection.DestSubnets > 0 {
-		multiplier = math.Max(multiplier, float64(detection.DestSubnets)/float64(cfg.MinDestSubnets))
-	}
-	if cfg.MinWeakSourceIPs > 0 && detection.SourceIPs > 0 {
-		multiplier = math.Max(multiplier, float64(detection.SourceIPs)/float64(cfg.MinWeakSourceIPs))
-	}
-	if detection.Baseline.EnoughSamples && detection.Baseline.Anomalous && detection.Baseline.Multiplier > 1 {
-		multiplier = math.Max(multiplier, detection.Baseline.Multiplier/3.0)
-	}
-
-	if multiplier > maxMultiplier {
-		multiplier = maxMultiplier
-	}
-	return multiplier
 }
 
 func campaignKey(vector SignalType, source SignalSource, collector, destSubnet string) string {
