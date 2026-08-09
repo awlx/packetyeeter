@@ -1815,6 +1815,8 @@ func (c *Collector) startCollectorMetricsServer() *http.Server {
 	registry.MustRegister(metrics.SPOEProcessingLatency)
 	registry.MustRegister(metrics.KernelIncidents)
 	registry.MustRegister(metrics.PerfLostSamples)
+	metrics.PerfLostSamples.WithLabelValues("tcp_metadata").Add(0)
+	metrics.PerfLostSamples.WithLabelValues("incidents").Add(0)
 
 	// Egress accounting is produced by this process, so it is only ever
 	// observable here -- the analyzer's registry would report a constant 0.
