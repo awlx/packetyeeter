@@ -1,5 +1,44 @@
 # PacketYeeter Changelog
 
+## 2026-08-09 - ML block gate no longer vetoes every reputation block
+
+### An unconfigured ML model was silently blocking all enforcement
+**Problem**: The reputation-threshold block path was gated on
+`a.MLModel != nil`, but `a.MLModel` was constructed unconditionally at startup
+regardless of `-ml-model`. `NewModelManager()` hardcodes `enabled: true` with an
+untrained `SimpleThresholdModel`, so deployments that never opted into ML still
+had every reputation block vetoed by it. That instance is also never trained --
+the only `Train()` call sites target the separate AI-engine model -- so
+`sampleCount` stayed below `minSamples` forever and prediction always came from
+a pristine fallback.
+
+Compounding this, the statistical model could not return `IsBot: true` for *any*
+input: `signalRateWeight` (0.15) and `diversityWeight` (0.10) were declared and
+initialized but never referenced in `Predict()`, stranding 25% of the weight
+mass and capping achievable confidence at 0.61 -- below the 0.65 `botThreshold`.
+The gate then compared against a hardcoded `0.7` rather than the operator's
+`-ai-confidence-threshold`.
+
+Observed in production: 853k `packetyeeter_ml_blocks_overridden_total` across
+two analyzers with zero confirmations, and ~50 warn-level log lines per second.
+
+**Solution**:
+- `a.MLModel` is only constructed when `-ml-model` is set. Without it the gate
+  stays out of the decision path entirely.
+- `Predict()` applies all eight declared weights, which now sum to 1.0. A
+  maximally hostile entity scores 0.936 (was 0.61).
+- `calculateBehavioralScore` reads `ReputationScore` on its real scale and
+  polarity. It previously tested `ReputationScore < 0.3` against a raw,
+  unbounded engine score where higher means worse, so the branch was dead for
+  every entity the gate actually sees.
+- The gate uses `-ai-confidence-threshold` instead of a hardcoded constant.
+- The two per-signal rejection logs dropped from warn to debug;
+  `packetyeeter_ml_blocks_overridden_total` remains the aggregate signal.
+
+Operators running with `-ml-model` unset were effectively in monitor mode for
+reputation-based blocking regardless of `-dry-run`. Review thresholds and stage
+the rollout before lifting `-dry-run`.
+
 ## 2026-08-09 - Sustained-download detection
 
 ### Detect slow, patient bulk scrapers

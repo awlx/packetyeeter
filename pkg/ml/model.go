@@ -49,6 +49,11 @@ type SimpleThresholdModel struct {
 	compositionWeight float64
 	threatIntelWeight float64
 
+	// reputationReference is the raw reputation score treated as "fully bad"
+	// when normalizing ReputationScore into the behavioral sub-score. Defaults
+	// to the analyzer's default -reputation-threshold.
+	reputationReference float64
+
 	// Learned parameters (for adaptive thresholding)
 	meanSignalCount  float64
 	stdSignalCount   float64
@@ -64,22 +69,23 @@ type SimpleThresholdModel struct {
 // NewSimpleThresholdModel creates a new threshold-based model
 func NewSimpleThresholdModel() *SimpleThresholdModel {
 	m := &SimpleThresholdModel{
-		botThreshold:      0.65,
-		highConfThreshold: 0.85,
-		signalCountWeight: 0.18,
-		signalRateWeight:  0.15,
-		diversityWeight:   0.10,
-		temporalWeight:    0.08,
-		networkWeight:     0.12,
-		behavioralWeight:  0.12,
-		compositionWeight: 0.08,
-		threatIntelWeight: 0.17, // High weight for threat intel
-		meanSignalCount:   5.0,
-		stdSignalCount:    3.0,
-		meanSignalRate:    0.5,
-		stdSignalRate:     0.3,
-		lastUpdate:        time.Now(),
-		persistencePath:   "/var/lib/packetyeeter/ml_model_state.json",
+		botThreshold:        0.65,
+		highConfThreshold:   0.85,
+		signalCountWeight:   0.18,
+		signalRateWeight:    0.15,
+		diversityWeight:     0.10,
+		temporalWeight:      0.08,
+		networkWeight:       0.12,
+		behavioralWeight:    0.12,
+		compositionWeight:   0.08,
+		threatIntelWeight:   0.17, // High weight for threat intel
+		reputationReference: 75.0,
+		meanSignalCount:     5.0,
+		stdSignalCount:      3.0,
+		meanSignalRate:      0.5,
+		stdSignalRate:       0.3,
+		lastUpdate:          time.Now(),
+		persistencePath:     "/var/lib/packetyeeter/ml_model_state.json",
 	}
 
 	// Try to load saved state
@@ -103,14 +109,23 @@ func (m *SimpleThresholdModel) Predict(features aidetection.MLFeatures) aidetect
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	signalScore := m.calculateSignalScore(features)
+	countScore, rateScore, diversityScore := m.signalComponents(features)
 	temporalScore := m.calculateTemporalScore(features)
 	networkScore := m.calculateNetworkScore(features)
 	behavioralScore := m.calculateBehavioralScore(features)
 	compositionScore := m.calculateCompositionScore(features)
 	threatIntelScore := m.calculateThreatIntelScore(features)
 
-	botProbability := (signalScore * m.signalCountWeight) +
+	// Every declared weight is applied here and the set sums to 1.0, so a
+	// maximally hostile entity can actually reach a probability of 1.0.
+	// signalRateWeight and diversityWeight were previously declared but never
+	// referenced: the whole signal group was folded into signalCountWeight,
+	// which stranded 25% of the weight mass and capped the achievable
+	// confidence at 0.61 - below botThreshold (0.65), so IsBot could never be
+	// true for any input.
+	botProbability := (countScore * m.signalCountWeight) +
+		(rateScore * m.signalRateWeight) +
+		(diversityScore * m.diversityWeight) +
 		(temporalScore * m.temporalWeight) +
 		(networkScore * m.networkWeight) +
 		(behavioralScore * m.behavioralWeight) +
@@ -129,10 +144,11 @@ func (m *SimpleThresholdModel) Predict(features aidetection.MLFeatures) aidetect
 	}
 }
 
-// calculateSignalScore computes a normalized signal feature score (0.0-1.0) for ML PREDICTION.
+// signalComponents computes the normalized signal feature sub-scores (each
+// 0.0-1.0) for ML PREDICTION.
 //
-// Purpose: This function transforms raw signal metrics into a normalized feature score
-// for the ML model to predict "how bot-like is this entity?" (PREDICTIVE scoring).
+// Purpose: transforms raw signal metrics into normalized feature scores for the
+// ML model to predict "how bot-like is this entity?" (PREDICTIVE scoring).
 //
 // This is DIFFERENT from detection confidence (pkg/analyzer/aidetection/confidence.go):
 //   - ML Feature Scoring (this function): "How bot-like?" - Uses z-scores & sigmoid for prediction
@@ -141,16 +157,18 @@ func (m *SimpleThresholdModel) Predict(features aidetection.MLFeatures) aidetect
 // This function uses:
 //   - Z-scores normalized against learned mean/stddev (adaptive to traffic patterns)
 //   - Sigmoid transformation (maps z-scores to 0-1 probability-like scores)
-//   - Weighted combination (count 40%, diversity 30%, rate 30%)
 //
-// Use this when: Training/predicting with the ML model, feature engineering
-func (m *SimpleThresholdModel) calculateSignalScore(features aidetection.MLFeatures) float64 {
+// The three components are returned separately rather than pre-combined because
+// Predict() weights each against its own declared weight
+// (signalCountWeight/signalRateWeight/diversityWeight). Folding them into a
+// single score here is what previously stranded the latter two weights.
+func (m *SimpleThresholdModel) signalComponents(features aidetection.MLFeatures) (count, rate, diversity float64) {
 	zScore := (float64(features.SignalCount) - m.meanSignalCount) / m.stdSignalCount
-	countScore := 1.0 / (1.0 + math.Exp(-zScore))
-	diversityScore := math.Min(1.0, float64(features.SignalDiversity)/10.0)
+	count = 1.0 / (1.0 + math.Exp(-zScore))
+	diversity = math.Min(1.0, float64(features.SignalDiversity)/10.0)
 	rateZScore := (features.SignalRate - m.meanSignalRate) / m.stdSignalRate
-	rateScore := 1.0 / (1.0 + math.Exp(-rateZScore))
-	return (countScore*0.4 + diversityScore*0.3 + rateScore*0.3)
+	rate = 1.0 / (1.0 + math.Exp(-rateZScore))
+	return count, rate, diversity
 }
 
 func (m *SimpleThresholdModel) calculateTemporalScore(features aidetection.MLFeatures) float64 {
@@ -188,8 +206,14 @@ func (m *SimpleThresholdModel) calculateBehavioralScore(features aidetection.MLF
 	if features.DetectionHistory > 0 {
 		score += math.Min(0.5, float64(features.DetectionHistory)*0.1)
 	}
-	if features.ReputationScore < 0.3 {
-		score += 0.3
+	// ReputationScore is the raw, unbounded penalty score from the reputation
+	// engine (higher = worse), not a normalized 0-1 trust value. The previous
+	// `ReputationScore < 0.3` test was wrong on both axes: it read the scale as
+	// 0-1 and the polarity as trust, so it only ever fired for pristine
+	// entities and was dead for every entity the gate actually sees.
+	// Saturate against a reference score so this stays bounded.
+	if features.ReputationScore > 0 && m.reputationReference > 0 {
+		score += 0.3 * math.Min(1.0, features.ReputationScore/m.reputationReference)
 	}
 	return math.Min(1.0, score)
 }

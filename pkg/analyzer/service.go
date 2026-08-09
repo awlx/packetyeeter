@@ -469,9 +469,19 @@ func (a *Analyzer) Start() error {
 	a.PatternTracker.StartCleanup()
 	logrus.Info("Pattern Tracker initialized")
 
-	// Initialize ML Model
-	a.MLModel = ml.NewModelManager()
-	logrus.Info("ML Model initialized and enabled")
+	// Initialize ML Model.
+	//
+	// -ml-model is what opts an operator into ML-gated enforcement. When it is
+	// unset we leave a.MLModel nil so the reputation block gate below stays out
+	// of the decision path entirely. Constructing a ModelManager here
+	// unconditionally used to hand an untrained statistical fallback a veto over
+	// every reputation block on deployments that never enabled ML at all.
+	if a.Config.MLModelPath != "" {
+		a.MLModel = ml.NewModelManager()
+		logrus.WithField("model_path", a.Config.MLModelPath).Info("ML Model initialized and enabled")
+	} else {
+		logrus.Info("ML model not configured (-ml-model unset): reputation blocks are not ML-gated")
+	}
 
 	// Start model file watcher for dynamic reloading
 	if a.Config.MLModelPath != "" {
@@ -958,8 +968,10 @@ func (a *Analyzer) processSignal(sig *apiv1.Signal, cs *collectorStream) {
 			features := a.extractMLFeatures(ip, asn, score)
 			prediction := a.MLModel.Predict(features)
 
-			// Only block if ML model agrees (high confidence)
-			shouldBlock = prediction.IsBot && prediction.Confidence > 0.7
+			// Only block if ML model agrees (high confidence). The bar is the
+			// operator-configured -ai-confidence-threshold, not a hardcoded
+			// constant that silently diverged from it.
+			shouldBlock = prediction.IsBot && prediction.Confidence > a.Config.AIConfidenceThreshold
 			if !shouldBlock {
 				metrics.MLBlocksOverridden.Inc()
 			}
@@ -972,11 +984,14 @@ func (a *Analyzer) processSignal(sig *apiv1.Signal, cs *collectorStream) {
 					"ml_category":   prediction.Category,
 				}).Info("ML model confirmed block decision")
 			} else {
+				// Per-signal, so this is Debug rather than Warn: at prod rates
+				// these two sites emitted ~50 lines/s (228k lines in 40min).
+				// metrics.MLBlocksOverridden above is the aggregate signal.
 				logrus.WithFields(logrus.Fields{
 					"ip":            ip.String(),
 					"reputation":    score,
 					"ml_confidence": prediction.Confidence,
-				}).Warn("ML model rejected block - potential false positive")
+				}).Debug("ML model rejected block - potential false positive")
 			}
 		}
 

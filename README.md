@@ -327,11 +327,11 @@ sudo ./packetyeeter-collector -i eth0 -analyzer-addr 127.0.0.1:9090
 | `-reputation-max-entries` | `500000` | Max tracked reputation entries. |
 | `-reputation-max-age` | `24h` | Max age before a reputation entry is evicted. |
 | `-reputation-asn-max-hosts` | `5000` | Max tracked hosts per ASN. |
-| `-ai-confidence-threshold` | `0.7` | Minimum AI confidence to flag a bot/scraper. |
+| `-ai-confidence-threshold` | `0.7` | Minimum AI confidence to flag a bot/scraper. Also the bar the ML model must clear to confirm a reputation-threshold block when `-ml-model` is set. |
 | `-ai-workers` | `16` | AI detection worker pool size. |
 | `-ai-queue-size` | `10000` | AI detection queue size. |
 | `-max-collectors` | `1024` | Maximum concurrent collector streams. Bounds fan-out and goroutines on the unauthenticated signal plane. |
-| `-ml-model` | `""` | Optional path to an ONNX ML model. |
+| `-ml-model` | `""` | Optional path to an ONNX ML model. When set, reputation-threshold blocks must additionally be confirmed by the model at `-ai-confidence-threshold`. When unset, no ML gate is applied to blocking. |
 | `-ddos-min-incomplete` | `400` | Min incomplete handshakes for a DDoS categorization. |
 | `-ddos-min-pattern` | `800` | Min pattern matches for a DDoS categorization. |
 | `-ddos-min-total` | `1500` | Min total events for a DDoS categorization. |

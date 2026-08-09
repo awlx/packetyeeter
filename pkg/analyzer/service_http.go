@@ -734,7 +734,7 @@ func (a *Analyzer) processHTTPRequest(sig *apiv1.Signal, ip net.IP, asn string, 
 		if a.MLModel != nil {
 			features := a.extractMLFeatures(ip, asn, score)
 			prediction := a.MLModel.Predict(features)
-			shouldBlock = prediction.IsBot && prediction.Confidence > 0.7
+			shouldBlock = prediction.IsBot && prediction.Confidence > a.Config.AIConfidenceThreshold
 			if !shouldBlock {
 				metrics.MLBlocksOverridden.Inc()
 			}
@@ -747,11 +747,13 @@ func (a *Analyzer) processHTTPRequest(sig *apiv1.Signal, ip net.IP, asn string, 
 					"ml_category":   prediction.Category,
 				}).Info("ML model confirmed HTTP block decision")
 			} else {
+				// Debug, not Warn: this is per-request. See the equivalent
+				// site in service.go; MLBlocksOverridden is the aggregate.
 				logrus.WithFields(logrus.Fields{
 					"ip":            ip.String(),
 					"reputation":    score,
 					"ml_confidence": prediction.Confidence,
-				}).Warn("ML model rejected HTTP block")
+				}).Debug("ML model rejected HTTP block")
 			}
 		}
 
