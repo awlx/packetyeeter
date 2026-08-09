@@ -13,6 +13,7 @@ import (
 
 	"PacketYeeter/pkg/buildinfo"
 	"PacketYeeter/pkg/collector"
+	"PacketYeeter/pkg/collector/ebpf"
 )
 
 func main() {
@@ -31,6 +32,7 @@ func main() {
 		dryRun          = flag.Bool("dry-run", false, "Monitor mode: log/count the collector's own kernel-space detections (bad flags, SYN flood, ICMP/UDP rate limits) without dropping traffic")
 		egressAccount   = flag.Bool("egress-accounting", false, "Count bytes transmitted to each client on the TC egress path and report them to the analyzer (feeds sustained-download detection)")
 		egressMinBytes  = flag.Uint64("egress-min-bytes", 1<<20, "Smallest per-poll egress byte delta that produces a signal")
+		udpFragMode     = flag.String("udp-frag-mode", "rate", "Fragmented UDP / IPv6 fragment policy: rate (default, rate-limit only) or drop (legacy hard-drop)")
 		showVersion     = flag.Bool("version", false, "Print build version and exit")
 		verbose         = flag.Bool("v", false, "Verbose logging")
 	)
@@ -45,6 +47,11 @@ func main() {
 		logger.SetLevel(logrus.DebugLevel)
 	}
 	logger.SetFormatter(&logrus.TextFormatter{FullTimestamp: true})
+
+	fragMode, err := ebpf.ParseUDPFragMode(*udpFragMode)
+	if err != nil {
+		logrus.WithError(err).Fatal("Invalid -udp-frag-mode")
+	}
 
 	cfg := collector.Config{
 		Interface:       *iface,
@@ -62,6 +69,7 @@ func main() {
 
 		EgressAccounting: *egressAccount,
 		EgressMinBytes:   *egressMinBytes,
+		UDPFragMode:      fragMode,
 	}
 
 	coll, err := collector.New(cfg, logger)

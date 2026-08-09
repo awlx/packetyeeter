@@ -102,6 +102,7 @@ func (a *Analyzer) checkRateLimit(ip net.IP, asn string) bool {
 
 // extractMLFeatures extracts features for ML model prediction
 func (a *Analyzer) extractMLFeatures(ip net.IP, asn string, reputationScore float64) aidetection.MLFeatures {
+	now := time.Now()
 	features := aidetection.MLFeatures{
 		SignalCount:     0,
 		SignalDiversity: 0,
@@ -112,6 +113,10 @@ func (a *Analyzer) extractMLFeatures(ip net.IP, asn string, reputationScore floa
 		// legacy field; keep the direct reputation gate consistent with the
 		// AI engine's feature extraction.
 		GeoCountry: asn,
+		// Wall-clock defaults so temporal scoring is not stuck at hour 0
+		// (always "off hours") when no richer context is available.
+		TimeOfDay: now.Hour(),
+		DayOfWeek: int(now.Weekday()),
 	}
 
 	// Get pattern data if available. Use the narrow summary accessor rather
@@ -127,6 +132,7 @@ func (a *Analyzer) extractMLFeatures(ip net.IP, asn string, reputationScore floa
 				duration := time.Since(s.FirstSeen).Seconds()
 				if duration > 0 {
 					features.SignalRate = float64(s.ConnectionAttempts) / duration
+					features.TimeSpan = duration
 				}
 			}
 

@@ -310,6 +310,7 @@ sudo ./packetyeeter-collector -i eth0 -analyzer-addr 127.0.0.1:9090
 | `-signal-queue-size` | `10000` | Collector → analyzer signal queue size. |
 | `-egress-accounting` | `false` | Enable per-client eBPF TC egress byte counters. Required for the analyzer's sustained-download **volume** path; off by default because it adds two per-client maps and a counter update per egress packet. |
 | `-egress-min-bytes` | `1048576` | Minimum bytes accumulated in one poll interval before a client is reported to the analyzer. Keeps ordinary browsing out of the signal stream. |
+| `-udp-frag-mode` | `rate` | Fragmented UDP / IPv6 Fragment policy: `rate` (default) rate-limits instead of hard-dropping solely for fragmentation; `drop` restores the legacy unconditional drop. |
 | `-dry-run` | `false` | Monitor mode: the collector's own kernel-space detections (bad flags, SYN-flood blocklist, ICMP/UDP rate limits) log/count but never drop traffic. Independent of the analyzer's `-dry-run`, which only suppresses BLOCK commands sent back over gRPC. |
 | `-v` | `false` | Verbose logging. |
 
@@ -327,6 +328,9 @@ sudo ./packetyeeter-collector -i eth0 -analyzer-addr 127.0.0.1:9090
 | `-reputation-max-entries` | `500000` | Max tracked reputation entries. |
 | `-reputation-max-age` | `24h` | Max age before a reputation entry is evicted. |
 | `-reputation-asn-max-hosts` | `5000` | Max tracked hosts per ASN. |
+| `-reputation-ip-score-cap` | `200` | Max accumulated IP reputation score. `0` = uncapped. |
+| `-reputation-ja4-score-cap` | `200` | Max accumulated JA4 reputation score. `0` = uncapped. |
+| `-reputation-asn-score-cap` | `500` | Max accumulated ASN reputation score. `0` = uncapped. |
 | `-ai-confidence-threshold` | `0.7` | Minimum AI confidence in `(0,1]` to flag a bot/scraper. Also the bar the ML model must clear to confirm a reputation-threshold block when `-ml-model` is set. |
 | `-ai-workers` | `16` | AI detection worker pool size. |
 | `-ai-queue-size` | `10000` | AI detection queue size. |

@@ -1,5 +1,32 @@
 # PacketYeeter Changelog
 
+## 2026-08-09 - Collector UDP fragment policy and edge-triggered incidents
+
+- Fragmented UDP / IPv6 Fragment headers no longer hard-drop by default.
+  Default `-udp-frag-mode=rate` applies the normal UDP rate limit instead.
+  Operators can restore the legacy hard-drop with `-udp-frag-mode=drop`.
+- Kernel ICMP/UDP rate-limit incident emits are edge-triggered once per source
+  per 1s window (`incident_emitted` in the rate map value) so a single over-limit
+  flood cannot monopolize the per-CPU incident budget.
+
+## 2026-08-09 - Operator reputation score caps
+
+- Analyzer applies finite default reputation score caps so penalty mass cannot
+  run away indefinitely while still leaving headroom above
+  `-reputation-threshold`: IP/JA4 `200`, ASN `500`. Set
+  `-reputation-ip-score-cap` / `-reputation-ja4-score-cap` /
+  `-reputation-asn-score-cap` to `0` for uncapped. The reputation package API
+  still defaults to uncapped when caps are not configured.
+
+## 2026-08-09 - Statistical model weight calibration
+
+- Built-in statistical fallback weights used by `Predict` now sum to `1.0`
+  (rate/diversity mass is folded into the signal score). Missing JA4H is only
+  treated as bot-like when HTTP context is present. Direct reputation-gate
+  feature extraction sets wall-clock `TimeOfDay`/`DayOfWeek` instead of leaving
+  them at zero. This is wiring/calibration only — no new labeled-data
+  thresholds were invented.
+
 ## 2026-08-09 - Reduce JA4 and campaign false positives
 
 - Coarse JA4DB wildcard matches and unclassified catalog entries remain

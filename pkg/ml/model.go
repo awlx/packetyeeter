@@ -63,17 +63,21 @@ type SimpleThresholdModel struct {
 
 // NewSimpleThresholdModel creates a new threshold-based model
 func NewSimpleThresholdModel() *SimpleThresholdModel {
+	// Weights used by Predict must sum to 1.0. signalRateWeight and
+	// diversityWeight are folded into calculateSignalScore (count/diversity/rate
+	// mix) so they stay zero at the top level rather than leaving ~0.25 of the
+	// probability mass permanently at zero and making IsBot almost unreachable.
 	m := &SimpleThresholdModel{
 		botThreshold:      0.65,
 		highConfThreshold: 0.85,
-		signalCountWeight: 0.18,
-		signalRateWeight:  0.15,
-		diversityWeight:   0.10,
-		temporalWeight:    0.08,
-		networkWeight:     0.12,
-		behavioralWeight:  0.12,
-		compositionWeight: 0.08,
-		threatIntelWeight: 0.17, // High weight for threat intel
+		signalCountWeight: 0.25, // includes rate+diversity inside signal score
+		signalRateWeight:  0.0,  // folded into signalCountWeight path
+		diversityWeight:   0.0,  // folded into signalCountWeight path
+		temporalWeight:    0.10,
+		networkWeight:     0.15,
+		behavioralWeight:  0.15,
+		compositionWeight: 0.10,
+		threatIntelWeight: 0.25,
 		meanSignalCount:   5.0,
 		stdSignalCount:    3.0,
 		meanSignalRate:    0.5,
@@ -169,7 +173,12 @@ func (m *SimpleThresholdModel) calculateTemporalScore(features aidetection.MLFea
 
 func (m *SimpleThresholdModel) calculateNetworkScore(features aidetection.MLFeatures) float64 {
 	score := 0.0
-	if !features.HasJA4H {
+	// Missing JA4H is only meaningful when HTTP context was available
+	// (UserAgent / JA4H fields populated). Pure L3/L4 flows never carry JA4H,
+	// so treating absence as bot-like permanently biases transport-only
+	// reputation gating.
+	httpContext := features.HasJA4H || features.UserAgent != "" || features.JA4H != ""
+	if httpContext && !features.HasJA4H {
 		score += 0.4
 	}
 	if features.HasASN {

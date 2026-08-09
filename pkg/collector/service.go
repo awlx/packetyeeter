@@ -54,6 +54,10 @@ type Config struct {
 	// signal. It exists to keep ordinary browsing traffic off the signal
 	// queue; sustained transfers clear it easily.
 	EgressMinBytes uint64
+
+	// UDPFragMode controls fragmented UDP / IPv6 fragment handling in XDP.
+	// Use ebpf.UDPFragModeRate (default) or ebpf.UDPFragModeDrop.
+	UDPFragMode uint32
 }
 
 // Collector is a thin relay layer that:
@@ -236,6 +240,22 @@ func (c *Collector) Start(ctx context.Context) error {
 		} else {
 			c.Logger.WithField("min_bytes", c.Config.EgressMinBytes).Info("Egress byte accounting enabled")
 		}
+	}
+
+	// Fragmented UDP / IPv6 fragment policy. Default is RATE (no hard-drop
+	// solely for fragmentation). DROP restores the legacy unconditional drop.
+	fragMode := c.Config.UDPFragMode
+	if fragMode != ebpf.UDPFragModeRate && fragMode != ebpf.UDPFragModeDrop {
+		fragMode = ebpf.UDPFragModeRate
+	}
+	if err := c.Maps.SetUDPFragMode(fragMode); err != nil {
+		c.Logger.WithError(err).Warn("Failed to set UDP fragment mode; kernel default applies")
+	} else {
+		modeName := "rate"
+		if fragMode == ebpf.UDPFragModeDrop {
+			modeName = "drop"
+		}
+		c.Logger.WithField("udp_frag_mode", modeName).Info("UDP fragment policy configured")
 	}
 
 	// Populate the kernel-space allowlist maps so XDP/TC can bypass

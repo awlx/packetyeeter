@@ -28,20 +28,25 @@ func main() {
 		repMaxEntries    = flag.Int("reputation-max-entries", 500000, "Maximum reputation entries to keep")
 		repMaxAge        = flag.Duration("reputation-max-age", 24*time.Hour, "Maximum age to retain reputation entries")
 		repASNMaxHosts   = flag.Int("reputation-asn-max-hosts", 5000, "Maximum distinct hosts tracked per ASN")
-		aiThreshold      = flag.Float64("ai-confidence-threshold", 0.7, "AI detection confidence threshold for blocking (greater than 0, at most 1)")
-		highCard         = flag.Bool("enable-high-cardinality-metrics", false, "Enable per-IP/JA4/ASN high-cardinality metrics (may explode series)")
-		enablePprof      = flag.Bool("enable-pprof", false, "Enable pprof profiling server")
-		pprofAddr        = flag.String("pprof-addr", ":6060", "pprof listen address")
-		ddosMinInc       = flag.Int("ddos-min-incomplete", 400, "DDoS: min incomplete handshakes per IP per 10s")
-		ddosMinPattern   = flag.Int("ddos-min-pattern", 800, "DDoS: min pattern signals (highfreq+conn+timing) per IP per 10s")
-		ddosMinTotal     = flag.Int("ddos-min-total", 1500, "DDoS: min total signals per IP per 10s")
-		ddosRequireHF    = flag.Bool("ddos-require-highfreq", true, "DDoS: require high-frequency or flood signals present")
-		disableDDoS      = flag.Bool("disable-ddos-category", false, "Disable DDoS category labeling (still detects other bots)")
-		aiWorkers        = flag.Int("ai-workers", 16, "AI engine worker count")
-		aiQueueSize      = flag.Int("ai-queue-size", 10000, "AI engine signal queue size")
-		maxCollectors    = flag.Int("max-collectors", 1024, "Maximum concurrent collector streams (bounds fan-out/goroutines on the unauthenticated signal plane)")
-		mlModelPath      = flag.String("ml-model", "", "Path to ONNX ML model file (optional, enables ML-based confidence adjustment)")
-		dryRun           = flag.Bool("dry-run", false, "Monitor mode - log detections but don't send BLOCK commands")
+		// Finite defaults keep penalty mass from running away while still leaving
+		// headroom above -reputation-threshold. 0 disables the cap (uncapped).
+		repIPScoreCap  = flag.Float64("reputation-ip-score-cap", 200, "Max accumulated IP reputation score (0 = uncapped)")
+		repJA4ScoreCap = flag.Float64("reputation-ja4-score-cap", 200, "Max accumulated JA4 reputation score (0 = uncapped)")
+		repASNScoreCap = flag.Float64("reputation-asn-score-cap", 500, "Max accumulated ASN reputation score (0 = uncapped)")
+		aiThreshold    = flag.Float64("ai-confidence-threshold", 0.7, "AI detection confidence threshold for blocking (greater than 0, at most 1)")
+		highCard       = flag.Bool("enable-high-cardinality-metrics", false, "Enable per-IP/JA4/ASN high-cardinality metrics (may explode series)")
+		enablePprof    = flag.Bool("enable-pprof", false, "Enable pprof profiling server")
+		pprofAddr      = flag.String("pprof-addr", ":6060", "pprof listen address")
+		ddosMinInc     = flag.Int("ddos-min-incomplete", 400, "DDoS: min incomplete handshakes per IP per 10s")
+		ddosMinPattern = flag.Int("ddos-min-pattern", 800, "DDoS: min pattern signals (highfreq+conn+timing) per IP per 10s")
+		ddosMinTotal   = flag.Int("ddos-min-total", 1500, "DDoS: min total signals per IP per 10s")
+		ddosRequireHF  = flag.Bool("ddos-require-highfreq", true, "DDoS: require high-frequency or flood signals present")
+		disableDDoS    = flag.Bool("disable-ddos-category", false, "Disable DDoS category labeling (still detects other bots)")
+		aiWorkers      = flag.Int("ai-workers", 16, "AI engine worker count")
+		aiQueueSize    = flag.Int("ai-queue-size", 10000, "AI engine signal queue size")
+		maxCollectors  = flag.Int("max-collectors", 1024, "Maximum concurrent collector streams (bounds fan-out/goroutines on the unauthenticated signal plane)")
+		mlModelPath    = flag.String("ml-model", "", "Path to ONNX ML model file (optional, enables ML-based confidence adjustment)")
+		dryRun         = flag.Bool("dry-run", false, "Monitor mode - log detections but don't send BLOCK commands")
 
 		sustainedDefaults = sustained.DefaultConfig()
 
@@ -94,6 +99,9 @@ func main() {
 		ReputationMaxEntries:         *repMaxEntries,
 		ReputationMaxAge:             *repMaxAge,
 		ReputationASNMaxHosts:        *repASNMaxHosts,
+		ReputationIPScoreCap:         *repIPScoreCap,
+		ReputationJA4ScoreCap:        *repJA4ScoreCap,
+		ReputationASNScoreCap:        *repASNScoreCap,
 		AIConfidenceThreshold:        *aiThreshold,
 		EnableHighCardinalityMetrics: *highCard,
 		EnablePprof:                  *enablePprof,

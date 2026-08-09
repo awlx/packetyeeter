@@ -55,15 +55,21 @@ const (
 )
 
 type Config struct {
-	ListenAddr                   string
-	MetricsAddr                  string
-	InspectorAddr                string
-	GeoIPASNPath                 string
-	GeoIPCountryPath             string
-	ReputationThreshold          float64
-	ReputationMaxEntries         int
-	ReputationMaxAge             time.Duration
-	ReputationASNMaxHosts        int
+	ListenAddr            string
+	MetricsAddr           string
+	InspectorAddr         string
+	GeoIPASNPath          string
+	GeoIPCountryPath      string
+	ReputationThreshold   float64
+	ReputationMaxEntries  int
+	ReputationMaxAge      time.Duration
+	ReputationASNMaxHosts int
+	// Reputation score caps clamp accumulated penalty scores. 0 means
+	// uncapped (+Inf). Analyzer defaults apply a finite operator policy via
+	// CLI flags; the reputation package itself still defaults to uncapped.
+	ReputationIPScoreCap         float64
+	ReputationJA4ScoreCap        float64
+	ReputationASNScoreCap        float64
 	AIConfidenceThreshold        float64
 	AISuspiciousScoreThreshold   float64
 	AIBlockScoreThreshold        float64
@@ -351,6 +357,16 @@ func (a *Analyzer) Start() error {
 	rep.SetMaxEntries(a.Config.ReputationMaxEntries)
 	rep.SetMaxEntryAge(a.Config.ReputationMaxAge)
 	rep.SetMaxASNHosts(a.Config.ReputationASNMaxHosts)
+	// Apply operator score caps. 0 keeps the engine's uncapped default.
+	if a.Config.ReputationIPScoreCap > 0 {
+		rep.SetIPScoreCap(a.Config.ReputationIPScoreCap)
+	}
+	if a.Config.ReputationJA4ScoreCap > 0 {
+		rep.SetJA4ScoreCap(a.Config.ReputationJA4ScoreCap)
+	}
+	if a.Config.ReputationASNScoreCap > 0 {
+		rep.SetASNScoreCap(a.Config.ReputationASNScoreCap)
+	}
 	a.Reputation = rep
 	a.ReputationHelper = NewReputationHelper(a.Reputation)
 	logrus.WithFields(logrus.Fields{
@@ -358,6 +374,9 @@ func (a *Analyzer) Start() error {
 		"max_entries":   a.Config.ReputationMaxEntries,
 		"max_age":       a.Config.ReputationMaxAge,
 		"max_asn_hosts": a.Config.ReputationASNMaxHosts,
+		"ip_score_cap":  a.Config.ReputationIPScoreCap,
+		"ja4_score_cap": a.Config.ReputationJA4ScoreCap,
+		"asn_score_cap": a.Config.ReputationASNScoreCap,
 	}).Info("Reputation Engine initialized")
 
 	// Initialize Threat Intelligence (Shodan InternetDB - free API)
