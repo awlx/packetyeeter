@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/sirupsen/logrus"
@@ -216,4 +217,42 @@ func TestJA4WildcardRequiresABSegments(t *testing.T) {
 			t.Fatalf("expected exact match, got found=%v match_type=%q", found, res.MatchType)
 		}
 	})
+}
+
+// TestIsKnownBotAndGetInfoRequireExactMatch ensures coarse wildcard hits are
+// never promoted into bot attribution or GetInfo strings used by decision paths.
+func TestIsKnownBotAndGetInfoRequireExactMatch(t *testing.T) {
+	d := NewDownloader(filepath.Join(t.TempDir(), "ja4db.json"), logrus.New())
+	botEntry := JA4Entry{
+		Application:    "Googlebot",
+		JA4Fingerprint: "t13d1516h2_8daaf6152771_02713d6af862",
+	}
+	browserEntry := JA4Entry{
+		Application:    "Chrome",
+		JA4Fingerprint: "t13d1516h2_aaaaaaaaaaaa_bbbbbbbbbbbb",
+	}
+	d.applyEntries([]JA4Entry{botEntry, browserEntry}, "test", "v1")
+
+	if !d.IsKnownBot(botEntry.JA4Fingerprint) {
+		t.Fatal("exact bot fingerprint should be known bot")
+	}
+	if info := d.GetInfo(botEntry.JA4Fingerprint); info == "" || !strings.Contains(info, "Googlebot") {
+		t.Fatalf("exact bot GetInfo = %q", info)
+	}
+
+	// Shares a+b with the bot entry; only c differs => wildcard_tls.
+	wildcardFP := "t13d1516h2_8daaf6152771_ffffffffffff"
+	res, found := d.LookupWithTypeResult(wildcardFP, "ja4")
+	if !found || res.MatchType != "wildcard_tls" {
+		t.Fatalf("expected wildcard_tls, got found=%v match_type=%q", found, res.MatchType)
+	}
+	if d.IsKnownBot(wildcardFP) {
+		t.Fatal("wildcard bot collision must not count as known bot")
+	}
+	if info := d.GetInfo(wildcardFP); info != "" {
+		t.Fatalf("wildcard GetInfo must be empty, got %q", info)
+	}
+	if d.IsKnownBot(browserEntry.JA4Fingerprint) {
+		t.Fatal("exact browser entry is not a known bot")
+	}
 }

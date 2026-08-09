@@ -21,6 +21,7 @@ type JA4Verifier interface {
 	GetInfo(fingerprint string) string
 	Lookup(fingerprint string) (interface{}, bool)
 	LookupWithType(fingerprint string, fpType string) (interface{}, bool)
+	LookupWithTypeResult(fingerprint string, fpType string) (ja4db.LookupResult, bool)
 }
 
 // maxVerificationCacheEntries bounds the crawler verification cache so an
@@ -407,16 +408,12 @@ func (v *CrawlerVerifier) CategorizeBot(userAgent, ja4, ja4h, ja4t, ja4Info stri
 				return false
 			}
 			lookupAttempted = true
-			iface, ok := v.ja4DB.LookupWithType(fp, fpType)
-			if !ok {
+			res, ok := v.ja4DB.LookupWithTypeResult(fp, fpType)
+			if !ok || res.MatchType != "exact" {
 				return false
 			}
-			cast, ok := iface.(ja4db.JA4Entry)
-			if !ok {
-				return false
-			}
-			entry = cast
-			matchedType = fpType
+			entry = res.Entry
+			matchedType = res.FingerprintType
 			return true
 		}
 

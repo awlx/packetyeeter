@@ -42,3 +42,8 @@ BLOCK_DURATION=300s
 # volume path - HAProxy cannot report transferred bytes over SPOE, so without
 # it only the breadth/shape path can fire.
 # EXTRA_ARGS=-egress-accounting -egress-min-bytes 1048576
+#
+# Fragmented UDP / IPv6 Fragment policy. Default is rate (no hard-drop solely
+# for fragmentation). Use drop only if you intentionally want the legacy
+# unconditional drop behavior.
+# EXTRA_ARGS=-udp-frag-mode rate

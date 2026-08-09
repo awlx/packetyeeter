@@ -72,6 +72,12 @@ struct handshake_status {
 struct rate_limit {
     __u64 last_time;
     __u64 count;
+    // incident_emitted is set the first time this key exceeds the limit in the
+    // current 1s window so incident telemetry is edge-triggered. Without it a
+    // single over-limit source emits on every subsequent packet and consumes
+    // the whole per-CPU incident budget, drowning other sources.
+    __u8  incident_emitted;
+    __u8  pad[7];
 };
 
 // Bad TCP flag scan classification, stored alongside the last-seen
@@ -293,6 +299,12 @@ struct {
     __type(value, __u64);
 } egress_bytes_v6 SEC(".maps");
 
+// config_map indices (userspace must stay in sync with pkg/collector/ebpf/config.go):
+//   0 = ICMP rate limit (pps)
+//   1 = monitor/dry-run mode (nonzero = never XDP_DROP)
+//   2 = UDP rate limit (pps)
+//   3 = egress accounting enable
+//   4 = UDP/IPv6 fragment mode (see CONFIG_KEY_UDP_FRAG_MODE)
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
     __uint(max_entries, 5);
@@ -343,7 +355,11 @@ struct event_metadata {
 // --- Helpers ---
 
 // Check rate limit. Returns 1 if limit exceeded (block), 0 if OK.
-static __always_inline int check_rate_limit(void *map, void *key, __u32 limit, __u64 now) {
+// When first_trip is non-NULL it is set to 1 only on the first packet in the
+// current 1s window that crossed the limit (edge-triggered incident signal).
+static __always_inline int check_rate_limit(void *map, void *key, __u32 limit, __u64 now, __u8 *first_trip) {
+    if (first_trip)
+        *first_trip = 0;
     struct rate_limit *rate = bpf_map_lookup_elem(map, key);
     if (rate) {
         if (now - rate->last_time > 1000000000) {
@@ -352,6 +368,7 @@ static __always_inline int check_rate_limit(void *map, void *key, __u32 limit, _
             // window boundary, so the reset is left as a plain store.
             rate->last_time = now;
             rate->count = 1;
+            rate->incident_emitted = 0;
             return 0;
         } else {
             // The value is shared across CPUs for a given source; a plain
@@ -371,12 +388,17 @@ static __always_inline int check_rate_limit(void *map, void *key, __u32 limit, _
             __sync_fetch_and_add(&rate->count, 1);
             __u64 count = rate->count;
             if (count > limit) {
+                if (rate->incident_emitted == 0) {
+                    rate->incident_emitted = 1;
+                    if (first_trip)
+                        *first_trip = 1;
+                }
                 return 1;
             }
             return 0;
         }
     } else {
-        struct rate_limit new_rate = { .last_time = now, .count = 1 };
+        struct rate_limit new_rate = { .last_time = now, .count = 1, .incident_emitted = 0 };
         bpf_map_update_elem(map, key, &new_rate, BPF_ANY);
         return 0;
     }
@@ -474,11 +496,38 @@ static __always_inline int emit_allowed(void *budget_map, __u64 now) {
 // it on. Indices 0, 1 and 2 are the ICMP limit, monitor mode and UDP limit.
 #define CONFIG_KEY_EGRESS_ACCOUNTING 3
 
+// CONFIG_KEY_UDP_FRAG_MODE controls fragmented UDP / IPv6 fragment handling.
+//   0 = rate (default): do not hard-drop solely for fragmentation; subject
+//       identifiable UDP fragments to the normal UDP rate limit. Needed on
+//       low-MTU / VPN paths where fragmentation is routine legitimate traffic.
+//   1 = drop: legacy unconditional drop of fragmented UDP (v4) and any IPv6
+//       Fragment extension header.
+#define CONFIG_KEY_UDP_FRAG_MODE 4
+#define UDP_FRAG_MODE_RATE 0
+#define UDP_FRAG_MODE_DROP 1
+
 static __always_inline int egress_accounting_enabled(void) {
     __u32 key = CONFIG_KEY_EGRESS_ACCOUNTING;
     __u32 *enabled = bpf_map_lookup_elem(&config_map, &key);
     return enabled && *enabled;
 }
+
+static __always_inline __u32 udp_frag_mode(void) {
+    __u32 key = CONFIG_KEY_UDP_FRAG_MODE;
+    __u32 *mode = bpf_map_lookup_elem(&config_map, &key);
+    if (mode && *mode == UDP_FRAG_MODE_DROP)
+        return UDP_FRAG_MODE_DROP;
+    return UDP_FRAG_MODE_RATE;
+}
+
+// IPv6 Fragment header (fixed 8 bytes). Used when parse_ipv6_l4 stops on a
+// Fragment extension so RATE mode can still rate-limit first-fragment UDP.
+struct ip6_frag_hdr {
+    __u8 nexthdr;
+    __u8 reserved;
+    __be16 frag_off;
+    __be32 identification;
+};
 
 // account_egress_v4/v6 add this packet's length to the client's cumulative
 // counter. The add is atomic because the same client can be transmitted to from
@@ -861,30 +910,38 @@ int xdp_filter(struct xdp_md *ctx) {
              __u32 limit = 100;
              if (icmp_thresh && *icmp_thresh > 0) limit = *icmp_thresh;
              
-             // Alert Code 1 = ICMP
-             if (check_rate_limit(&icmp_rates, &saddr, limit, now)) {
-                 emit_incident_v4(ctx, saddr, INCIDENT_ICMP_RATE, now);
+             __u8 first_trip = 0;
+             if (check_rate_limit(&icmp_rates, &saddr, limit, now, &first_trip)) {
+                 if (first_trip)
+                     emit_incident_v4(ctx, saddr, INCIDENT_ICMP_RATE, now);
                  if (!is_monitor) return XDP_DROP;
              }
         }
         
-        // 3. UDP Checks (Fragment + Rate Limit)
+        // 3. UDP Checks (Fragment policy + Rate Limit)
         if (ip->protocol == IPPROTO_UDP) {
-             // Block Fragmented UDP
-             if (ip->frag_off & bpf_htons(IP_MF | IP_OFFSET)) {
+             int is_frag = (ip->frag_off & bpf_htons(IP_MF | IP_OFFSET)) != 0;
+             if (is_frag && udp_frag_mode() == UDP_FRAG_MODE_DROP) {
+                 // Legacy hard-drop path. Still budget-limited; prefer RATE mode
+                 // on low-MTU/VPN paths where fragmentation is legitimate.
                  emit_incident_v4(ctx, saddr, INCIDENT_UDP_FRAG, now);
                  if (!is_monitor) return XDP_DROP;
              }
              
-             // Rate Limit UDP
+             // Rate Limit UDP (covers non-frag and RATE-mode fragments)
              __u32 key_udp_limit = 2;
              __u32 *udp_thresh = bpf_map_lookup_elem(&config_map, &key_udp_limit);
              __u32 limit = 2500; // Default safer UDP limit
              if (udp_thresh && *udp_thresh > 0) limit = *udp_thresh;
 
-             // Alert Code 2 = UDP
-             if (check_rate_limit(&udp_rates, &saddr, limit, now)) {
-                 emit_incident_v4(ctx, saddr, INCIDENT_UDP_RATE, now);
+             __u8 first_trip = 0;
+             if (check_rate_limit(&udp_rates, &saddr, limit, now, &first_trip)) {
+                 if (first_trip) {
+                     // Prefer udp_frag label when the trip was on fragmented UDP
+                     // so operators can still see fragment pressure under RATE mode.
+                     __u8 reason = is_frag ? INCIDENT_UDP_FRAG : INCIDENT_UDP_RATE;
+                     emit_incident_v4(ctx, saddr, reason, now);
+                 }
                  if (!is_monitor) return XDP_DROP;
              }
         }
@@ -969,9 +1026,10 @@ int xdp_filter(struct xdp_md *ctx) {
              __u32 limit = 100;
              if (icmp_thresh && *icmp_thresh > 0) limit = *icmp_thresh;
 
-             // Alert Code 1 = ICMP
-             if (check_rate_limit(&icmp_rates_v6, &saddr, limit, now)) {
-                 emit_incident_v6(ctx, &saddr, INCIDENT_ICMP_RATE, now);
+             __u8 first_trip = 0;
+             if (check_rate_limit(&icmp_rates_v6, &saddr, limit, now, &first_trip)) {
+                 if (first_trip)
+                     emit_incident_v6(ctx, &saddr, INCIDENT_ICMP_RATE, now);
                  if (!is_monitor) return XDP_DROP;
              }
         }
@@ -983,16 +1041,40 @@ int xdp_filter(struct xdp_md *ctx) {
              __u32 limit = 2500;
              if (udp_thresh && *udp_thresh > 0) limit = *udp_thresh;
 
-             // Alert Code 2 = UDP
-             if (check_rate_limit(&udp_rates_v6, &saddr, limit, now)) {
-                 emit_incident_v6(ctx, &saddr, INCIDENT_UDP_RATE, now);
+             __u8 first_trip = 0;
+             if (check_rate_limit(&udp_rates_v6, &saddr, limit, now, &first_trip)) {
+                 if (first_trip)
+                     emit_incident_v6(ctx, &saddr, INCIDENT_UDP_RATE, now);
                  if (!is_monitor) return XDP_DROP;
              }
         }
-        // Block IPv6 Fragments (a Fragment extension header in the chain)
+        // IPv6 Fragment extension header. DROP mode keeps the legacy hard drop.
+        // RATE mode rate-limits first-fragment UDP and otherwise passes so
+        // low-MTU paths are not unconditionally blackholed.
         if (l4_proto == IP6_EXT_FRAGMENT) {
-            emit_incident_v6(ctx, &saddr, INCIDENT_UDP_FRAG, now);
-            if (!is_monitor) return XDP_DROP;
+            if (udp_frag_mode() == UDP_FRAG_MODE_DROP) {
+                emit_incident_v6(ctx, &saddr, INCIDENT_UDP_FRAG, now);
+                if (!is_monitor) return XDP_DROP;
+            } else {
+                struct ip6_frag_hdr *fh = l4_hdr;
+                if ((void *)(fh + 1) <= data_end) {
+                    // Offset is the high 13 bits; M flag is bit 0. Offset 0 is
+                    // the first fragment and still carries the upper-layer header.
+                    __u16 fo = bpf_ntohs(fh->frag_off);
+                    if ((fo & 0xFFF8) == 0 && fh->nexthdr == IPPROTO_UDP) {
+                        __u32 key_udp_limit = 2;
+                        __u32 *udp_thresh = bpf_map_lookup_elem(&config_map, &key_udp_limit);
+                        __u32 limit = 2500;
+                        if (udp_thresh && *udp_thresh > 0) limit = *udp_thresh;
+                        __u8 first_trip = 0;
+                        if (check_rate_limit(&udp_rates_v6, &saddr, limit, now, &first_trip)) {
+                            if (first_trip)
+                                emit_incident_v6(ctx, &saddr, INCIDENT_UDP_FRAG, now);
+                            if (!is_monitor) return XDP_DROP;
+                        }
+                    }
+                }
+            }
         }
 
         // IPv6 TCP Flag Check, on the L4 header located past any extension headers

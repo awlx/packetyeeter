@@ -1156,6 +1156,7 @@ func mlModelStatus(a *Analyzer) map[string]interface{} {
 		"ml_model_type":            "none",
 		"ml_model_mode":            "none",
 		"ml_enforcement_role":      "rule_blend",
+		"ml_reputation_gate":       false,
 	}
 	if a == nil || a.AIEngine == nil {
 		return status
@@ -1164,6 +1165,7 @@ func mlModelStatus(a *Analyzer) map[string]interface{} {
 	if a.Config.MLModelPath != "" {
 		status["ml_model_path_configured"] = true
 		status["ml_onnx_configured"] = true
+		status["ml_reputation_gate"] = a.MLModel != nil
 	}
 
 	switch model := a.AIEngine.GetMLModel().(type) {

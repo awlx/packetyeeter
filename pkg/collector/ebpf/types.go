@@ -22,9 +22,13 @@ type HandshakeStatusGeneric struct {
 	Pad        [7]uint8
 }
 
+// ICMPRate mirrors struct rate_limit in protector.bpf.c (also used for UDP
+// rate maps). Keep layout in sync, including the incident_emitted edge flag.
 type ICMPRate struct {
-	LastTime uint64
-	Count    uint64
+	LastTime        uint64
+	Count           uint64
+	IncidentEmitted uint8
+	Pad             [7]uint8
 }
 
 // Bad TCP flag scan classification, matches struct bad_flags_info in

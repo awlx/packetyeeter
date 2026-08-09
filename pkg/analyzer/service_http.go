@@ -31,21 +31,15 @@ var (
 // of those words). Matched case-insensitively against the user agent.
 var honestCrawlerMarkers = []string{"facebookexternalhit", "ia_archiver"}
 
-// ja4MatchSignal derives the signal type/weight to emit for a JA4DB match and
-// whether the "ja4_info" metadata should be included. Both are gated to exact
-// matches: a "wildcard_tls" match only shares a coarse JA4 prefix with an
-// unrelated DB entry (see ja4db.ja4WildcardPrefix) and is not a reliable
-// attribution, so it must not be classified as a browser signal nor carry
-// ja4_info - aidetection's CategorizeBot trusts a supplied ja4_info verbatim
-// (without re-verifying match type) to short-circuit bot detection for
-// browsers, so leaking it on a wildcard match would let an attacker-crafted
-// fingerprint that merely collides on the coarse prefix evade detection.
-func ja4MatchSignal(isBrowser bool, matchType string) (sigType aidetection.SignalType, weight float64, includeJA4Info bool) {
-	exactMatch := matchType == "exact"
-	if isBrowser && exactMatch {
-		return aidetection.SignalBrowserDetected, 1.0, true
+// ja4MatchSignal emits detection signals only for exact, classified matches.
+// Wildcard matches are useful enrichment but are too coarse for attribution,
+// and an exact catalog entry that is neither a browser nor a known bot is not
+// inherently suspicious.
+func ja4MatchSignal(isKnownBot bool, matchType string) (sigType aidetection.SignalType, weight float64, includeJA4Info, emit bool) {
+	if matchType == "exact" && isKnownBot {
+		return aidetection.SignalJA4HBotMatch, 20.0, true, true
 	}
-	return aidetection.SignalJA4HBotMatch, 20.0, exactMatch
+	return "", 0, false, false
 }
 
 // isKnownHonestUA reports whether the user agent honestly self-identifies as
@@ -276,7 +270,7 @@ func (a *Analyzer) processHTTPRequest(sig *apiv1.Signal, ip net.IP, asn string, 
 		metrics.HTTPRequestRateByIP.WithLabelValues(ip.String()).Set(ipRate)
 	}
 	if asn != "" && asn != "Unknown" {
-		metrics.HTTPRequestRateByASN.WithLabelValues(asn, org).Set(asnRate)
+		metrics.SetHTTPRequestRateForASN(asn, org, asnRate)
 	}
 
 	protocolOrBackground := isProtocolOrBackgroundRequest(ctx.Method, ctx.Host, ctx.Path, ctx.Accept, userAgent)
@@ -515,7 +509,7 @@ func (a *Analyzer) processHTTPRequest(sig *apiv1.Signal, ip net.IP, asn string, 
 			// re-derive the organization via a second GeoIP lookup and emit a
 			// duplicate label-distinct series carrying the raw (non-EWMA) lag.
 			if asn != "" && asn != "Unknown" {
-				metrics.ProxyLagEWMAByASN.WithLabelValues(asn, org).Set(ewmaLag)
+				metrics.SetProxyLagForASN(asn, org, ewmaLag)
 			}
 
 			if isAnomaly && a.shouldEmitLatencyAnomaly(ip) {
@@ -554,7 +548,9 @@ func (a *Analyzer) processHTTPRequest(sig *apiv1.Signal, ip net.IP, asn string, 
 			res, found := a.JA4DB.LookupWithTypeResult(fp, fpType)
 			if found {
 				entry := res.Entry
-				info := a.JA4DB.GetInfo(fp) // format info string for logs/metadata
+				// Format from the lookup result so we never re-query and
+				// accidentally promote a different match type.
+				info := ja4db.FormatEntryInfo(entry)
 				infoLower := strings.ToLower(info)
 				isBrowser := aidetection.IsBrowserInfo(infoLower)
 				exactBrowser := isBrowser && res.MatchType == "exact"
@@ -600,13 +596,16 @@ func (a *Analyzer) processHTTPRequest(sig *apiv1.Signal, ip net.IP, asn string, 
 					}).Info("JA4DB exact match")
 				}
 
-				// Known bot heuristic (same as IsKnownBot)
+				// Known-bot attribution requires an exact catalog hit. Wildcard
+				// keyword collisions are enrichment-only.
 				app := entry.Application + " " + entry.Library + " " + entry.Device
 				isKnownBot := false
-				for _, keyword := range ja4db.BotKeywordsBasic {
-					if strings.Contains(strings.ToLower(app), keyword) {
-						isKnownBot = true
-						break
+				if res.MatchType == "exact" {
+					for _, keyword := range ja4db.BotKeywordsBasic {
+						if strings.Contains(strings.ToLower(app), keyword) {
+							isKnownBot = true
+							break
+						}
 					}
 				}
 
@@ -631,22 +630,24 @@ func (a *Analyzer) processHTTPRequest(sig *apiv1.Signal, ip net.IP, asn string, 
 				if a.SignalBuilder != nil {
 					// Only emit when we have some JA4DB info to act on
 					if info != "" || entry.Application != "" || entry.Library != "" || entry.Device != "" {
-						sigType, weight, includeJA4Info := ja4MatchSignal(isBrowser, res.MatchType)
-						metadata := map[string]interface{}{
-							"application": entry.Application,
-							"library":     entry.Library,
-							"device":      entry.Device,
-							"verified":    entry.Verified,
-							"obs_count":   entry.ObservationCount,
-							"match_type":  res.MatchType,
-							"fp_type":     res.FingerprintType,
-							"known_bot":   isKnownBot,
-							"user_agent":  userAgent,
+						sigType, weight, includeJA4Info, emit := ja4MatchSignal(isKnownBot, res.MatchType)
+						if emit {
+							metadata := map[string]interface{}{
+								"application": entry.Application,
+								"library":     entry.Library,
+								"device":      entry.Device,
+								"verified":    entry.Verified,
+								"obs_count":   entry.ObservationCount,
+								"match_type":  res.MatchType,
+								"fp_type":     res.FingerprintType,
+								"known_bot":   isKnownBot,
+								"user_agent":  userAgent,
+							}
+							if includeJA4Info {
+								metadata["ja4_info"] = info
+							}
+							a.SignalBuilder.EmitJA4Match(ip, asn, org, fp, sig.Ja4H, sig.Ja4T, sigType, weight, metadata)
 						}
-						if includeJA4Info {
-							metadata["ja4_info"] = info
-						}
-						a.SignalBuilder.EmitJA4Match(ip, asn, org, fp, sig.Ja4H, sig.Ja4T, sigType, weight, metadata)
 					}
 				}
 			}
@@ -730,30 +731,7 @@ func (a *Analyzer) processHTTPRequest(sig *apiv1.Signal, ip net.IP, asn string, 
 	// Check reputation threshold and potentially block
 	score := a.Reputation.GetScore(ip.String(), reputation.TypeIP)
 	if score > a.Config.ReputationThreshold {
-		shouldBlock := true
-		if a.MLModel != nil {
-			features := a.extractMLFeatures(ip, asn, score)
-			prediction := a.MLModel.Predict(features)
-			shouldBlock = prediction.IsBot && prediction.Confidence > 0.7
-			if !shouldBlock {
-				metrics.MLBlocksOverridden.Inc()
-			}
-
-			if shouldBlock {
-				logrus.WithFields(logrus.Fields{
-					"ip":            ip.String(),
-					"reputation":    score,
-					"ml_confidence": prediction.Confidence,
-					"ml_category":   prediction.Category,
-				}).Info("ML model confirmed HTTP block decision")
-			} else {
-				logrus.WithFields(logrus.Fields{
-					"ip":            ip.String(),
-					"reputation":    score,
-					"ml_confidence": prediction.Confidence,
-				}).Warn("ML model rejected HTTP block")
-			}
-		}
+		shouldBlock := a.mlConfirmsReputationBlock(ip, asn, score, "http")
 
 		if shouldBlock && !a.Config.DryRun {
 			metrics.HAProxyBlocks.Inc()

@@ -1,5 +1,90 @@
 # PacketYeeter Changelog
 
+## 2026-08-09 - Collector UDP fragment policy and edge-triggered incidents
+
+- Fragmented UDP / IPv6 Fragment headers no longer hard-drop by default.
+  Default `-udp-frag-mode=rate` applies the normal UDP rate limit instead.
+  Operators can restore the legacy hard-drop with `-udp-frag-mode=drop`.
+- Kernel ICMP/UDP rate-limit incident emits are edge-triggered once per source
+  per 1s window (`incident_emitted` in the rate map value) so a single over-limit
+  flood cannot monopolize the per-CPU incident budget.
+
+## 2026-08-09 - Operator reputation score caps
+
+- Analyzer applies finite default reputation score caps so penalty mass cannot
+  run away indefinitely while still leaving headroom above
+  `-reputation-threshold`: IP/JA4 `200`, ASN `500`. Set
+  `-reputation-ip-score-cap` / `-reputation-ja4-score-cap` /
+  `-reputation-asn-score-cap` to `0` for uncapped. The reputation package API
+  still defaults to uncapped when caps are not configured.
+
+## 2026-08-09 - Statistical model weight calibration
+
+- Built-in statistical fallback weights used by `Predict` now sum to `1.0`
+  (rate/diversity mass is folded into the signal score). Missing JA4H is only
+  treated as bot-like when HTTP context is present. Direct reputation-gate
+  feature extraction sets wall-clock `TimeOfDay`/`DayOfWeek` instead of leaving
+  them at zero. This is wiring/calibration only — no new labeled-data
+  thresholds were invented.
+
+## 2026-08-09 - Reduce JA4 and campaign false positives
+
+- Coarse JA4DB wildcard matches and unclassified catalog entries remain
+  enrichment-only instead of being emitted as high-severity known-bot signals.
+  Detection signals now require an exact known-bot classification. Exact
+  browser matches still reward reputation and short-circuit bot detection
+  without emitting a bot signal. `IsKnownBot`/`GetInfo`/`CategorizeBot` and the
+  JA4H lookup RPC now honor exact-vs-wildcard match types consistently.
+- Observe-only campaign detections no longer mutate the reputation of an
+  arbitrary representative source or ASN.
+- `packetyeeter_active_attack_campaigns` now counts campaigns that meet
+  detection criteria instead of all retained aggregation buckets.
+
+## 2026-08-09 - Honor optional ML enforcement configuration
+
+**Problem**: The direct reputation-block path always constructed a separate,
+untrained statistical `ModelManager`, even when `-ml-model` was unset. That
+made an unconfigured model veto reputation blocks. When `-ml-model` was set,
+the configured ONNX model was loaded only into the AI engine; the separate
+reputation gate still used the statistical model, and its model watcher could
+not reload the ONNX model it did not own.
+
+**Solution**:
+- Without `-ml-model`, reputation-threshold blocks are no longer ML-gated.
+- With `-ml-model`, one validated `HybridModel` is shared by the AI engine and
+  reputation gate. A configured model that cannot load now fails analyzer
+  startup instead of silently substituting an untrained heuristic.
+- Model reloads update that shared model, and shutdown releases its ONNX
+  resources.
+- The reputation gate uses the resolved `-ai-confidence-threshold`, including
+  the documented 0.7 default, and treats equality as meeting the threshold.
+- Per-request model decisions are debug-level; the
+  `packetyeeter_ml_blocks_overridden_total` counter remains the aggregate
+  signal.
+- The statistical fallback no longer treats a pristine raw reputation score
+  as suspicious. Reputation is already blended separately against the
+  configured ban threshold by the detection engine.
+
+The built-in statistical model's scoring was deliberately left unchanged:
+changing enforcement calibration requires representative labeled traffic, not
+synthetic maximum-score tests.
+
+## 2026-08-09 - Bound default metric cardinality
+
+Exact ASN/organization metric families are now gated by
+`-enable-high-cardinality-metrics`, matching the existing per-IP and
+fingerprint metrics. They previously emitted thousands of persistent series
+even with the flag disabled because organization names are free-text labels and
+every observed ASN created multiple series. Aggregate counters and histograms
+remain enabled by default.
+
+## 2026-08-09 - Surface perf-ring telemetry loss
+
+Collector perf readers now count and warn on kernel-reported lost samples via
+`packetyeeter_perf_lost_samples_total{reader="tcp_metadata|incidents"}`.
+Previously `perf.Record.LostSamples` was ignored, making overload look like a
+clean absence of detections.
+
 ## 2026-08-09 - Grafana dashboard refresh
 
 ### Bring the checked-in dashboards back in sync with `pkg/metrics`

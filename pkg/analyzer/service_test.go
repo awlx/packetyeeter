@@ -8,9 +8,66 @@ import (
 	"time"
 
 	apiv1 "PacketYeeter/api/proto/v1"
+	"PacketYeeter/pkg/analyzer/aidetection"
 	"PacketYeeter/pkg/analyzer/reputation"
 	"PacketYeeter/pkg/patterns"
 )
+
+type stubMLModel struct {
+	result aidetection.MLPredictionResult
+}
+
+func (s stubMLModel) Predict(aidetection.MLFeatures) aidetection.MLPredictionResult {
+	return s.result
+}
+
+func (stubMLModel) Train(aidetection.MLFeatures, bool) error {
+	return nil
+}
+
+func TestNewDefaultsAndValidatesAIConfidenceThreshold(t *testing.T) {
+	a, err := New(Config{})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(a.cancel)
+	if a.Config.AIConfidenceThreshold != defaultAIConfidenceThreshold {
+		t.Fatalf("threshold = %v, want %v", a.Config.AIConfidenceThreshold, defaultAIConfidenceThreshold)
+	}
+
+	for _, threshold := range []float64{-0.1, 1.1, math.NaN(), math.Inf(1)} {
+		if _, err := New(Config{AIConfidenceThreshold: threshold}); err == nil {
+			t.Errorf("expected threshold %v to be rejected", threshold)
+		}
+	}
+}
+
+func TestMLReputationGateIsOptionalAndUsesInclusiveThreshold(t *testing.T) {
+	ip := net.ParseIP("192.0.2.1")
+	a := &Analyzer{Config: Config{AIConfidenceThreshold: 0.8}}
+
+	if !a.mlConfirmsReputationBlock(ip, "AS64512", 100, "test") {
+		t.Fatal("unconfigured ML model must not veto reputation block")
+	}
+
+	a.MLModel = stubMLModel{result: aidetection.MLPredictionResult{
+		IsBot:      true,
+		Confidence: 0.8,
+		ModelTier:  "test",
+	}}
+	if !a.mlConfirmsReputationBlock(ip, "AS64512", 100, "test") {
+		t.Fatal("bot prediction exactly at configured threshold should confirm block")
+	}
+
+	a.MLModel = stubMLModel{result: aidetection.MLPredictionResult{
+		IsBot:      true,
+		Confidence: 0.79,
+		ModelTier:  "test",
+	}}
+	if a.mlConfirmsReputationBlock(ip, "AS64512", 100, "test") {
+		t.Fatal("prediction below configured threshold should veto block")
+	}
+}
 
 // fakeCollectorStream satisfies AnalyzerService_StreamSignalsServer for the
 // Send path only; Broadcast delivers asynchronously, so sends are observed

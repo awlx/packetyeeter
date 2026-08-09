@@ -1,5 +1,7 @@
 package ebpf
 
+import "fmt"
+
 // configKeyMonitorMode is the config_map array index checked by the XDP
 // program (as `key_monitor = 1` in protector.bpf.c) before every enforcement
 // drop (bad flags, SYN-flood blocklist, ICMP/UDP rate limits, allowlist).
@@ -10,6 +12,32 @@ const configKeyMonitorMode uint32 = 1
 // adding a packet's length to the per-client egress byte counter. It defaults
 // to 0 so the accounting is inert until an operator enables it.
 const configKeyEgressAccounting uint32 = 3
+
+// configKeyUDPFragMode is the config_map array index for fragmented UDP /
+// IPv6 fragment handling (CONFIG_KEY_UDP_FRAG_MODE in protector.bpf.c).
+const configKeyUDPFragMode uint32 = 4
+
+// UDP fragment policy modes written to config_map[configKeyUDPFragMode].
+const (
+	// UDPFragModeRate is the default: do not hard-drop solely for
+	// fragmentation; apply the normal UDP rate limit instead.
+	UDPFragModeRate uint32 = 0
+	// UDPFragModeDrop is the legacy unconditional drop of fragmented UDP
+	// (IPv4) and IPv6 Fragment extension headers.
+	UDPFragModeDrop uint32 = 1
+)
+
+// ParseUDPFragMode accepts operator-facing mode names.
+func ParseUDPFragMode(s string) (uint32, error) {
+	switch s {
+	case "", "rate":
+		return UDPFragModeRate, nil
+	case "drop":
+		return UDPFragModeDrop, nil
+	default:
+		return 0, fmt.Errorf("invalid udp-frag-mode %q (want rate|drop)", s)
+	}
+}
 
 // SetEgressAccounting toggles per-client egress byte accounting in the TC
 // egress program. When disabled the program still performs one array lookup
@@ -29,6 +57,18 @@ func (m *Maps) SetEgressAccounting(enabled bool) error {
 	}
 
 	return m.ConfigMap.Put(configKeyEgressAccounting, value)
+}
+
+// SetUDPFragMode configures fragmented UDP / IPv6 fragment handling.
+// See UDPFragModeRate and UDPFragModeDrop. No-op when ConfigMap is nil.
+func (m *Maps) SetUDPFragMode(mode uint32) error {
+	if mode != UDPFragModeRate && mode != UDPFragModeDrop {
+		return fmt.Errorf("invalid udp frag mode %d", mode)
+	}
+	if m.ConfigMap == nil {
+		return nil
+	}
+	return m.ConfigMap.Put(configKeyUDPFragMode, mode)
 }
 
 // SetMonitorMode toggles the collector's kernel-space dry-run/monitor mode.

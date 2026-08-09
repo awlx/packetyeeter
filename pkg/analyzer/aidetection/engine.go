@@ -868,9 +868,7 @@ func (e *Engine) markASNActive(asn, org, ipStr string, now time.Time) {
 	if active > 0 {
 		ratio = float64(abusive) / float64(active)
 	}
-	metrics.ASNActiveIPs.WithLabelValues(asn, org).Set(float64(active))
-	metrics.ASNAbusiveIPs.WithLabelValues(asn, org).Set(float64(abusive))
-	metrics.ASNAbuseRatio.WithLabelValues(asn, org).Set(ratio)
+	metrics.SetASNActivity(asn, org, active, abusive, ratio)
 }
 
 func (e *Engine) markASNAbusive(asn, org string, ip net.IP) {
@@ -908,9 +906,7 @@ func (e *Engine) markASNAbusive(asn, org string, ip net.IP) {
 	if active > 0 {
 		ratio = float64(abusive) / float64(active)
 	}
-	metrics.ASNActiveIPs.WithLabelValues(asn, org).Set(float64(active))
-	metrics.ASNAbusiveIPs.WithLabelValues(asn, org).Set(float64(abusive))
-	metrics.ASNAbuseRatio.WithLabelValues(asn, org).Set(ratio)
+	metrics.SetASNActivity(asn, org, active, abusive, ratio)
 }
 
 func (e *Engine) getASNRatio(asn string) float64 {
@@ -965,9 +961,7 @@ func (e *Engine) cleanupASNMaps() {
 		if org == "" {
 			org = "Unknown"
 		}
-		metrics.ASNActiveIPs.WithLabelValues(asn, org).Set(float64(active))
-		metrics.ASNAbusiveIPs.WithLabelValues(asn, org).Set(float64(abusive))
-		metrics.ASNAbuseRatio.WithLabelValues(asn, org).Set(ratio)
+		metrics.SetASNActivity(asn, org, active, abusive, ratio)
 	}
 }
 
@@ -1337,7 +1331,7 @@ func (e *Engine) processSignal(signal Signal, windowSignals map[string][]Signal,
 	if orgTag == "" {
 		orgTag = "Unknown"
 	}
-	metrics.AISignalsByASN.WithLabelValues(asnTag, orgTag, string(signal.Type)).Inc()
+	metrics.IncAISignalForASN(asnTag, orgTag, string(signal.Type))
 	// Track active IPs per ASN for proportional scaling
 	e.markASNActive(asnTag, orgTag, ipStr, now)
 
@@ -1567,26 +1561,6 @@ func (e *Engine) handleCampaignDetection(detection CampaignDetection) {
 		confidence = e.campaignConfidence(detection)
 	}
 
-	// Penalize reputation for the campaign's contributing source(s)/ASN(s),
-	// proportional to campaign severity. To avoid a per-source-IP hot loop
-	// under carpet bombing (which can involve thousands of weak sources),
-	// this only penalizes the representative sample IP/ASN once per
-	// detection cycle - mirroring the single Penalize/PenalizeASN calls used
-	// by the regular (non-campaign) detection path - scaled by a severity
-	// multiplier so broader/repeated campaigns accumulate proportionally
-	// larger penalties over time.
-	if e.reputation != nil {
-		severity := campaignSeverityMultiplier(detection, e.campaigns.cfg)
-		if detection.SampleIP != nil {
-			e.reputation.Penalize(detection.SampleIP.String(), reputation.TypeIP, 10.0*confidence*severity, "campaign detection")
-		}
-		if detection.SampleASN != "" && detection.SampleASN != "Unknown" {
-			e.markASNAbusive(detection.SampleASN, detection.SampleOrg, detection.SampleIP)
-			scale := e.asnPenaltyScale(detection.SampleASN)
-			e.reputation.PenalizeASN(detection.SampleASN, sampleIPOrEmpty(detection.SampleIP), 2.0*confidence*severity*scale, "campaign detection")
-		}
-	}
-
 	metadata := map[string]interface{}{
 		"campaign_id":       detection.ID,
 		"campaign_key":      detection.Key,
@@ -1649,16 +1623,6 @@ func (e *Engine) handleCampaignDetection(detection CampaignDetection) {
 		"total_weight": detection.TotalWeight,
 		"observe_only": true,
 	}).Info("Attack campaign observed")
-}
-
-// sampleIPOrEmpty returns the string form of ip, or "" if ip is nil. Used
-// when penalizing an ASN for a campaign that lacks a resolved sample source
-// IP (PenalizeASN uses the IP only for its own active-IP bookkeeping).
-func sampleIPOrEmpty(ip net.IP) string {
-	if ip == nil {
-		return ""
-	}
-	return ip.String()
 }
 
 func addCampaignBaselineMetadata(metadata map[string]interface{}, baseline CampaignBaselineObservation) {
@@ -2616,8 +2580,7 @@ func (e *Engine) handleDetection(key string, signals []Signal, ewmaBaseline, con
 	if orgTag == "" {
 		orgTag = "Unknown"
 	}
-	metrics.AIDetectionsByASN.WithLabelValues(asnTag, orgTag).Inc()
-	metrics.AISignalEWMAByASN.WithLabelValues(asnTag, orgTag).Set(ewmaBaseline)
+	metrics.ObserveAIDetectionForASN(asnTag, orgTag, ewmaBaseline)
 
 	if event.JA4H != "" && metrics.IsHighCardinalityEnabled() {
 		metrics.AIDetectionsByJA4H.WithLabelValues(event.JA4H).Inc()

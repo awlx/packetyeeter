@@ -46,6 +46,7 @@ const (
 	defaultReputationMaxAge      = 24 * time.Hour
 	defaultReputationASNMaxHosts = 5000
 	defaultPprofAddr             = ":6060"
+	defaultAIConfidenceThreshold = 0.7
 	// defaultMaxCollectors bounds how many collector streams may be registered
 	// at once. The signal plane is an unauthenticated gRPC listener, so without
 	// a cap a peer opening many concurrent streams grows the collectors map,
@@ -54,15 +55,21 @@ const (
 )
 
 type Config struct {
-	ListenAddr                   string
-	MetricsAddr                  string
-	InspectorAddr                string
-	GeoIPASNPath                 string
-	GeoIPCountryPath             string
-	ReputationThreshold          float64
-	ReputationMaxEntries         int
-	ReputationMaxAge             time.Duration
-	ReputationASNMaxHosts        int
+	ListenAddr            string
+	MetricsAddr           string
+	InspectorAddr         string
+	GeoIPASNPath          string
+	GeoIPCountryPath      string
+	ReputationThreshold   float64
+	ReputationMaxEntries  int
+	ReputationMaxAge      time.Duration
+	ReputationASNMaxHosts int
+	// Reputation score caps clamp accumulated penalty scores. 0 means
+	// uncapped (+Inf). Analyzer defaults apply a finite operator policy via
+	// CLI flags; the reputation package itself still defaults to uncapped.
+	ReputationIPScoreCap         float64
+	ReputationJA4ScoreCap        float64
+	ReputationASNScoreCap        float64
 	AIConfidenceThreshold        float64
 	AISuspiciousScoreThreshold   float64
 	AIBlockScoreThreshold        float64
@@ -173,7 +180,7 @@ type Analyzer struct {
 	Entropy        *entropy.EntropyAnalyzer
 	GeoIP          *geoip.Provider
 	PatternTracker *patterns.PatternTracker
-	MLModel        *ml.ModelManager
+	MLModel        aidetection.MLModel
 	ModelWatcher   *ml.ModelWatcher // Watches for model file changes
 
 	// Sustained-download detection. Nil when the feature is disabled, so every
@@ -276,6 +283,13 @@ func isAggregateSnapshot(sig *apiv1.Signal) bool {
 }
 
 func New(cfg Config) (*Analyzer, error) {
+	if cfg.AIConfidenceThreshold == 0 {
+		cfg.AIConfidenceThreshold = defaultAIConfidenceThreshold
+	}
+	if math.IsNaN(cfg.AIConfidenceThreshold) || math.IsInf(cfg.AIConfidenceThreshold, 0) ||
+		cfg.AIConfidenceThreshold < 0 || cfg.AIConfidenceThreshold > 1 {
+		return nil, fmt.Errorf("AI confidence threshold must be finite and between 0 and 1, got %v", cfg.AIConfidenceThreshold)
+	}
 	if cfg.ReputationMaxEntries == 0 {
 		cfg.ReputationMaxEntries = defaultReputationMaxEntries
 	}
@@ -343,6 +357,16 @@ func (a *Analyzer) Start() error {
 	rep.SetMaxEntries(a.Config.ReputationMaxEntries)
 	rep.SetMaxEntryAge(a.Config.ReputationMaxAge)
 	rep.SetMaxASNHosts(a.Config.ReputationASNMaxHosts)
+	// Apply operator score caps. 0 keeps the engine's uncapped default.
+	if a.Config.ReputationIPScoreCap > 0 {
+		rep.SetIPScoreCap(a.Config.ReputationIPScoreCap)
+	}
+	if a.Config.ReputationJA4ScoreCap > 0 {
+		rep.SetJA4ScoreCap(a.Config.ReputationJA4ScoreCap)
+	}
+	if a.Config.ReputationASNScoreCap > 0 {
+		rep.SetASNScoreCap(a.Config.ReputationASNScoreCap)
+	}
 	a.Reputation = rep
 	a.ReputationHelper = NewReputationHelper(a.Reputation)
 	logrus.WithFields(logrus.Fields{
@@ -350,6 +374,9 @@ func (a *Analyzer) Start() error {
 		"max_entries":   a.Config.ReputationMaxEntries,
 		"max_age":       a.Config.ReputationMaxAge,
 		"max_asn_hosts": a.Config.ReputationASNMaxHosts,
+		"ip_score_cap":  a.Config.ReputationIPScoreCap,
+		"ja4_score_cap": a.Config.ReputationJA4ScoreCap,
+		"asn_score_cap": a.Config.ReputationASNScoreCap,
 	}).Info("Reputation Engine initialized")
 
 	// Initialize Threat Intelligence (Shodan InternetDB - free API)
@@ -408,10 +435,17 @@ func (a *Analyzer) Start() error {
 	// Initialize default ML model
 	// Initialize ML Model - Use Hybrid Model for pattern + ONNX + fallback
 	var mlModel aidetection.MLModel
+	var configuredHybrid *ml.HybridModel
 	if a.Config.MLModelPath != "" {
-		// Create hybrid model with ONNX + statistical fallback
-		hybridModel := ml.NewHybridModel(a.Config.MLModelPath, a.Config.AIConfidenceThreshold)
-		mlModel = hybridModel
+		// A configured model is safety-critical: fail startup rather than
+		// silently replacing it with an untrained statistical fallback.
+		configuredHybrid, err = ml.NewHybridModel(a.Config.MLModelPath, a.Config.AIConfidenceThreshold)
+		if err != nil {
+			a.Close()
+			return fmt.Errorf("initialize configured ML model: %w", err)
+		}
+		mlModel = configuredHybrid
+		a.MLModel = configuredHybrid
 		logrus.WithFields(logrus.Fields{
 			"model_path": a.Config.MLModelPath,
 			"threshold":  a.Config.AIConfidenceThreshold,
@@ -469,21 +503,14 @@ func (a *Analyzer) Start() error {
 	a.PatternTracker.StartCleanup()
 	logrus.Info("Pattern Tracker initialized")
 
-	// Initialize ML Model
-	a.MLModel = ml.NewModelManager()
-	logrus.Info("ML Model initialized and enabled")
+	if configuredHybrid == nil {
+		logrus.Info("ML model not configured (-ml-model unset): reputation blocks are not ML-gated")
+	}
 
 	// Start model file watcher for dynamic reloading
-	if a.Config.MLModelPath != "" {
+	if configuredHybrid != nil {
 		reloadFunc := func(modelPath string) error {
-			// Check if primary model is an ONNX model and reload it
-			if a.MLModel != nil {
-				primaryModel := a.MLModel.GetPrimaryModel()
-				if onnxModel, ok := primaryModel.(*ml.ONNXModel); ok {
-					return onnxModel.Reload(modelPath)
-				}
-			}
-			return nil
+			return configuredHybrid.Reload(modelPath)
 		}
 
 		a.ModelWatcher = ml.NewModelWatcher(a.Config.MLModelPath, 10*time.Second, reloadFunc)
@@ -952,33 +979,7 @@ func (a *Analyzer) processSignal(sig *apiv1.Signal, cs *collectorStream) {
 	}
 
 	if score > a.Config.ReputationThreshold {
-		// Use ML model to validate blocking decision
-		shouldBlock := true
-		if a.MLModel != nil {
-			features := a.extractMLFeatures(ip, asn, score)
-			prediction := a.MLModel.Predict(features)
-
-			// Only block if ML model agrees (high confidence)
-			shouldBlock = prediction.IsBot && prediction.Confidence > 0.7
-			if !shouldBlock {
-				metrics.MLBlocksOverridden.Inc()
-			}
-
-			if shouldBlock {
-				logrus.WithFields(logrus.Fields{
-					"ip":            ip.String(),
-					"reputation":    score,
-					"ml_confidence": prediction.Confidence,
-					"ml_category":   prediction.Category,
-				}).Info("ML model confirmed block decision")
-			} else {
-				logrus.WithFields(logrus.Fields{
-					"ip":            ip.String(),
-					"reputation":    score,
-					"ml_confidence": prediction.Confidence,
-				}).Warn("ML model rejected block - potential false positive")
-			}
-		}
+		shouldBlock := a.mlConfirmsReputationBlock(ip, asn, score, "signal")
 
 		if shouldBlock && !a.Config.DryRun {
 			// Increment appropriate block metric based on signal type
@@ -1132,23 +1133,28 @@ func (a *Analyzer) LookupJA4H(ctx context.Context, req *apiv1.JA4HLookupRequest)
 
 	fp := req.Fingerprint
 
-	// 1. Try exact match from JA4 database first
-	if a.JA4DB.IsKnownBot(fp) {
-		info := a.JA4DB.GetInfo(fp)
+	// Prefer the typed lookup so exact vs wildcard is reported honestly.
+	if res, found := a.JA4DB.LookupWithTypeResult(fp, "ja4h"); found {
+		info := ja4db.FormatEntryInfo(res.Entry)
+		if res.MatchType == "exact" {
+			return &apiv1.JA4HLookupResponse{
+				Found:           true,
+				Application:     info,
+				IsWildcardMatch: false,
+			}, nil
+		}
 		return &apiv1.JA4HLookupResponse{
 			Found:           true,
-			Application:     info,
-			IsWildcardMatch: false,
+			Application:     info + " (probabilistic match)",
+			IsWildcardMatch: true,
 		}, nil
 	}
 
-	// 2. For JA4H fingerprints, try partial matching on headers
-	// JA4H format: "{protocol}_{header_hash}_{cookie_fields_hash}_{cookie_values_hash}"
+	// Compatibility path for callers that still only implement the older
+	// prefix search API.
 	if strings.Count(fp, "_") == 3 {
 		parts := strings.Split(fp, "_")
 		headersPrefix := parts[0] + "_" + parts[1]
-
-		// Search database for entries with matching headers
 		if info, found := a.JA4DB.FindByHeadersPrefix(headersPrefix); found {
 			return &apiv1.JA4HLookupResponse{
 				Found:           true,
@@ -1879,7 +1885,6 @@ func (a *Analyzer) Close() {
 		logrus.Info("Stopping model watcher...")
 		a.ModelWatcher.Stop()
 	}
-
 	// Shutdown gRPC server with timeout
 	if a.grpcServer != nil {
 		stopped := make(chan struct{})
@@ -1894,6 +1899,11 @@ func (a *Analyzer) Close() {
 		case <-time.After(5 * time.Second):
 			logrus.Warn("gRPC server graceful stop timeout, forcing stop")
 			a.grpcServer.Stop()
+		}
+	}
+	if model, ok := a.MLModel.(interface{ Close() error }); ok {
+		if err := model.Close(); err != nil {
+			logrus.WithError(err).Warn("Failed to close ML model")
 		}
 	}
 
@@ -1911,6 +1921,9 @@ func (a *Analyzer) Close() {
 	}
 	if a.GeoIP != nil {
 		a.GeoIP.Close()
+	}
+	if a.JA4DB != nil {
+		a.JA4DB.Stop()
 	}
 
 	// Wait for goroutines with timeout

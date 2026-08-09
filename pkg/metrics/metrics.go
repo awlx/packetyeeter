@@ -295,6 +295,11 @@ var (
 		Help: "Structured kernel-space enforcement incidents by reason",
 	}, []string{"reason"})
 
+	PerfLostSamples = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "packetyeeter_perf_lost_samples_total",
+		Help: "Kernel perf-ring samples lost before userspace could read them",
+	}, []string{"reader"})
+
 	// AI Detection Engine Metrics (centralized)
 
 	AISignalsTotal = promauto.NewCounter(prometheus.CounterOpts{
@@ -818,6 +823,45 @@ func SetHighCardinalityEnabled(enabled bool) {
 
 func IsHighCardinalityEnabled() bool {
 	return highCardinalityEnabled.Load()
+}
+
+// The helpers below keep every exact-ASN/org metric behind the same
+// high-cardinality switch as per-IP and per-fingerprint metrics. ASN values are
+// externally supplied and org is free text; emitting them unconditionally
+// creates thousands of persistent series on normal public traffic.
+func SetHTTPRequestRateForASN(asn, org string, rate float64) {
+	if highCardinalityEnabled.Load() {
+		HTTPRequestRateByASN.WithLabelValues(asn, org).Set(rate)
+	}
+}
+
+func SetProxyLagForASN(asn, org string, lag float64) {
+	if highCardinalityEnabled.Load() {
+		ProxyLagEWMAByASN.WithLabelValues(asn, org).Set(lag)
+	}
+}
+
+func SetASNActivity(asn, org string, active, abusive int, ratio float64) {
+	if !highCardinalityEnabled.Load() {
+		return
+	}
+	ASNActiveIPs.WithLabelValues(asn, org).Set(float64(active))
+	ASNAbusiveIPs.WithLabelValues(asn, org).Set(float64(abusive))
+	ASNAbuseRatio.WithLabelValues(asn, org).Set(ratio)
+}
+
+func IncAISignalForASN(asn, org, signalType string) {
+	if highCardinalityEnabled.Load() {
+		AISignalsByASN.WithLabelValues(asn, org, signalType).Inc()
+	}
+}
+
+func ObserveAIDetectionForASN(asn, org string, ewma float64) {
+	if !highCardinalityEnabled.Load() {
+		return
+	}
+	AIDetectionsByASN.WithLabelValues(asn, org).Inc()
+	AISignalEWMAByASN.WithLabelValues(asn, org).Set(ewma)
 }
 
 func StartMetricsServer(addr string) *http.Server {

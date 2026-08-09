@@ -37,11 +37,23 @@ The collector is intentionally less restricted because it loads eBPF, attaches X
 - Keep `-enable-high-cardinality-metrics=false` during normal operations; turn it on only for short diagnostic windows.
 - Set allowlists for monitoring systems, load balancers, bastion hosts, health checks, and upstream trusted proxies.
 - Watch `packetyeeter_*_blocks_total`, reputation scores, AI detections, SPOE queue depth/drops, and collector/analyzer logs before enabling enforcement.
-- Per-IP and per-JA4 reputation penalties now accumulate (previously the per-IP/JA4 score caps defaulted to 0, clamping those penalties to a no-op; only ASN scoring accrued). On upgrade, expect IP/JA4 reputation scores to rise for sources that repeatedly trip detections, which can cross ban thresholds that were previously never reached. Re-baseline in `-dry-run`, review reputation scores and `packetyeeter_*_blocks_total`, and tune allowlists/thresholds before enabling enforcement.
+- Per-IP and per-JA4 reputation penalties accumulate. Analyzer defaults apply
+  finite score caps (`-reputation-ip-score-cap=200`,
+  `-reputation-ja4-score-cap=200`, `-reputation-asn-score-cap=500`; `0` =
+  uncapped) so scores can still clear the ban threshold with headroom but cannot
+  run away indefinitely. Re-baseline in `-dry-run`, review reputation scores and
+  `packetyeeter_*_blocks_total`, and tune allowlists/thresholds/caps before
+  enabling enforcement.
+- Collector `-udp-frag-mode` defaults to `rate` (rate-limit fragmented UDP / IPv6
+  fragments instead of hard-dropping them). Use `drop` only when restoring the
+  legacy unconditional drop is intentional.
 - Treat UDP reflection campaign labels as observability metadata. The analyzer can distinguish common vectors such as DNS, NTP, SSDP, CLDAP, Memcached, and QUIC Initial only when existing signal metadata carries useful port or protocol hints; ambiguous UDP campaigns remain labeled `udp_flood`.
 - Treat adaptive campaign baselines as rollout context, not enforcement. During analyzer startup or a new service/vector mix, `baseline_enough_samples=false` means the EWMA is still warming up; compare `baseline_current_rate`, `baseline_rate`, and `baseline_multiplier` only after enough samples have accumulated for that service key.
 - The adaptive baseline caps how fast it can rise per observation (`MaxGrowthPerObservation`, default 1.5x) to resist slow-ramp attacks that try to normalize themselves into the baseline; if legitimate traffic grows unusually fast, the baseline may lag for a few observation cycles before catching up. See `docs/observability.md` for details and tuning guidance.
-- Campaign/carpet-bombing detections now penalize reputation (representative sample IP/ASN, scaled by campaign severity) the same way regular detections do, instead of bypassing reputation entirely - repeated campaign involvement from the same source/ASN accumulates over time. This does not change `WouldBlock`/enforcement behavior for campaigns; they remain observe-only.
+- Campaign/carpet-bombing detections are observe-only: they do not mutate
+  reputation for a representative sample IP/ASN. Use campaign metrics and
+  inspector views for tuning; do not expect campaign membership alone to raise
+  ban scores.
 - On dual-stack hosts, the collector now emits IPv6 ICMP/UDP flood and
   incomplete-handshake signals (previously IPv4-only). Expect new IPv6
   detections after upgrading; stage with analyzer `-dry-run` and verify IPv6

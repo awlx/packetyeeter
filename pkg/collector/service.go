@@ -54,6 +54,10 @@ type Config struct {
 	// signal. It exists to keep ordinary browsing traffic off the signal
 	// queue; sustained transfers clear it easily.
 	EgressMinBytes uint64
+
+	// UDPFragMode controls fragmented UDP / IPv6 fragment handling in XDP.
+	// Use ebpf.UDPFragModeRate (default) or ebpf.UDPFragModeDrop.
+	UDPFragMode uint32
 }
 
 // Collector is a thin relay layer that:
@@ -238,6 +242,22 @@ func (c *Collector) Start(ctx context.Context) error {
 		}
 	}
 
+	// Fragmented UDP / IPv6 fragment policy. Default is RATE (no hard-drop
+	// solely for fragmentation). DROP restores the legacy unconditional drop.
+	fragMode := c.Config.UDPFragMode
+	if fragMode != ebpf.UDPFragModeRate && fragMode != ebpf.UDPFragModeDrop {
+		fragMode = ebpf.UDPFragModeRate
+	}
+	if err := c.Maps.SetUDPFragMode(fragMode); err != nil {
+		c.Logger.WithError(err).Warn("Failed to set UDP fragment mode; kernel default applies")
+	} else {
+		modeName := "rate"
+		if fragMode == ebpf.UDPFragModeDrop {
+			modeName = "drop"
+		}
+		c.Logger.WithField("udp_frag_mode", modeName).Info("UDP fragment policy configured")
+	}
+
 	// Populate the kernel-space allowlist maps so XDP/TC can bypass
 	// allowlisted CIDRs directly, instead of relying solely on the
 	// userspace block-decision path.
@@ -329,12 +349,37 @@ func (c *Collector) Start(ctx context.Context) error {
 	return nil
 }
 
-// manageAnalyzerConnection handles connecting and reconnecting to the analyzer
+const (
+	analyzerReconnectInitial = time.Second
+	analyzerReconnectMax     = 30 * time.Second
+	analyzerConnectionStable = 30 * time.Second
+)
+
+func analyzerReconnectBackoff(current, connectedFor time.Duration) (delay, next time.Duration) {
+	if current <= 0 || connectedFor >= analyzerConnectionStable {
+		current = analyzerReconnectInitial
+	}
+	return current, min(current*2, analyzerReconnectMax)
+}
+
+// waitAnalyzerReconnect sleeps interruptibly before another connection
+// attempt. Returning false means the collector is shutting down.
+func (c *Collector) waitAnalyzerReconnect(delay time.Duration) bool {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-c.ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+// manageAnalyzerConnection handles connecting and reconnecting to the analyzer.
 func (c *Collector) manageAnalyzerConnection() {
 	defer c.wg.Done()
 
-	backoff := time.Second
-	maxBackoff := 30 * time.Second
+	backoff := analyzerReconnectInitial
 
 	for {
 		select {
@@ -345,18 +390,16 @@ func (c *Collector) manageAnalyzerConnection() {
 
 		// Connect to analyzer
 		if err := c.connectToAnalyzer(); err != nil {
-			c.Logger.WithError(err).WithField("retry_in", backoff).Error("Failed to connect to analyzer")
-			select {
-			case <-c.ctx.Done():
+			delay, next := analyzerReconnectBackoff(backoff, 0)
+			c.Logger.WithError(err).WithField("retry_in", delay).Error("Failed to connect to analyzer")
+			if !c.waitAnalyzerReconnect(delay) {
 				return
-			case <-time.After(backoff):
-				backoff = min(backoff*2, maxBackoff)
-				continue
 			}
+			backoff = next
+			continue
 		}
 
-		// Reset backoff on successful connection
-		backoff = time.Second
+		connectedAt := time.Now()
 		c.connected.Store(true)
 		c.Logger.Info("Connected to analyzer")
 
@@ -365,7 +408,12 @@ func (c *Collector) manageAnalyzerConnection() {
 
 		// Connection lost
 		c.connected.Store(false)
-		c.Logger.Warn("Lost connection to analyzer, reconnecting...")
+		delay, next := analyzerReconnectBackoff(backoff, time.Since(connectedAt))
+		c.Logger.WithField("retry_in", delay).Warn("Lost connection to analyzer, reconnecting...")
+		if !c.waitAnalyzerReconnect(delay) {
+			return
+		}
+		backoff = next
 	}
 }
 
@@ -653,6 +701,7 @@ func (c *Collector) readPerfEvents() {
 			c.Logger.WithError(err).Debug("Error reading perf event")
 			continue
 		}
+		c.recordPerfLostSamples("tcp_metadata", record.LostSamples)
 
 		c.processPerfEvent(record.RawSample)
 	}
@@ -766,9 +815,21 @@ func (c *Collector) readIncidentEvents() {
 			c.Logger.WithError(err).Debug("Error reading incident event")
 			continue
 		}
+		c.recordPerfLostSamples("incidents", record.LostSamples)
 
 		c.processIncidentEvent(record.RawSample)
 	}
+}
+
+func (c *Collector) recordPerfLostSamples(reader string, lost uint64) {
+	if lost == 0 {
+		return
+	}
+	metrics.PerfLostSamples.WithLabelValues(reader).Add(float64(lost))
+	c.Logger.WithFields(logrus.Fields{
+		"reader":       reader,
+		"lost_samples": lost,
+	}).Warn("Kernel perf-ring samples lost")
 }
 
 // processIncidentEvent decodes a single structured incident event and logs
@@ -1773,6 +1834,9 @@ func (c *Collector) startCollectorMetricsServer() *http.Server {
 	registry.MustRegister(metrics.SPOEQueueDrops)
 	registry.MustRegister(metrics.SPOEProcessingLatency)
 	registry.MustRegister(metrics.KernelIncidents)
+	registry.MustRegister(metrics.PerfLostSamples)
+	metrics.PerfLostSamples.WithLabelValues("tcp_metadata").Add(0)
+	metrics.PerfLostSamples.WithLabelValues("incidents").Add(0)
 
 	// Egress accounting is produced by this process, so it is only ever
 	// observable here -- the analyzer's registry would report a constant 0.

@@ -118,10 +118,7 @@ func TestHandleCampaignDetectionUsesBlendedConfidence(t *testing.T) {
 	}
 }
 
-// TestCampaignDetectionPenalizesReputation ensures a campaign/carpet-bombing
-// detection penalizes reputation for its representative source IP and ASN,
-// unlike before where campaigns never touched reputation at all.
-func TestCampaignDetectionPenalizesReputation(t *testing.T) {
+func TestObserveOnlyCampaignDoesNotPenalizeReputation(t *testing.T) {
 	rep := reputation.New(time.Hour, 0.9, 100)
 	rep.SetIPScoreCap(1000)
 	rep.SetASNScoreCap(1000)
@@ -137,76 +134,11 @@ func TestCampaignDetectionPenalizesReputation(t *testing.T) {
 	engine.handleCampaignDetection(detection)
 	after := rep.GetScore(ip, reputation.TypeIP)
 
-	if !(after > before) {
-		t.Fatalf("expected campaign detection to penalize sample IP reputation: before=%.3f after=%.3f", before, after)
+	if after != before {
+		t.Fatalf("observe-only campaign changed sample IP reputation: before=%.3f after=%.3f", before, after)
 	}
 
-	asnBefore := rep.GetScore(detection.SampleASN, reputation.TypeASN)
-	if asnBefore <= 0 {
-		t.Fatalf("expected campaign detection to penalize sample ASN reputation, got %.3f", asnBefore)
-	}
-}
-
-// TestCampaignSeverityMultiplierScalesReputationPenalty verifies that a
-// larger/broader campaign (higher severity) results in a larger reputation
-// penalty than a smaller one just over the detection thresholds, so
-// repeated/larger campaign involvement is reflected proportionally rather
-// than with a flat penalty regardless of scale.
-func TestCampaignSeverityMultiplierScalesReputationPenalty(t *testing.T) {
-	cfg := testCampaignConfig()
-
-	small := baseCampaignDetection()
-	small.SignalCount = cfg.MinSignals
-	small.DestinationIPs = cfg.MinDestIPs
-	small.SourceIPs = cfg.MinDestIPs
-
-	large := baseCampaignDetection()
-	large.SignalCount = cfg.MinSignals * 20
-	large.DestinationIPs = cfg.MinDestIPs * 20
-	large.SourceIPs = cfg.MinDestIPs * 20
-
-	smallSeverity := campaignSeverityMultiplier(small, cfg)
-	largeSeverity := campaignSeverityMultiplier(large, cfg)
-
-	if !(largeSeverity > smallSeverity) {
-		t.Fatalf("expected larger campaign to have higher severity multiplier: small=%.3f large=%.3f", smallSeverity, largeSeverity)
-	}
-
-	// Multiplier must stay bounded even for extreme carpet-bombing breadth.
-	huge := baseCampaignDetection()
-	huge.SignalCount = cfg.MinSignals * 100000
-	huge.SourceIPs = cfg.MinWeakSourceIPs * 100000
-	hugeSeverity := campaignSeverityMultiplier(huge, cfg)
-	if hugeSeverity > 5.0 {
-		t.Fatalf("expected severity multiplier to be capped, got %.3f", hugeSeverity)
-	}
-}
-
-// TestCampaignDetectionReputationDoesNotHotLoopPerSourceIP is a
-// characterization test documenting that campaign reputation penalties are
-// applied once per detection cycle (against the representative sample IP
-// and ASN), not once per contributing source IP - which would be an
-// unbounded hot loop under carpet bombing involving many weak sources. We
-// verify this indirectly: a campaign reporting thousands of source IPs
-// still results in exactly the same bounded number of Penalize/PenalizeASN
-// effects (one score delta each) as a small campaign, not one per source IP.
-func TestCampaignDetectionReputationDoesNotHotLoopPerSourceIP(t *testing.T) {
-	rep := reputation.New(time.Hour, 0.9, 100)
-	rep.SetIPScoreCap(1000)
-	rep.SetASNScoreCap(1000)
-	engine := New(Config{
-		Campaign:   testCampaignConfig(),
-		Reputation: rep,
-	})
-
-	detection := baseCampaignDetection()
-	detection.SourceIPs = 50000 // simulate large carpet-bombing breadth
-
-	start := time.Now()
-	engine.handleCampaignDetection(detection)
-	elapsed := time.Since(start)
-
-	if elapsed > time.Second {
-		t.Fatalf("expected campaign reputation handling to be O(1) regardless of SourceIPs, took %s", elapsed)
+	if score := rep.GetScore(detection.SampleASN, reputation.TypeASN); score != 0 {
+		t.Fatalf("observe-only campaign changed sample ASN reputation: %.3f", score)
 	}
 }

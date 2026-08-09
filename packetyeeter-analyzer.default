@@ -30,8 +30,9 @@ GEOIP_ASN_PATH=/var/lib/GeoIP/GeoLite2-ASN.mmdb
 # on loopback or behind trusted access controls, and enable pprof only briefly.
 # EXTRA_ARGS=-dry-run -inspect-addr 127.0.0.1:9092
 
-# Reputation thresholds
-# EXTRA_ARGS=-reputation-threshold 75
+# Reputation thresholds and score caps (0 = uncapped). Defaults leave headroom
+# above -reputation-threshold while bounding runaway penalty accumulation.
+# EXTRA_ARGS=-reputation-threshold 75 -reputation-ip-score-cap 200 -reputation-ja4-score-cap 200 -reputation-asn-score-cap 500
 
 # Enable verbose logging
 # EXTRA_ARGS=-v
