@@ -64,6 +64,50 @@ func newTestAnalyzer(t *testing.T) *Analyzer {
 	return a
 }
 
+func TestAggregateSnapshotIdentification(t *testing.T) {
+	if isAggregateSnapshot(nil) {
+		t.Fatal("nil signal must not be an aggregate snapshot")
+	}
+	if isAggregateSnapshot(&apiv1.Signal{}) {
+		t.Fatal("signal without metadata must not be an aggregate snapshot")
+	}
+	if !isAggregateSnapshot(&apiv1.Signal{Metadata: map[string]string{"aggregate_snapshot": "true"}}) {
+		t.Fatal("collector aggregate snapshot metadata was not recognized")
+	}
+}
+
+func TestAggregateSnapshotDoesNotTrainConnectionTiming(t *testing.T) {
+	a := newTestAnalyzer(t)
+	a.PatternTracker = patterns.NewPatternTracker(a.AIEngine)
+	aggregateIP := net.ParseIP("192.0.2.20").To4()
+	regularIP := net.ParseIP("192.0.2.21").To4()
+	cs := &collectorStream{stream: newFakeCollectorStream()}
+
+	a.processSignal(&apiv1.Signal{
+		Type:       apiv1.SignalType_SIGNAL_INCOMPLETE_HANDSHAKE,
+		Source:     apiv1.SignalSource_SOURCE_EBPF,
+		Ip:         aggregateIP,
+		Weight:     5,
+		TcpContext: &apiv1.TCPContext{SynCount: 5},
+		Metadata:   map[string]string{"aggregate_snapshot": "true"},
+	}, cs)
+
+	if pattern := a.PatternTracker.GetPattern(aggregateIP); pattern != nil {
+		t.Fatalf("aggregate snapshot trained connection timing: %+v", pattern)
+	}
+
+	a.processSignal(&apiv1.Signal{
+		Type:       apiv1.SignalType_SIGNAL_TCP_METADATA,
+		Source:     apiv1.SignalSource_SOURCE_EBPF,
+		Ip:         regularIP,
+		TcpContext: &apiv1.TCPContext{Ttl: 64, WindowSize: 65535},
+	}, cs)
+
+	if pattern := a.PatternTracker.GetPattern(regularIP); pattern == nil {
+		t.Fatal("ordinary per-connection TCP metadata was not recorded")
+	}
+}
+
 // W2: every stream used to be keyed under the constant "unknown", so a second
 // collector's connect overwrote the first and any disconnect evicted the
 // still-live sibling.
