@@ -192,8 +192,12 @@ func (h *HybridModel) GetMetrics() map[string]interface{} {
 
 // Close releases resources
 func (h *HybridModel) Close() error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	if h.onnxModel != nil {
-		return h.onnxModel.Close()
+		err := h.onnxModel.Close()
+		h.onnxModel = nil
+		return err
 	}
 	return nil
 }

@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"PacketYeeter/pkg/analyzer/ja4db"
 )
 
 // fakeClock lets tests control the passage of time seen by CrawlerVerifier
@@ -35,6 +37,59 @@ func TestCategorizeBotBrowserInfo(t *testing.T) {
 	cat = v.CategorizeBot("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", "", "", "", "", map[SignalType]int{}, map[SignalSource]int{}, VerificationUnknown)
 	if cat != BotCategoryBrowser {
 		t.Fatalf("expected browser category from UA, got %v", cat)
+	}
+}
+
+// fakeJA4Verifier returns a fixed LookupWithTypeResult for CategorizeBot tests.
+type fakeJA4Verifier struct {
+	result ja4db.LookupResult
+	ok     bool
+}
+
+func (f fakeJA4Verifier) IsKnownBot(string) bool { return false }
+func (f fakeJA4Verifier) GetInfo(string) string  { return "" }
+func (f fakeJA4Verifier) Lookup(string) (interface{}, bool) {
+	return nil, false
+}
+func (f fakeJA4Verifier) LookupWithType(string, string) (interface{}, bool) {
+	return nil, false
+}
+func (f fakeJA4Verifier) LookupWithTypeResult(string, string) (ja4db.LookupResult, bool) {
+	return f.result, f.ok
+}
+
+// TestCategorizeBotIgnoresWildcardJA4DBMatches ensures a coarse JA4DB hit is
+// not trusted as browser attribution when CategorizeBot falls back to a DB
+// lookup (for example after service_http intentionally omits ja4_info).
+func TestCategorizeBotIgnoresWildcardJA4DBMatches(t *testing.T) {
+	v := NewCrawlerVerifier(fakeJA4Verifier{
+		ok: true,
+		result: ja4db.LookupResult{
+			Entry:           ja4db.JA4Entry{Application: "Chrome 120 on Windows"},
+			MatchType:       "wildcard_tls",
+			FingerprintType: "ja4",
+		},
+	})
+
+	cat := v.CategorizeBot("", "t13d1516h2_8daaf6152771_ffffffffffff", "", "", "", map[SignalType]int{
+		SignalMissingAcceptLang: 1,
+		SignalNoCookies:         1,
+	}, map[SignalSource]int{}, VerificationUnknown)
+	if cat == BotCategoryBrowser {
+		t.Fatalf("wildcard JA4DB browser collision must not categorize as browser, got %v", cat)
+	}
+
+	vExact := NewCrawlerVerifier(fakeJA4Verifier{
+		ok: true,
+		result: ja4db.LookupResult{
+			Entry:           ja4db.JA4Entry{Application: "Chrome 120 on Windows"},
+			MatchType:       "exact",
+			FingerprintType: "ja4",
+		},
+	})
+	cat = vExact.CategorizeBot("", "t13d1516h2_8daaf6152771_02713d6af862", "", "", "", map[SignalType]int{}, map[SignalSource]int{}, VerificationUnknown)
+	if cat != BotCategoryBrowser {
+		t.Fatalf("exact JA4DB browser match should categorize as browser, got %v", cat)
 	}
 }
 

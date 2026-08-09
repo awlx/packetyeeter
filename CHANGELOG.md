@@ -4,7 +4,10 @@
 
 - Coarse JA4DB wildcard matches and unclassified catalog entries remain
   enrichment-only instead of being emitted as high-severity known-bot signals.
-  Detection signals now require an exact browser or known-bot classification.
+  Detection signals now require an exact known-bot classification. Exact
+  browser matches still reward reputation and short-circuit bot detection
+  without emitting a bot signal. `IsKnownBot`/`GetInfo`/`CategorizeBot` and the
+  JA4H lookup RPC now honor exact-vs-wildcard match types consistently.
 - Observe-only campaign detections no longer mutate the reputation of an
   arbitrary representative source or ASN.
 - `packetyeeter_active_attack_campaigns` now counts campaigns that meet

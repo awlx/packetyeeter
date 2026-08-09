@@ -1114,23 +1114,28 @@ func (a *Analyzer) LookupJA4H(ctx context.Context, req *apiv1.JA4HLookupRequest)
 
 	fp := req.Fingerprint
 
-	// 1. Try exact match from JA4 database first
-	if a.JA4DB.IsKnownBot(fp) {
-		info := a.JA4DB.GetInfo(fp)
+	// Prefer the typed lookup so exact vs wildcard is reported honestly.
+	if res, found := a.JA4DB.LookupWithTypeResult(fp, "ja4h"); found {
+		info := ja4db.FormatEntryInfo(res.Entry)
+		if res.MatchType == "exact" {
+			return &apiv1.JA4HLookupResponse{
+				Found:           true,
+				Application:     info,
+				IsWildcardMatch: false,
+			}, nil
+		}
 		return &apiv1.JA4HLookupResponse{
 			Found:           true,
-			Application:     info,
-			IsWildcardMatch: false,
+			Application:     info + " (probabilistic match)",
+			IsWildcardMatch: true,
 		}, nil
 	}
 
-	// 2. For JA4H fingerprints, try partial matching on headers
-	// JA4H format: "{protocol}_{header_hash}_{cookie_fields_hash}_{cookie_values_hash}"
+	// Compatibility path for callers that still only implement the older
+	// prefix search API.
 	if strings.Count(fp, "_") == 3 {
 		parts := strings.Split(fp, "_")
 		headersPrefix := parts[0] + "_" + parts[1]
-
-		// Search database for entries with matching headers
 		if info, found := a.JA4DB.FindByHeadersPrefix(headersPrefix); found {
 			return &apiv1.JA4HLookupResponse{
 				Found:           true,

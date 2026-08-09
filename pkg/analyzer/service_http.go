@@ -548,7 +548,9 @@ func (a *Analyzer) processHTTPRequest(sig *apiv1.Signal, ip net.IP, asn string, 
 			res, found := a.JA4DB.LookupWithTypeResult(fp, fpType)
 			if found {
 				entry := res.Entry
-				info := a.JA4DB.GetInfo(fp) // format info string for logs/metadata
+				// Format from the lookup result so we never re-query and
+				// accidentally promote a different match type.
+				info := ja4db.FormatEntryInfo(entry)
 				infoLower := strings.ToLower(info)
 				isBrowser := aidetection.IsBrowserInfo(infoLower)
 				exactBrowser := isBrowser && res.MatchType == "exact"
@@ -594,13 +596,16 @@ func (a *Analyzer) processHTTPRequest(sig *apiv1.Signal, ip net.IP, asn string, 
 					}).Info("JA4DB exact match")
 				}
 
-				// Known bot heuristic (same as IsKnownBot)
+				// Known-bot attribution requires an exact catalog hit. Wildcard
+				// keyword collisions are enrichment-only.
 				app := entry.Application + " " + entry.Library + " " + entry.Device
 				isKnownBot := false
-				for _, keyword := range ja4db.BotKeywordsBasic {
-					if strings.Contains(strings.ToLower(app), keyword) {
-						isKnownBot = true
-						break
+				if res.MatchType == "exact" {
+					for _, keyword := range ja4db.BotKeywordsBasic {
+						if strings.Contains(strings.ToLower(app), keyword) {
+							isKnownBot = true
+							break
+						}
 					}
 				}
 

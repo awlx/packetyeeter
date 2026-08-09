@@ -631,42 +631,11 @@ func IsBrowserInfo(infoLower string) bool {
 	return false
 }
 
-// IsKnownBot checks if the fingerprint belongs to a known bot
-func (d *Downloader) IsKnownBot(fingerprint string) bool {
-	entryIface, found := d.Lookup(fingerprint)
-	if !found {
-		return false
-	}
-
-	entry, ok := entryIface.(JA4Entry)
-	if !ok {
-		return false
-	}
-
-	// Consider it a bot if it has bot-related keywords
-	app := entry.Application + " " + entry.Library + " " + entry.Device
-	for _, keyword := range BotKeywordsBasic {
-		if strings.Contains(app, keyword) {
-			metrics.JA4DBKnownBots.Inc()
-			return true
-		}
-	}
-
-	return false
-}
-
-// GetInfo returns information about a fingerprint if found
-func (d *Downloader) GetInfo(fingerprint string) string {
-	entryIface, found := d.Lookup(fingerprint)
-	if !found {
-		return ""
-	}
-
-	entry, ok := entryIface.(JA4Entry)
-	if !ok {
-		return ""
-	}
-
+// FormatEntryInfo builds the human-readable JA4DB entry summary used in logs
+// and metadata. Callers that already have a LookupResult should use this
+// instead of GetInfo so they do not re-query and accidentally promote a
+// different match type.
+func FormatEntryInfo(entry JA4Entry) string {
 	info := entry.Application
 	if entry.Library != "" {
 		info += " (" + entry.Library + ")"
@@ -677,8 +646,41 @@ func (d *Downloader) GetInfo(fingerprint string) string {
 	if entry.Verified {
 		info += " [verified]"
 	}
-
 	return info
+}
+
+// entryLooksLikeKnownBot reports whether a catalog entry is labeled as a bot
+// via application/library/device keywords.
+func entryLooksLikeKnownBot(entry JA4Entry) bool {
+	app := strings.ToLower(entry.Application + " " + entry.Library + " " + entry.Device)
+	for _, keyword := range BotKeywordsBasic {
+		if strings.Contains(app, keyword) {
+			return true
+		}
+	}
+	return false
+}
+
+// IsKnownBot reports whether the fingerprint has an exact JA4DB catalog hit
+// classified as a known bot. Coarse wildcard matches are enrichment-only and
+// must not be treated as bot attribution.
+func (d *Downloader) IsKnownBot(fingerprint string) bool {
+	res, found := d.LookupWithTypeResult(fingerprint, "")
+	if !found || res.MatchType != "exact" || !entryLooksLikeKnownBot(res.Entry) {
+		return false
+	}
+	metrics.JA4DBKnownBots.Inc()
+	return true
+}
+
+// GetInfo returns information about a fingerprint only for exact catalog hits.
+// Wildcard matches remain available via LookupWithTypeResult for enrichment.
+func (d *Downloader) GetInfo(fingerprint string) string {
+	res, found := d.LookupWithTypeResult(fingerprint, "")
+	if !found || res.MatchType != "exact" {
+		return ""
+	}
+	return FormatEntryInfo(res.Entry)
 }
 
 // FindByHeadersPrefix searches for JA4H entries where the first two parts match
