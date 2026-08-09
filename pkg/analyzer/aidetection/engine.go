@@ -1625,16 +1625,6 @@ func (e *Engine) handleCampaignDetection(detection CampaignDetection) {
 	}).Info("Attack campaign observed")
 }
 
-// sampleIPOrEmpty returns the string form of ip, or "" if ip is nil. Used
-// when penalizing an ASN for a campaign that lacks a resolved sample source
-// IP (PenalizeASN uses the IP only for its own active-IP bookkeeping).
-func sampleIPOrEmpty(ip net.IP) string {
-	if ip == nil {
-		return ""
-	}
-	return ip.String()
-}
-
 func addCampaignBaselineMetadata(metadata map[string]interface{}, baseline CampaignBaselineObservation) {
 	if metadata == nil || baseline.ServiceKey == "" {
 		return
