@@ -1,5 +1,72 @@
 # PacketYeeter Changelog
 
+## 2026-08-09 - Sustained-download detection
+
+### Detect slow, patient bulk scrapers
+**Problem**: Detection selected on rate. A client that pulls a very large
+volume slowly, spread across many resources over a long window, never makes
+any individual interval look abusive, so nothing fired. Rate thresholds low
+enough to catch it would blanket legitimate traffic.
+**Solution**: A new detector selects on duration and breadth instead. Two
+independent signals are AND-ed: transferred volume, from a new eBPF TC-egress
+per-client byte counter, and request breadth/shape (resource and section
+fan-out) observed through the existing SPOE agent.
+
+HAProxy cannot supply the byte half of this without stick tables: `bytes_out`
+is per-stream and zeroed by `stream_new`, and keep-alive allocates a new stream
+per request, so it never accumulates. `res.body_size` reports only the
+advertised `Content-Length`, which is meaningless for streamed responses, and
+was deliberately not used as a fallback rather than introduce a second,
+inconsistent byte source. eBPF egress accounting is the only correct source.
+
+Raw paths and hostnames are never retained -- resources and sections are
+identified by FNV-64a hashes with a separator, so `("ab","c")` and `("a","bc")`
+do not collide.
+
+**Enforcement impact**: ships disabled, and enabling detection does not enable
+blocking. `-sustained-enabled` reports only; `-sustained-enforce` is a separate
+opt-in. The collector side is likewise off by default behind
+`-egress-accounting`. Reputation raises the request and byte floors but never
+the resource/section floors, release from a hold is judged on requests and
+breadth rather than bytes (blocking destroys the byte evidence), and the hard
+hold ceiling bounds the cost of a false positive. Allowlisted addresses are
+skipped entirely. Stage it with `-dry-run` and tune against the margins
+reported by `/api/sustained`.
+
+### Analyzer-wide runtime enforcement kill switch
+`POST /api/enforcement/stop` halts every enforcing command while detection and
+reporting continue. It sits at the command-issuing boundary rather than inside
+any one detector, so it covers all of them, and is checked before the dedup
+reservation -- otherwise a suppressed block would mark the address "recently
+blocked" and stay suppressed for the dedup TTL after enforcement resumed.
+One-way by design: resuming requires a config change and a restart.
+
+### Removed: HAProxy peer (stick-table) listener
+Dead code. It blocked on any stick-table update with no volume logic and was
+never wired to anything.
+
+### BREAKING: `-haproxy-port` removed
+The flag backed the listener above. Go's flag parser rejects unknown flags, so
+a collector still passing it exits with status 2, and `Restart=on-failure`
+turns that into a crash loop rather than a clean failure. The package ships a
+corrected unit, but a local systemd drop-in overriding `ExecStart=` shadows it
+and survives the upgrade, so check the resolved configuration before upgrading:
+
+```bash
+systemctl cat packetyeeter-collector | grep -n haproxy-port   # expect no output
+```
+
+`collector-postinstall.sh` performs the same check and names any file still
+passing the flag. It warns rather than editing, since the package cannot safely
+rewrite operator-authored drop-ins.
+
+Validated on Linux 6.8 against live traffic: eBPF loaded and attached, egress
+maps populated per client, signals reached the analyzer attributed to the
+correct address, the byte floor gated as designed, and the kill switch flipped
+both `/api/enforcement` and `packetyeeter_enforcement_stopped`. An older
+analyzer tolerates the new `SIGNAL_EGRESS_VOLUME` without erroring, so a
+collector-first rollout is safe.
+
 ## 2026-07-17 - IPv6 flood detection parity
 
 ### Collector: report IPv6 ICMP/UDP floods
