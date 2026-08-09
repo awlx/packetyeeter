@@ -256,6 +256,10 @@ func mapProtoSignalType(t apiv1.SignalType) aidetection.SignalType {
 	}
 }
 
+func isAggregateSnapshot(sig *apiv1.Signal) bool {
+	return sig != nil && sig.Metadata["aggregate_snapshot"] == "true"
+}
+
 func New(cfg Config) (*Analyzer, error) {
 	if cfg.ReputationMaxEntries == 0 {
 		cfg.ReputationMaxEntries = defaultReputationMaxEntries
@@ -787,7 +791,8 @@ func (a *Analyzer) processSignal(sig *apiv1.Signal, cs *collectorStream) {
 	}
 
 	// Record baseline observation
-	if a.Baseline != nil && asn != "" && asn != "Unknown" && sig.TcpContext != nil {
+	aggregateSnapshot := isAggregateSnapshot(sig)
+	if !aggregateSnapshot && a.Baseline != nil && asn != "" && asn != "Unknown" && sig.TcpContext != nil {
 		obs := baseline.ObservationData{
 			TTL:        uint8(sig.TcpContext.Ttl),
 			WindowSize: uint16(sig.TcpContext.WindowSize),
@@ -797,7 +802,7 @@ func (a *Analyzer) processSignal(sig *apiv1.Signal, cs *collectorStream) {
 	}
 
 	// Record connection pattern
-	if a.PatternTracker != nil && sig.TcpContext != nil {
+	if !aggregateSnapshot && a.PatternTracker != nil && sig.TcpContext != nil {
 		// SIMPLIFIED: the proto TCPContext carries no packet size, dest
 		// port, connection id, or handshake-success field, so the pattern
 		// tracker's packet-size-uniformity, port-scan, and connection-reuse
@@ -816,12 +821,12 @@ func (a *Analyzer) processSignal(sig *apiv1.Signal, cs *collectorStream) {
 	}
 
 	// Process TCP timestamp for clock skew analysis
-	if sig.TcpContext != nil && sig.TcpContext.TcpTimestamp > 0 && a.ClockSkew != nil {
+	if !aggregateSnapshot && sig.TcpContext != nil && sig.TcpContext.TcpTimestamp > 0 && a.ClockSkew != nil {
 		a.ClockSkew.ProcessTimestamp(ip, sig.TcpContext.TcpTimestamp)
 	}
 
 	// Process payload entropy
-	if sig.TcpContext != nil && sig.TcpContext.EntropyScore > 0 && a.Entropy != nil {
+	if !aggregateSnapshot && sig.TcpContext != nil && sig.TcpContext.EntropyScore > 0 && a.Entropy != nil {
 		a.Entropy.ProcessEntropy(ip, uint8(sig.TcpContext.EntropyScore))
 	}
 
