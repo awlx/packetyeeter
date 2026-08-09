@@ -45,14 +45,78 @@ var (
 		Help: "Total TCP-related detections (SYN flood, bad flags, etc.)",
 	})
 
+	// HAProxyBlocks counts blocks originating from the HAProxy/SPOE (layer 7)
+	// side of the pipeline, as opposed to the eBPF packet-path detections
+	// counted by TCPBlocks/UDPBlocks/ICMPBlocks. The metric name predates the
+	// removal of the stick-table peer listener and is kept for dashboard
+	// compatibility.
 	HAProxyBlocks = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "packetyeeter_haproxy_blocks_total",
-		Help: "The total number of IP addresses blocked via HAProxy Peer Protocol",
+		Help: "The total number of IP addresses blocked via HAProxy SPOE/HTTP detections",
 	})
 
 	HTTPDetections = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "packetyeeter_http_detections_total",
 		Help: "Total HTTP/SPOE detections",
+	})
+
+	// Egress volume accounting (eBPF TC egress byte counters). These are the
+	// inputs to sustained-download detection, exported separately from the
+	// detection outcome so an operator can tell "the counters are not being
+	// read" apart from "nothing crossed a threshold".
+	EgressVolumeSignals = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "packetyeeter_egress_volume_signals_total",
+		Help: "Total egress volume signals emitted by the collector",
+	})
+
+	EgressBytesReported = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "packetyeeter_egress_bytes_reported_total",
+		Help: "Total bytes reported to the analyzer by the egress volume readers",
+	})
+
+	// Sustained-download detection. Decisions are labelled by selection path
+	// and by whether they were enforced, so a detect-only deployment can be
+	// tuned from the same series it will later enforce on.
+	SustainedDecisions = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "packetyeeter_sustained_decisions_total",
+		Help: "Sustained-download decisions by selection path and outcome",
+	}, []string{"path", "outcome"})
+
+	SustainedTrackedClients = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "packetyeeter_sustained_tracked_clients",
+		Help: "Clients currently tracked for sustained-download detection",
+	})
+
+	SustainedHeldClients = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "packetyeeter_sustained_held_clients",
+		Help: "Clients kept selected by the enforcement hold rather than a current threshold crossing",
+	})
+
+	// SustainedClientEvictions growing means the window is shared by more
+	// clients than it was sized for, so detection is only being applied to an
+	// arbitrary subset of them. It is a capacity signal, not a detection one.
+	SustainedClientEvictions = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "packetyeeter_sustained_client_evictions_total",
+		Help: "Clients dropped from sustained-download tracking because the client ceiling was reached",
+	})
+
+	// SustainedReputationDeferrals counts clients that cleared the base
+	// thresholds but were held below the reputation-raised ones.
+	SustainedReputationDeferrals = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "packetyeeter_sustained_reputation_deferrals_total",
+		Help: "Sustained-download evaluations deferred because a good-reputation client was under the raised thresholds",
+	})
+
+	// Analyzer-wide runtime enforcement kill switch. Worth alerting on: it is
+	// one-way, so it stays set until the analyzer is restarted.
+	EnforcementStopped = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "packetyeeter_enforcement_stopped",
+		Help: "1 when the analyzer's runtime enforcement kill switch has been pulled",
+	})
+
+	EnforcementSuppressedCommands = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "packetyeeter_enforcement_suppressed_commands_total",
+		Help: "Block commands not issued because the runtime enforcement kill switch is pulled",
 	})
 
 	HTTPFloodBlocks = promauto.NewCounter(prometheus.CounterOpts{

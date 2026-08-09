@@ -11,9 +11,6 @@ ANALYZER_ADDR=127.0.0.1:9090
 # management network unless Prometheus reaches this host over protected links.
 METRICS_ADDR=:2112
 
-# HAProxy peer protocol port
-HAPROXY_PORT=8765
-
 # SPOE agent port
 SPOE_PORT=9876
 
@@ -38,3 +35,10 @@ BLOCK_DURATION=300s
 #
 # Additional collector flags, e.g. -poll-interval 1s or -signal-queue-size 20000
 # EXTRA_ARGS=-poll-interval 1s
+#
+# Egress byte accounting. Off by default: it adds two per-client eBPF maps and
+# a counter update on every egress packet, and it is only useful if the
+# analyzer runs sustained-download detection. Required for that feature's
+# volume path - HAProxy cannot report transferred bytes over SPOE, so without
+# it only the breadth/shape path can fire.
+# EXTRA_ARGS=-egress-accounting -egress-min-bytes 1048576

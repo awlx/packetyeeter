@@ -35,3 +35,25 @@ GEOIP_ASN_PATH=/var/lib/GeoIP/GeoLite2-ASN.mmdb
 
 # Enable verbose logging
 # EXTRA_ARGS=-v
+
+# Runtime enforcement kill switch: POST /api/enforcement/stop on the inspector
+# suppresses every enforcing command from every detector, immediately, without a
+# restart, while leaving detection and reporting running. Unblock/allowlist
+# commands keep flowing. It is one-way - resuming requires a config change and a
+# restart. This is why -inspect-addr should stay reachable to operators but not
+# to the internet.
+
+# Sustained-download detection: catches clients that pull an unusual amount of
+# data, or walk an unusual breadth of resources, over a sliding window. Rate
+# limits cannot see this - a scraper under every per-second limit that sustains
+# it for an hour is invisible to them and obvious over five minutes.
+#
+# Off by default, and enabling detection does not enable blocking. Run it with
+# -sustained-enabled alone first and tune the thresholds against
+# /api/sustained in the inspector, which reports for each client which
+# thresholds it is under and how close it is to them. Add -sustained-enforce
+# only once the would-block set looks right.
+#
+# The volume path additionally needs -egress-accounting on the collectors.
+# EXTRA_ARGS=-sustained-enabled
+# EXTRA_ARGS=-sustained-enabled -sustained-enforce -sustained-min-bytes 5368709120

@@ -550,6 +550,16 @@ func (e *Engine) GetAllowlist() []AllowlistEntry {
 	return e.feedback.GetAllowlist()
 }
 
+// IsAllowlisted reports whether an IP is in the feedback allowlist. Callers
+// outside the engine need this to honor the same operator override the engine
+// applies internally.
+func (e *Engine) IsAllowlisted(ip string) bool {
+	if e.feedback == nil {
+		return false
+	}
+	return e.feedback.IsAllowlisted(ip)
+}
+
 // RemoveFromAllowlist removes an IP from the allowlist
 func (e *Engine) RemoveFromAllowlist(ip string) {
 	if e.feedback != nil {

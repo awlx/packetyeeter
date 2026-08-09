@@ -23,7 +23,7 @@ Default listeners are convenient for labs but should be deliberately bound in pr
 | Analyzer pprof | `-pprof-addr` | `:6060` when enabled | Enable only temporarily for diagnostics and bind securely. |
 | Collector metrics | `-metrics-addr` | `:2112` | Scrape from Prometheus over a trusted network. |
 | Collector management | `-socket` | `/var/run/packetyeeter-collector.sock` | Created with mode `0600` (owner-only); run `yeetctl` as the same user or relax with a group and chmod after start. |
-| HAProxy peer/SPOE | `-haproxy-port`, `-spoe-port` | `8765`, `9876` | Expose only to trusted HAProxy peers. |
+| HAProxy SPOE | `-spoe-port` | `9876` | Expose only to the local HAProxy instance. |
 
 ## systemd hardening notes
 
@@ -47,6 +47,85 @@ The collector is intentionally less restricted because it loads eBPF, attaches X
   detections after upgrading; stage with analyzer `-dry-run` and verify IPv6
   allowlists (health checks, monitoring, upstream proxies) before enforcing.
 - Roll back by re-enabling dry-run or stopping collectors before changing eBPF-related systemd hardening.
+
+## Sustained-download detection rollout
+
+Sustained-download detection selects on duration and breadth rather than rate,
+so its thresholds cannot be inherited from rate-limit tuning. It ships disabled,
+and enabling detection does not enable blocking.
+
+1. Enable the collector inputs. Set `-egress-accounting` on one collector and
+   confirm `packetyeeter_egress_volume_signals_total` and
+   `packetyeeter_egress_bytes_reported_total` are advancing. Without this only
+   the breadth/shape path can ever fire: HAProxy cannot report transferred bytes
+   over SPOE, so eBPF TC egress counters are the only byte source.
+   Raise `-egress-min-bytes` if the signal stream is noisier than expected.
+2. Enable detection only. Start the analyzer with `-sustained-enabled` and
+   without `-sustained-enforce`. Every decision is logged as
+   "detect-only, not blocking" and counted under
+   `packetyeeter_sustained_decisions_total{outcome="would_block"}`.
+3. Tune from the inspector, not from guesswork. `GET /api/sustained` reports,
+   per client, which thresholds it is under (`blockers`) and how close it is to
+   each (`margins`, as a percentage). Sort with `?by=bytes|requests|resources|sections`.
+   Clients sitting at 90-100% on every margin are the ones the thresholds are
+   about to catch; review those before enforcing.
+   - Note the two paths are independent. `path: "shape"` means breadth with no
+     byte floor at all, which is the enumeration case; `path: "volume"` means
+     bulk transfer. If ordinary deep usage (a CI job, a package mirror client)
+     is landing in the shape path, lower
+     `-sustained-max-resources-per-section-percent` rather than raising the
+     resource minimum.
+4. Watch capacity. A growing `packetyeeter_sustained_client_evictions_total`
+   means more clients share the window than `-sustained-max-clients` allows, so
+   detection is being applied to an arbitrary subset. Raise the ceiling before
+   trusting the results.
+5. Enforce on one analyzer. Add `-sustained-enforce`. Expect
+   `packetyeeter_sustained_held_clients` to become nonzero and stay there:
+   blocking removes the byte evidence that selected the client, so the hold is
+   what keeps the block in place. A hold that never drains means blocked clients
+   are not backing off; `-sustained-max-hold-seconds` bounds it regardless.
+6. Keep the analyzer-wide kill switch reachable (see below). It is not specific
+   to this detector, which is the point: if traffic is being blocked that should
+   not be, stopping it should not require identifying the responsible detector
+   first.
+
+Allowlisted IPs are skipped entirely. Verified crawlers are not - they get their
+request and byte floors multiplied by `-sustained-reputation-factor`, so a
+verified crawler that starts mirroring the site is still caught. If a verified
+crawler is being caught legitimately, allowlist it rather than raising the
+factor for everyone.
+
+## Runtime enforcement kill switch
+
+`POST /api/enforcement/stop` on the analyzer's inspector suppresses every
+enforcing command the analyzer would issue - from all detectors - while leaving
+detection, scoring, metrics, and the reporting surfaces running.
+
+```bash
+curl -sS -X POST http://127.0.0.1:9092/api/enforcement/stop \
+  -H 'Content-Type: application/json' \
+  -d '{"reason":"INC-1234 blocking legitimate CI traffic"}'
+
+curl -sS http://127.0.0.1:9092/api/enforcement
+```
+
+- It complements `-dry-run` rather than duplicating it. `-dry-run` is a
+  deployment decision fixed at startup; this is an incident response reachable
+  in seconds, without a restart and without editing a unit file.
+- Relieving commands - unblock and allowlist - keep flowing. The switch is
+  pulled precisely when a block is wrong, so suppressing the commands that undo
+  a block would make the incident worse.
+- It is one-way. Resuming enforcement requires a config change and a restart,
+  which leaves a record of the decision. The state is not persisted, so a
+  restart returns to whatever the deployed configuration says - if you stopped
+  enforcement because a threshold is wrong, fix the threshold before restarting.
+- It is same-origin guarded like every other mutating inspector endpoint, so the
+  inspector must stay on loopback or behind trusted access controls (see
+  "Listener exposure").
+- Alert on `packetyeeter_enforcement_stopped == 1`. Because it survives until a
+  restart, an unnoticed kill switch means the fleet has been silently
+  detect-only, possibly for days. `packetyeeter_enforcement_suppressed_commands_total`
+  shows how much enforcement is being withheld.
 
 ## Modern DDoS runbook
 

@@ -69,6 +69,9 @@ message Signal {
 
   // TLS JA4 (client hello)
   string ja4 = 15;
+
+  // Egress volume context (from the eBPF TC egress byte counters)
+  EgressContext egress_context = 16;
 }
 
 enum SignalType {
@@ -86,6 +89,7 @@ enum SignalType {
   SIGNAL_PORT_SCANNING = 9;
   SIGNAL_INCOMPLETE_HANDSHAKE = 10;
   SIGNAL_TCP_METADATA = 11; // Per-packet TCP metadata (timestamps, entropy)
+  SIGNAL_EGRESS_VOLUME = 12; // Bytes transmitted to a client, from the TC egress counters
   
   // SPOE/HTTP signals
   SIGNAL_HTTP_REQUEST = 20;  // Raw HTTP request from SPOE
@@ -160,6 +164,25 @@ message TCPContext {
   uint32 tcp_timestamp = 9;  // TCP timestamp value (TSval) for clock skew analysis
   uint32 entropy_score = 10; // Payload entropy estimate (0-100)
   uint32 tcp_flags = 11;     // Raw TCP flags byte (SYN=0x02, ACK=0x10, etc.)
+}
+
+// EgressContext carries how many bytes the collector transmitted to a client
+// over one poll interval, measured on the eBPF TC egress path.
+//
+// This exists because HAProxy cannot report transferred bytes over SPOE: the
+// `bytes_out` sample fetch is stream-scoped and zeroed for every new stream,
+// and the on-http-response event fires before the response body is sent, so
+// SPOE only ever sees the advertised Content-Length. Counting on the egress
+// path measures real wire bytes and so covers chunked and streamed responses.
+message EgressContext {
+  // Bytes transmitted to this client since the previous signal.
+  uint64 bytes_delta = 1;
+  // Cumulative kernel counter at the time of sampling. Useful for spotting
+  // counter resets caused by LRU eviction or a collector restart.
+  uint64 bytes_total = 2;
+  // Length of the interval bytes_delta accumulated over, so the analyzer can
+  // derive a rate without assuming the collector's poll interval.
+  double window_seconds = 3;
 }
 
 // Command represents an action for the collector to execute

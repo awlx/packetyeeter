@@ -26,6 +26,8 @@ type Maps struct {
 	PolicyBlocksV6      *ebpf.Map
 	Events              *ebpf.Map    // Perf Event Array
 	Incidents           *ebpf.Map    // Structured incident logging perf event array
+	EgressBytes         *ebpf.Map    // Cumulative egress bytes per IPv4 client
+	EgressBytesV6       *ebpf.Map    // Cumulative egress bytes per IPv6 client
 	AllowedNets         []*net.IPNet // Userspace check
 	DryRun              bool
 }

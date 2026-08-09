@@ -151,6 +151,62 @@ blocking without enabling high-cardinality IP metrics.
 - **ASN baseline**: `packetyeeter_latency_ewma_by_asn_ms`,
   `packetyeeter_asn_*`.
 
+### Runtime enforcement kill switch
+
+- `packetyeeter_enforcement_stopped` (gauge): `1` after `POST
+  /api/enforcement/stop` has been used. This is analyzer-wide - it covers every
+  detector, not one of them. Worth alerting on, because it is one-way and
+  survives until a restart: an unnoticed kill switch means the fleet has been
+  silently detect-only, possibly for days.
+- `packetyeeter_enforcement_suppressed_commands_total` (counter): enforcing
+  commands not issued because of it. Read alongside the gauge to see how much
+  enforcement is being withheld; relieving commands (unblock, allowlist) are not
+  counted here because they are never suppressed.
+
+### Sustained-download metrics
+
+Detection inputs, kept separate from the detection outcome so "the counters are
+not being read" is distinguishable from "nothing crossed a threshold":
+
+- `packetyeeter_egress_volume_signals_total` (counter): egress volume signals
+  emitted by a collector running `-egress-accounting`.
+- `packetyeeter_egress_bytes_reported_total` (counter): bytes those signals
+  carried. Flat while requests are flowing means egress accounting is off, and
+  only the breadth/shape path can fire.
+
+Both are incremented by the collector process, so scrape them from the
+**collector's** `-metrics-addr` (default `:2112`), not the analyzer's. The
+analyzer registers the same names and will report a constant `0` for them.
+
+Detection outcome:
+
+- `packetyeeter_sustained_decisions_total{path,outcome}` (counter). `path` is
+  `volume`, `shape`, `volume+shape`, or `hold`; `outcome` is `would_block` or
+  `blocked`. Because the labels are identical in detect-only and enforcing mode,
+  a deployment can be tuned from the same series it will later enforce on -
+  compare the `would_block` rate before enabling `-sustained-enforce` against
+  the `blocked` rate after.
+- `packetyeeter_sustained_tracked_clients` (gauge).
+- `packetyeeter_sustained_held_clients` (gauge): clients kept selected by the
+  enforcement hold rather than a current threshold crossing. Expected to be
+  nonzero while enforcing, because blocking removes the byte evidence that
+  selected the client. A monotonically growing value means blocked clients are
+  not backing off.
+Capacity and tuning:
+
+- `packetyeeter_sustained_client_evictions_total` (counter) is a **capacity**
+  signal, not a detection one. Growing means more clients share the window than
+  `-sustained-max-clients` allows, so detection is being applied to an arbitrary
+  subset of them. Raise the ceiling before trusting a low decision rate.
+- `packetyeeter_sustained_reputation_deferrals_total` (counter): evaluations
+  where a verified good-reputation client cleared the base thresholds but sat
+  under the reputation-raised ones. A high steady rate means
+  `-sustained-reputation-factor` is doing real work and is worth reviewing
+  against `/api/sustained`.
+
+All labels here are fixed low-cardinality sets. No per-IP series is emitted;
+per-client detail lives on the inspector's `/api/sustained` endpoint instead.
+
 ## Query and panel guidance
 
 - Counters: use `rate()` in Prometheus or

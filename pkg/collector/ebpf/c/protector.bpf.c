@@ -20,6 +20,9 @@
 // evicts the oldest entry instead of failing inserts (E2BIG) once full, which
 // would otherwise blind the userspace signal pipeline to every new scanner.
 #define BADFLAGS_MAP_SIZE 100000
+// Clients tracked for egress byte accounting. LRU, so the coldest client is
+// evicted under high cardinality instead of insertions failing.
+#define EGRESS_MAP_SIZE 200000
 
 // IPv6 extension-header next-header values, and the cap on how many we walk
 // before giving up. A packet's real L4 protocol can hide behind these; without
@@ -264,6 +267,32 @@ struct {
     __type(value, struct bad_flags_info);
 } bad_flags_v6 SEC(".maps");
 
+// Cumulative egress (server -> client) byte counters, keyed by the client
+// address. This is what makes sustained-download/enumeration detection
+// possible without HAProxy stick tables: HAProxy cannot report transferred
+// bytes over SPOE at all, because `bytes_out` is stream-scoped, is zeroed for
+// every new stream, and the on-http-response event fires before the response
+// body is transferred. Counting on the TC egress path instead measures real
+// wire bytes, so chunked and streamed responses are accounted correctly.
+//
+// Values are monotonic and never reset in kernel space; userspace diffs them
+// per poll. LRU so a high-cardinality client population evicts the coldest
+// entry rather than failing inserts once full - an evicted-then-reinserted
+// entry looks like a counter reset to userspace, which is handled there.
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, EGRESS_MAP_SIZE);
+    __type(key, __u32);
+    __type(value, __u64);
+} egress_bytes SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, EGRESS_MAP_SIZE);
+    __type(key, struct in6_addr);
+    __type(value, __u64);
+} egress_bytes_v6 SEC(".maps");
+
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
     __uint(max_entries, 5);
@@ -437,6 +466,42 @@ static __always_inline int emit_allowed(void *budget_map, __u64 now) {
         return 0;
     b->count++;
     return 1;
+}
+
+// CONFIG_KEY_EGRESS_ACCOUNTING is the config_map index userspace sets to enable
+// egress byte accounting. It defaults to 0 (disabled) so the accounting costs
+// nothing but a single array lookup per egress packet until an operator turns
+// it on. Indices 0, 1 and 2 are the ICMP limit, monitor mode and UDP limit.
+#define CONFIG_KEY_EGRESS_ACCOUNTING 3
+
+static __always_inline int egress_accounting_enabled(void) {
+    __u32 key = CONFIG_KEY_EGRESS_ACCOUNTING;
+    __u32 *enabled = bpf_map_lookup_elem(&config_map, &key);
+    return enabled && *enabled;
+}
+
+// account_egress_v4/v6 add this packet's length to the client's cumulative
+// counter. The add is atomic because the same client can be transmitted to from
+// several CPUs concurrently, and a lost update here would silently understate a
+// download. On the first packet the entry does not exist yet, so it is created
+// with this packet's length; a racing creation is resolved by BPF_ANY
+// overwriting with an equal value, which loses at most one packet's bytes.
+static __always_inline void account_egress_v4(__u32 client, __u64 len) {
+    __u64 *total = bpf_map_lookup_elem(&egress_bytes, &client);
+    if (total) {
+        __sync_fetch_and_add(total, len);
+        return;
+    }
+    bpf_map_update_elem(&egress_bytes, &client, &len, BPF_ANY);
+}
+
+static __always_inline void account_egress_v6(struct in6_addr *client, __u64 len) {
+    __u64 *total = bpf_map_lookup_elem(&egress_bytes_v6, client);
+    if (total) {
+        __sync_fetch_and_add(total, len);
+        return;
+    }
+    bpf_map_update_elem(&egress_bytes_v6, client, &len, BPF_ANY);
 }
 
 // emit_incident_v4/v6 record a structured incident (source, reason,
@@ -1185,11 +1250,22 @@ int tc_egress_synack_monitor(struct __sk_buff *skb) {
     struct ethhdr *eth = data;
     if ((void *)(eth + 1) > data_end) return TC_ACT_OK;
 
+    // Looked up once per packet rather than once per address family so the
+    // config_map lookup is not duplicated on both branches.
+    int account = egress_accounting_enabled();
+    __u64 pkt_len = skb->len;
+
     if (eth->h_proto == bpf_htons(ETH_P_IP)) {
         struct iphdr *ip = (void *)(eth + 1);
         if ((void *)(ip + 1) > data_end) return TC_ACT_OK;
 
         if (ip->protocol != IPPROTO_TCP) return TC_ACT_OK;
+
+        // Account before parsing the TCP header: a packet whose header is not
+        // in the linear data still carries payload bytes to the client, and
+        // dropping it from the count would understate exactly the large
+        // segmented transfers this counter exists to measure.
+        if (account) account_egress_v4(ip->daddr, pkt_len);
 
         struct tcphdr *tcp = ipv4_tcp_header(ip, data_end);
         if (!tcp) return TC_ACT_OK;
@@ -1211,6 +1287,8 @@ int tc_egress_synack_monitor(struct __sk_buff *skb) {
         struct ipv6hdr *ip6 = (void *)(eth + 1);
         if ((void *)(ip6 + 1) > data_end) return TC_ACT_OK;
         if (ip6->nexthdr != IPPROTO_TCP) return TC_ACT_OK; 
+
+        if (account) account_egress_v6(&ip6->daddr, pkt_len);
 
         struct tcphdr *tcp = (void *)(ip6 + 1);
         if ((void *)(tcp + 1) > data_end) return TC_ACT_OK;
