@@ -229,7 +229,7 @@
         "x": 0,
         "y": 9
       },
-      "id": 10,
+      "id": 4,
       "panels": [],
       "title": "Attack Intensity",
       "type": "row"
@@ -295,7 +295,7 @@
         "x": 0,
         "y": 10
       },
-      "id": 11,
+      "id": 5,
       "options": {
         "legend": {
           "calcs": [
@@ -389,7 +389,7 @@
         "x": 12,
         "y": 10
       },
-      "id": 12,
+      "id": 6,
       "options": {
         "legend": {
           "calcs": [],
@@ -427,7 +427,7 @@
         "x": 0,
         "y": 18
       },
-      "id": 20,
+      "id": 7,
       "panels": [],
       "title": "Fingerprinting & Advanced Detection",
       "type": "row"
@@ -493,7 +493,7 @@
         "x": 0,
         "y": 19
       },
-      "id": 21,
+      "id": 8,
       "options": {
         "legend": {
           "calcs": [
@@ -593,7 +593,7 @@
         "x": 12,
         "y": 19
       },
-      "id": 22,
+      "id": 9,
       "options": {
         "legend": {
           "calcs": [
@@ -640,7 +640,7 @@
         "x": 0,
         "y": 27
       },
-      "id": 30,
+      "id": 10,
       "panels": [],
       "title": "Bot & AI Detection",
       "type": "row"
@@ -672,7 +672,7 @@
         "x": 0,
         "y": 28
       },
-      "id": 31,
+      "id": 11,
       "options": {
         "legend": {
           "displayMode": "table",
@@ -733,7 +733,7 @@
         "x": 8,
         "y": 28
       },
-      "id": 32,
+      "id": 12,
       "options": {
         "legend": {
           "displayMode": "table",
@@ -796,7 +796,7 @@
         "x": 16,
         "y": 28
       },
-      "id": 33,
+      "id": 13,
       "options": {
         "colorMode": "value",
         "graphMode": "area",
@@ -895,7 +895,7 @@
         "x": 0,
         "y": 36
       },
-      "id": 34,
+      "id": 14,
       "options": {
         "legend": {
           "calcs": [],
@@ -980,7 +980,7 @@
         "x": 12,
         "y": 36
       },
-      "id": 35,
+      "id": 15,
       "options": {
         "legend": {
           "calcs": [
@@ -1068,7 +1068,7 @@
         "x": 0,
         "y": 44
       },
-      "id": 54,
+      "id": 16,
       "options": {
         "legend": {
           "calcs": [
@@ -1159,7 +1159,7 @@
         "x": 12,
         "y": 44
       },
-      "id": 55,
+      "id": 17,
       "options": {
         "legend": {
           "calcs": [
@@ -1278,7 +1278,7 @@
         "x": 0,
         "y": 52
       },
-      "id": 56,
+      "id": 18,
       "options": {
         "legend": {
           "calcs": [
@@ -1371,7 +1371,7 @@
         "x": 12,
         "y": 52
       },
-      "id": 57,
+      "id": 19,
       "options": {
         "legend": {
           "calcs": [
@@ -1439,7 +1439,7 @@
         "x": 0,
         "y": 60
       },
-      "id": 58,
+      "id": 20,
       "options": {
         "colorMode": "value",
         "graphMode": "area",
@@ -1505,7 +1505,7 @@
         "x": 6,
         "y": 60
       },
-      "id": 59,
+      "id": 21,
       "options": {
         "colorMode": "value",
         "graphMode": "area",
@@ -1568,7 +1568,7 @@
         "x": 12,
         "y": 60
       },
-      "id": 60,
+      "id": 22,
       "options": {
         "colorMode": "value",
         "graphMode": "area",
@@ -1614,7 +1614,7 @@
         "x": 0,
         "y": 64
       },
-      "id": 37,
+      "id": 23,
       "panels": [],
       "title": "eBPF Network Pattern Detection",
       "type": "row"
@@ -1678,9 +1678,9 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 45
+        "y": 65
       },
-      "id": 38,
+      "id": 24,
       "options": {
         "legend": {
           "calcs": [
@@ -1784,9 +1784,9 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 45
+        "y": 65
       },
-      "id": 39,
+      "id": 25,
       "options": {
         "legend": {
           "calcs": [
@@ -1865,10 +1865,10 @@
       "gridPos": {
         "h": 8,
         "w": 12,
-        "x": 12,
-        "y": 53
+        "x": 0,
+        "y": 73
       },
-      "id": 43,
+      "id": 26,
       "options": {
         "colorMode": "value",
         "graphMode": "area",
@@ -1924,9 +1924,9 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 61
+        "y": 81
       },
-      "id": 44,
+      "id": 27,
       "panels": [],
       "title": "Advanced Bot Detection (ML & Analysis)",
       "type": "row"
@@ -1971,9 +1971,9 @@
         "h": 8,
         "w": 6,
         "x": 0,
-        "y": 62
+        "y": 82
       },
-      "id": 45,
+      "id": 28,
       "options": {
         "colorMode": "value",
         "graphMode": "area",
@@ -2048,10 +2048,10 @@
       "gridPos": {
         "h": 8,
         "w": 12,
-        "x": 0,
-        "y": 70
+        "x": 6,
+        "y": 82
       },
-      "id": 48,
+      "id": 29,
       "options": {
         "barRadius": 0,
         "barWidth": 0.97,
@@ -2079,7 +2079,7 @@
       "targets": [
         {
           "alias": "Baseline Anomalies",
-          "query": "SELECT non_negative_derivative(max(\"counter\"), 1s) FROM \"packetyeeter_baseline_anomalies\" WHERE $timeFilter GROUP BY time($__interval) fill(null)",
+          "query": "SELECT non_negative_derivative(max(\"counter\"), 1s) FROM \"packetyeeter_baseline_anomalies_total\" WHERE $timeFilter GROUP BY time($__interval) fill(null)",
           "rawQuery": true,
           "refId": "A"
         },
@@ -2137,10 +2137,10 @@
       "gridPos": {
         "h": 8,
         "w": 12,
-        "x": 12,
-        "y": 70
+        "x": 0,
+        "y": 90
       },
-      "id": 49,
+      "id": 30,
       "options": {
         "colorMode": "background",
         "graphMode": "area",
@@ -2158,7 +2158,7 @@
       "targets": [
         {
           "alias": "Calibrated ASNs",
-          "query": "SELECT last(\"calibrated_asns\") FROM \"packetyeeter_baseline_stats\" WHERE $timeFilter",
+          "query": "SELECT last(\"gauge\") FROM \"packetyeeter_baseline_calibrated_asns\" WHERE $timeFilter",
           "rawQuery": true,
           "refId": "A"
         },
@@ -2176,7 +2176,7 @@
         },
         {
           "alias": "ML Model Predictions",
-          "query": "SELECT last(\"sample_count\") FROM \"packetyeeter_ml_stats\" WHERE $timeFilter",
+          "query": "SELECT max(\"counter\") FROM \"packetyeeter_ml_predictions_total\" WHERE $timeFilter",
           "rawQuery": true,
           "refId": "D"
         }
@@ -2190,9 +2190,9 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 78
+        "y": 98
       },
-      "id": 40,
+      "id": 31,
       "panels": [],
       "title": "GeoIP & ASN Intelligence",
       "type": "row"
@@ -2222,9 +2222,9 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 45
+        "y": 99
       },
-      "id": 41,
+      "id": 32,
       "options": {
         "legend": {
           "displayMode": "table",
@@ -2283,9 +2283,9 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 62
+        "y": 99
       },
-      "id": 42,
+      "id": 33,
       "options": {
         "legend": {
           "displayMode": "table",
@@ -2325,9 +2325,9 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 70
+        "y": 107
       },
-      "id": 61,
+      "id": 34,
       "panels": [],
       "title": "Threat Intelligence (Shodan)",
       "type": "row"
@@ -2367,9 +2367,9 @@
         "h": 6,
         "w": 6,
         "x": 0,
-        "y": 71
+        "y": 108
       },
-      "id": 62,
+      "id": 35,
       "options": {
         "colorMode": "value",
         "graphMode": "area",
@@ -2465,10 +2465,10 @@
       "gridPos": {
         "h": 6,
         "w": 12,
-        "x": 0,
-        "y": 77
+        "x": 6,
+        "y": 108
       },
-      "id": 66,
+      "id": 36,
       "options": {
         "legend": {
           "calcs": [
@@ -2533,10 +2533,10 @@
       "gridPos": {
         "h": 6,
         "w": 6,
-        "x": 6,
-        "y": 71
+        "x": 18,
+        "y": 108
       },
-      "id": 63,
+      "id": 37,
       "options": {
         "colorMode": "value",
         "graphMode": "area",
@@ -2626,10 +2626,10 @@
       "gridPos": {
         "h": 6,
         "w": 12,
-        "x": 12,
-        "y": 71
+        "x": 0,
+        "y": 114
       },
-      "id": 64,
+      "id": 38,
       "options": {
         "legend": {
           "calcs": [
@@ -2739,9 +2739,9 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 77
+        "y": 114
       },
-      "id": 66,
+      "id": 39,
       "options": {
         "legend": {
           "calcs": [
@@ -2780,9 +2780,9 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 85
+        "y": 122
       },
-      "id": 50,
+      "id": 40,
       "panels": [],
       "title": "Reputation & Adaptive Baselines",
       "type": "row"
@@ -2846,9 +2846,9 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 94
+        "y": 123
       },
-      "id": 53,
+      "id": 41,
       "options": {
         "legend": {
           "calcs": [
@@ -2881,9 +2881,9 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 102
+        "y": 131
       },
-      "id": 100,
+      "id": 42,
       "panels": [],
       "title": "HTTP Path Entropy",
       "type": "row"
@@ -2947,9 +2947,9 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 103
+        "y": 132
       },
-      "id": 101,
+      "id": 43,
       "options": {
         "legend": {
           "calcs": [
@@ -3033,9 +3033,9 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 103
+        "y": 132
       },
-      "id": 102,
+      "id": 44,
       "options": {
         "cellHeight": "sm",
         "showHeader": true,
@@ -3083,9 +3083,9 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 111
+        "y": 140
       },
-      "id": 103,
+      "id": 45,
       "panels": [],
       "title": "HTTP Flood & DDoS",
       "type": "row"
@@ -3149,9 +3149,9 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 112
+        "y": 141
       },
-      "id": 104,
+      "id": 46,
       "options": {
         "legend": {
           "calcs": [
@@ -3230,9 +3230,9 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 120
+        "y": 141
       },
-      "id": 107,
+      "id": 47,
       "options": {
         "cellHeight": "sm",
         "showHeader": true,
@@ -3322,9 +3322,9 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 112
+        "y": 141
       },
-      "id": 106,
+      "id": 48,
       "options": {
         "legend": {
           "calcs": [
@@ -3410,9 +3410,9 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 120
+        "y": 149
       },
-      "id": 108,
+      "id": 49,
       "options": {
         "legend": {
           "calcs": [
@@ -3445,9 +3445,9 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 128
+        "y": 157
       },
-      "id": 110,
+      "id": 50,
       "panels": [],
       "title": "AI Crawler Detection",
       "type": "row"
@@ -3511,9 +3511,9 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 129
+        "y": 158
       },
-      "id": 111,
+      "id": 51,
       "options": {
         "legend": {
           "calcs": [
@@ -3546,9 +3546,9 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 137
+        "y": 166
       },
-      "id": 112,
+      "id": 52,
       "panels": [],
       "title": "ASN Abuse Ratios",
       "type": "row"
@@ -3559,9 +3559,9 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 145
+        "y": 167
       },
-      "id": 115,
+      "id": 53,
       "panels": [],
       "title": "Engine State",
       "type": "row"
@@ -3604,9 +3604,9 @@
         "h": 4,
         "w": 6,
         "x": 0,
-        "y": 146
+        "y": 168
       },
-      "id": 116,
+      "id": 54,
       "options": {
         "colorMode": "value",
         "graphMode": "area",
@@ -3690,10 +3690,10 @@
       "gridPos": {
         "h": 8,
         "w": 12,
-        "x": 0,
-        "y": 138
+        "x": 6,
+        "y": 168
       },
-      "id": 113,
+      "id": 55,
       "options": {
         "legend": {
           "calcs": [
@@ -3780,10 +3780,10 @@
       "gridPos": {
         "h": 8,
         "w": 12,
-        "x": 12,
-        "y": 138
+        "x": 0,
+        "y": 176
       },
-      "id": 114,
+      "id": 56,
       "options": {
         "cellHeight": "sm",
         "showHeader": true,
@@ -3833,8 +3833,9 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 146
-      }
+        "y": 184
+      },
+      "id": 57
     },
     {
       "type": "stat",
@@ -3847,7 +3848,7 @@
         "h": 4,
         "w": 6,
         "x": 0,
-        "y": 147
+        "y": 185
       },
       "targets": [
         {
@@ -3870,7 +3871,8 @@
         },
         "orientation": "horizontal",
         "colorMode": "value"
-      }
+      },
+      "id": 58
     },
     {
       "type": "timeseries",
@@ -3883,7 +3885,7 @@
         "h": 6,
         "w": 12,
         "x": 6,
-        "y": 147
+        "y": 185
       },
       "targets": [
         {
@@ -3891,7 +3893,8 @@
           "rawQuery": true,
           "refId": "A"
         }
-      ]
+      ],
+      "id": 59
     },
     {
       "type": "timeseries",
@@ -3904,7 +3907,7 @@
         "h": 6,
         "w": 12,
         "x": 0,
-        "y": 153
+        "y": 191
       },
       "targets": [
         {
@@ -3925,7 +3928,8 @@
           "refId": "C",
           "alias": "uniform"
         }
-      ]
+      ],
+      "id": 60
     },
     {
       "type": "stat",
@@ -3938,7 +3942,7 @@
         "h": 4,
         "w": 6,
         "x": 12,
-        "y": 153
+        "y": 191
       },
       "targets": [
         {
@@ -3956,7 +3960,8 @@
         },
         "orientation": "horizontal",
         "colorMode": "value"
-      }
+      },
+      "id": 61
     },
     {
       "type": "timeseries",
@@ -3968,8 +3973,8 @@
       "gridPos": {
         "h": 6,
         "w": 12,
-        "x": 18,
-        "y": 153
+        "x": 0,
+        "y": 197
       },
       "targets": [
         {
@@ -3977,7 +3982,8 @@
           "rawQuery": true,
           "refId": "A"
         }
-      ]
+      ],
+      "id": 62
     },
     {
       "type": "timeseries",
@@ -3989,8 +3995,8 @@
       "gridPos": {
         "h": 6,
         "w": 12,
-        "x": 0,
-        "y": 159
+        "x": 12,
+        "y": 197
       },
       "targets": [
         {
@@ -4005,7 +4011,8 @@
           "refId": "B",
           "alias": "drops/sec"
         }
-      ]
+      ],
+      "id": 63
     },
     {
       "type": "table",
@@ -4017,8 +4024,8 @@
       "gridPos": {
         "h": 6,
         "w": 12,
-        "x": 12,
-        "y": 159
+        "x": 0,
+        "y": 203
       },
       "targets": [
         {
@@ -4041,7 +4048,8 @@
             }
           }
         }
-      ]
+      ],
+      "id": 64
     },
     {
       "type": "table",
@@ -4054,7 +4062,7 @@
         "h": 6,
         "w": 12,
         "x": 12,
-        "y": 165
+        "y": 203
       },
       "targets": [
         {
@@ -4077,7 +4085,8 @@
             }
           }
         }
-      ]
+      ],
+      "id": 65
     },
     {
       "type": "stat",
@@ -4090,7 +4099,7 @@
         "h": 4,
         "w": 6,
         "x": 0,
-        "y": 171
+        "y": 209
       },
       "targets": [
         {
@@ -4118,7 +4127,8 @@
         },
         "orientation": "horizontal",
         "colorMode": "value"
-      }
+      },
+      "id": 66
     },
     {
       "type": "row",
@@ -4128,9 +4138,9 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 180
+        "y": 213
       },
-      "id": 200
+      "id": 67
     },
     {
       "type": "text",
@@ -4139,12 +4149,13 @@
         "h": 6,
         "w": 12,
         "x": 0,
-        "y": 181
+        "y": 214
       },
       "options": {
         "content": "## AI Decision Flow\n- Signals aggregated -> confidence computed -> compare to threshold.\n- Default threshold: **0.7** (configurable via --ai-confidence-threshold).\n- If **dry_run=true** => log only.\n- If confidence < threshold => no block, counted as below_threshold.\n- Reasons include top signals and confidence vs threshold.\n- See action breakdown and confidence buckets to understand outcomes.",
         "mode": "markdown"
-      }
+      },
+      "id": 68
     },
     {
       "type": "stat",
@@ -4157,7 +4168,7 @@
         "h": 3,
         "w": 6,
         "x": 12,
-        "y": 181
+        "y": 214
       },
       "targets": [
         {
@@ -4175,7 +4186,8 @@
         },
         "orientation": "horizontal",
         "colorMode": "value"
-      }
+      },
+      "id": 69
     },
     {
       "type": "piechart",
@@ -4188,7 +4200,7 @@
         "h": 6,
         "w": 6,
         "x": 18,
-        "y": 181
+        "y": 214
       },
       "targets": [
         {
@@ -4204,7 +4216,8 @@
           "placement": "right",
           "showLegend": true
         }
-      }
+      },
+      "id": 70
     },
     {
       "type": "timeseries",
@@ -4217,7 +4230,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 187
+        "y": 220
       },
       "targets": [
         {
@@ -4237,7 +4250,8 @@
           "mode": "multi",
           "sort": "desc"
         }
-      }
+      },
+      "id": 71
     },
     {
       "type": "timeseries",
@@ -4250,7 +4264,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 187
+        "y": 220
       },
       "targets": [
         {
@@ -4270,7 +4284,8 @@
           "mode": "multi",
           "sort": "desc"
         }
-      }
+      },
+      "id": 72
     },
     {
       "type": "row",
@@ -4280,9 +4295,10 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 195
+        "y": 228
       },
-      "panels": []
+      "panels": [],
+      "id": 73
     },
     {
       "type": "timeseries",
@@ -4295,7 +4311,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 196
+        "y": 229
       },
       "targets": [
         {
@@ -4311,7 +4327,8 @@
           "placement": "right",
           "showLegend": true
         }
-      }
+      },
+      "id": 74
     },
     {
       "type": "timeseries",
@@ -4324,7 +4341,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 196
+        "y": 229
       },
       "targets": [
         {
@@ -4346,7 +4363,8 @@
           "placement": "right",
           "showLegend": true
         }
-      }
+      },
+      "id": 75
     },
     {
       "type": "timeseries",
@@ -4359,7 +4377,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 204
+        "y": 237
       },
       "targets": [
         {
@@ -4381,7 +4399,8 @@
           "placement": "right",
           "showLegend": true
         }
-      }
+      },
+      "id": 76
     },
     {
       "type": "piechart",
@@ -4394,7 +4413,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 204
+        "y": 237
       },
       "targets": [
         {
@@ -4410,7 +4429,3459 @@
           "placement": "right",
           "showLegend": true
         }
-      }
+      },
+      "id": 77
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 245
+      },
+      "panels": [],
+      "title": "Sustained Download Detection",
+      "type": "row",
+      "id": 78
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "description": "Outcome of sustained-download evaluations. Compare the would_block series against block before enabling -sustained-enforce.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 246
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "last",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "alias": "$tag_path / $tag_outcome",
+          "query": "SELECT non_negative_derivative(max(\"counter\"), 1s) FROM \"packetyeeter_sustained_decisions_total\" WHERE $timeFilter GROUP BY time($__interval), \"path\", \"outcome\" fill(null)",
+          "rawQuery": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Sustained Decisions (rate/sec)",
+      "type": "timeseries",
+      "id": 79
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "description": "Evictions rising means -sustained-max-clients is too small and detection is only seeing an arbitrary subset of clients.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 12,
+        "y": 246
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name"
+      },
+      "targets": [
+        {
+          "alias": "Tracked Clients",
+          "query": "SELECT last(\"gauge\") FROM \"packetyeeter_sustained_tracked_clients\" WHERE $timeFilter",
+          "rawQuery": true,
+          "refId": "A"
+        },
+        {
+          "alias": "Held Clients",
+          "query": "SELECT last(\"gauge\") FROM \"packetyeeter_sustained_held_clients\" WHERE $timeFilter",
+          "rawQuery": true,
+          "refId": "B"
+        },
+        {
+          "alias": "Evictions",
+          "query": "SELECT max(\"counter\") FROM \"packetyeeter_sustained_client_evictions_total\" WHERE $timeFilter",
+          "rawQuery": true,
+          "refId": "C"
+        },
+        {
+          "alias": "Reputation Deferrals",
+          "query": "SELECT max(\"counter\") FROM \"packetyeeter_sustained_reputation_deferrals_total\" WHERE $timeFilter",
+          "rawQuery": true,
+          "refId": "D"
+        }
+      ],
+      "title": "Sustained Tracker State",
+      "type": "stat",
+      "id": 80
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 254
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "last",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "alias": "Client Evictions",
+          "query": "SELECT non_negative_derivative(max(\"counter\"), 1s) FROM \"packetyeeter_sustained_client_evictions_total\" WHERE $timeFilter GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "A"
+        },
+        {
+          "alias": "Reputation Deferrals",
+          "query": "SELECT non_negative_derivative(max(\"counter\"), 1s) FROM \"packetyeeter_sustained_reputation_deferrals_total\" WHERE $timeFilter GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "B"
+        }
+      ],
+      "title": "Sustained Capacity Pressure (rate/sec)",
+      "type": "timeseries",
+      "id": 81
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 254
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "last",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "alias": "Signals/sec",
+          "query": "SELECT non_negative_derivative(max(\"counter\"), 1s) FROM \"packetyeeter_egress_volume_signals_total\" WHERE $timeFilter GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Egress Volume Signals",
+      "type": "timeseries",
+      "id": 82
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "Bps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 262
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "last",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "alias": "Bytes/sec",
+          "query": "SELECT non_negative_derivative(max(\"counter\"), 1s) FROM \"packetyeeter_egress_bytes_reported_total\" WHERE $timeFilter GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Reported Egress Throughput",
+      "type": "timeseries",
+      "id": 83
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 270
+      },
+      "panels": [],
+      "title": "Enforcement Safety",
+      "type": "row",
+      "id": 84
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "description": "1 means block commands are being suppressed globally.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "options": {
+                "0": {
+                  "color": "green",
+                  "index": 0,
+                  "text": "Enforcing"
+                },
+                "1": {
+                  "color": "red",
+                  "index": 1,
+                  "text": "STOPPED"
+                }
+              },
+              "type": "value"
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 0,
+        "y": 271
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name"
+      },
+      "targets": [
+        {
+          "alias": "Enforcement Stopped",
+          "query": "SELECT last(\"gauge\") FROM \"packetyeeter_enforcement_stopped\" WHERE $timeFilter",
+          "rawQuery": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Enforcement Kill-Switch",
+      "type": "stat",
+      "id": 85
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 9,
+        "x": 6,
+        "y": 271
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "last",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "alias": "Suppressed",
+          "query": "SELECT non_negative_derivative(max(\"counter\"), 1s) FROM \"packetyeeter_enforcement_suppressed_commands_total\" WHERE $timeFilter GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Suppressed Enforcement Commands (rate/sec)",
+      "type": "timeseries",
+      "id": 86
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 9,
+        "x": 15,
+        "y": 271
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "last",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "alias": "$tag_reason",
+          "query": "SELECT non_negative_derivative(max(\"counter\"), 1s) FROM \"packetyeeter_kernel_incidents_total\" WHERE $timeFilter GROUP BY time($__interval), \"reason\" fill(null)",
+          "rawQuery": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Kernel Incidents (rate/sec)",
+      "type": "timeseries",
+      "id": 87
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 279
+      },
+      "panels": [],
+      "title": "Pipeline Backpressure",
+      "type": "row",
+      "id": 88
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "description": "Sustained non-zero depth means the analyzer is falling behind.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 280
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "last",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "alias": "AI Engine",
+          "query": "SELECT max(\"gauge\") FROM \"packetyeeter_ai_engine_queue_depth\" WHERE $timeFilter GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "A"
+        },
+        {
+          "alias": "Collector Signals",
+          "query": "SELECT max(\"gauge\") FROM \"packetyeeter_collector_signal_queue_depth\" WHERE $timeFilter GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "B"
+        },
+        {
+          "alias": "Threat Intel Enrich",
+          "query": "SELECT max(\"gauge\") FROM \"packetyeeter_threat_intel_enrich_queue_depth\" WHERE $timeFilter GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "C"
+        }
+      ],
+      "title": "Queue Depth",
+      "type": "timeseries",
+      "id": 89
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "description": "Any drop means detection input was discarded.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 280
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "last",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "alias": "AI Engine",
+          "query": "SELECT non_negative_derivative(max(\"counter\"), 1s) FROM \"packetyeeter_ai_engine_queue_drops_total\" WHERE $timeFilter GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "A"
+        },
+        {
+          "alias": "Collector Signals",
+          "query": "SELECT non_negative_derivative(max(\"counter\"), 1s) FROM \"packetyeeter_collector_signal_queue_drops_total\" WHERE $timeFilter GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "B"
+        },
+        {
+          "alias": "Threat Intel Enrich",
+          "query": "SELECT non_negative_derivative(max(\"counter\"), 1s) FROM \"packetyeeter_threat_intel_enrich_queue_drops_total\" WHERE $timeFilter GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "C"
+        }
+      ],
+      "title": "Queue Drops (rate/sec)",
+      "type": "timeseries",
+      "id": 90
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "description": "A single hot shard indicates uneven sharding, not global overload.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 288
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "last",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "alias": "shard $tag_shard",
+          "query": "SELECT max(\"gauge\") FROM \"packetyeeter_ai_engine_queue_depth_by_shard\" WHERE $timeFilter GROUP BY time($__interval), \"shard\" fill(null)",
+          "rawQuery": true,
+          "refId": "A"
+        }
+      ],
+      "title": "AI Engine Queue Depth by Shard",
+      "type": "timeseries",
+      "id": 91
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 288
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "last",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "alias": "shard $tag_shard",
+          "query": "SELECT non_negative_derivative(max(\"counter\"), 1s) FROM \"packetyeeter_ai_engine_queue_drops_by_shard_total\" WHERE $timeFilter GROUP BY time($__interval), \"shard\" fill(null)",
+          "rawQuery": true,
+          "refId": "A"
+        }
+      ],
+      "title": "AI Engine Queue Drops by Shard (rate/sec)",
+      "type": "timeseries",
+      "id": 92
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 296
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "last",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "alias": "Overall",
+          "query": "SELECT non_negative_derivative(max(\"sum\"), 1s) / non_negative_derivative(max(\"count\"), 1s) FROM \"packetyeeter_ai_signal_processing_latency_seconds\" WHERE $timeFilter GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "A"
+        },
+        {
+          "alias": "shard $tag_shard",
+          "query": "SELECT non_negative_derivative(max(\"sum\"), 1s) / non_negative_derivative(max(\"count\"), 1s) FROM \"packetyeeter_ai_signal_processing_latency_by_shard_seconds\" WHERE $timeFilter GROUP BY time($__interval), \"shard\" fill(null)",
+          "rawQuery": true,
+          "refId": "B"
+        }
+      ],
+      "title": "AI Signal Processing Latency (avg)",
+      "type": "timeseries",
+      "id": 93
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 296
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "last",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "alias": "$tag_type",
+          "query": "SELECT non_negative_derivative(max(\"counter\"), 1s) FROM \"packetyeeter_ai_engine_signal_ingress_by_type_total\" WHERE $timeFilter GROUP BY time($__interval), \"type\" fill(null)",
+          "rawQuery": true,
+          "refId": "A"
+        }
+      ],
+      "title": "AI Engine Signal Ingress by Type (rate/sec)",
+      "type": "timeseries",
+      "id": 94
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 304
+      },
+      "panels": [],
+      "title": "Attack Campaigns & Carpet Bombing",
+      "type": "row",
+      "id": 95
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 305
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "last",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "alias": "$tag_vector / $tag_reason",
+          "query": "SELECT non_negative_derivative(max(\"counter\"), 1s) FROM \"packetyeeter_attack_campaign_detections_total\" WHERE $timeFilter GROUP BY time($__interval), \"vector\", \"reason\" fill(null)",
+          "rawQuery": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Campaign Observations by Vector (rate/sec)",
+      "type": "timeseries",
+      "id": 96
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 5
+              },
+              {
+                "color": "orange",
+                "value": 20
+              },
+              {
+                "color": "red",
+                "value": 50
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 12,
+        "y": 305
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name"
+      },
+      "targets": [
+        {
+          "alias": "Active Campaigns",
+          "query": "SELECT last(\"gauge\") FROM \"packetyeeter_active_attack_campaigns\" WHERE $timeFilter",
+          "rawQuery": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Active Attack Campaigns",
+      "type": "stat",
+      "id": 97
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 313
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "last",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "alias": "$tag_vector / $tag_reason",
+          "query": "SELECT non_negative_derivative(max(\"counter\"), 1s) FROM \"packetyeeter_carpet_bombing_detections_total\" WHERE $timeFilter GROUP BY time($__interval), \"vector\", \"reason\" fill(null)",
+          "rawQuery": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Carpet-Bombing Observations (rate/sec)",
+      "type": "timeseries",
+      "id": 98
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 313
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "last",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "alias": "$tag_vector/$tag_protocol/$tag_dst_port_bucket",
+          "query": "SELECT max(\"gauge\") FROM \"packetyeeter_campaign_baseline_rate\" WHERE $timeFilter GROUP BY time($__interval), \"vector\", \"protocol\", \"dst_port_bucket\" fill(null)",
+          "rawQuery": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Campaign Baseline Rate by Service Key",
+      "type": "timeseries",
+      "id": 99
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "description": "enough_samples=false is warmup context, not attack evidence.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 321
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "last",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "alias": "$tag_vector/$tag_protocol (enough_samples=$tag_enough_samples)",
+          "query": "SELECT non_negative_derivative(max(\"sum\"), 1s) / non_negative_derivative(max(\"count\"), 1s) FROM \"packetyeeter_campaign_baseline_multiplier\" WHERE $timeFilter GROUP BY time($__interval), \"vector\", \"protocol\", \"enough_samples\" fill(null)",
+          "rawQuery": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Campaign Baseline Multiplier (avg)",
+      "type": "timeseries",
+      "id": 100
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 329
+      },
+      "panels": [],
+      "title": "Clock Skew & Payload Entropy",
+      "type": "row",
+      "id": 101
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 330
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "last",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "alias": "Observations",
+          "query": "SELECT non_negative_derivative(max(\"counter\"), 1s) FROM \"packetyeeter_clock_skew_observations_total\" WHERE $timeFilter GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "A"
+        },
+        {
+          "alias": "Profile Changes",
+          "query": "SELECT non_negative_derivative(max(\"counter\"), 1s) FROM \"packetyeeter_clock_skew_changes_total\" WHERE $timeFilter GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "B"
+        },
+        {
+          "alias": "Profile Resets",
+          "query": "SELECT non_negative_derivative(max(\"counter\"), 1s) FROM \"packetyeeter_clock_skew_resets_total\" WHERE $timeFilter GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "C"
+        }
+      ],
+      "title": "Clock Skew Activity (rate/sec)",
+      "type": "timeseries",
+      "id": 102
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "description": "Aggregated across clients; per-IP detail is intentionally omitted. Only populated when the analyzer runs with -enable-high-cardinality-metrics.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 330
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "last",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "alias": "Mean Skew",
+          "query": "SELECT non_negative_derivative(max(\"sum\"), 1s) / non_negative_derivative(max(\"count\"), 1s) FROM \"packetyeeter_clock_skew_ppm\" WHERE $timeFilter GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Observed Clock Skew (avg ppm)",
+      "type": "timeseries",
+      "id": 103
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "description": "Aggregated across clients; per-IP detail is intentionally omitted. Only populated when the analyzer runs with -enable-high-cardinality-metrics.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 338
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "last",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "alias": "Mean Entropy",
+          "query": "SELECT non_negative_derivative(max(\"sum\"), 1s) / non_negative_derivative(max(\"count\"), 1s) FROM \"packetyeeter_payload_entropy_bits\" WHERE $timeFilter GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Payload Entropy (avg bits)",
+      "type": "timeseries",
+      "id": 104
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 338
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "last",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "alias": "$tag_pattern",
+          "query": "SELECT non_negative_derivative(max(\"counter\"), 1s) FROM \"packetyeeter_bot_behavioral_patterns_total\" WHERE $timeFilter GROUP BY time($__interval), \"pattern\" fill(null)",
+          "rawQuery": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Bot Behavioral Patterns (rate/sec)",
+      "type": "timeseries",
+      "id": 105
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 346
+      },
+      "panels": [],
+      "title": "ML & AI Engine Health",
+      "type": "row",
+      "id": 106
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 347
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "last",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "alias": "AI Detections",
+          "query": "SELECT non_negative_derivative(max(\"counter\"), 1s) FROM \"packetyeeter_ai_detections_total\" WHERE $timeFilter GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "A"
+        },
+        {
+          "alias": "ML Bot Detections",
+          "query": "SELECT non_negative_derivative(max(\"counter\"), 1s) FROM \"packetyeeter_ml_bot_detections_total\" WHERE $timeFilter GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "B"
+        },
+        {
+          "alias": "Burst Detections",
+          "query": "SELECT non_negative_derivative(max(\"counter\"), 1s) FROM \"packetyeeter_burst_detections_total\" WHERE $timeFilter GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "C"
+        }
+      ],
+      "title": "AI / ML Detection Rate (per second)",
+      "type": "timeseries",
+      "id": 107
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 0.7
+              },
+              {
+                "color": "green",
+                "value": 0.9
+              }
+            ]
+          },
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 12,
+        "y": 347
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name"
+      },
+      "targets": [
+        {
+          "alias": "Accuracy",
+          "query": "SELECT last(\"gauge\") FROM \"packetyeeter_ml_model_accuracy\" WHERE $timeFilter",
+          "rawQuery": true,
+          "refId": "A"
+        }
+      ],
+      "title": "ML Model Accuracy",
+      "type": "stat",
+      "id": 108
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 355
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "last",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "alias": "$tag_category",
+          "query": "SELECT non_negative_derivative(max(\"sum\"), 1s) / non_negative_derivative(max(\"count\"), 1s) FROM \"packetyeeter_ml_confidence_by_category\" WHERE $timeFilter GROUP BY time($__interval), \"category\" fill(null)",
+          "rawQuery": true,
+          "refId": "A"
+        }
+      ],
+      "title": "ML Confidence by Category (avg)",
+      "type": "timeseries",
+      "id": 109
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "description": "Tracked-state size per engine component; growth without decay is a leak signal.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 355
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "last",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "alias": "$tag_component",
+          "query": "SELECT max(\"gauge\") FROM \"packetyeeter_ai_state_entries\" WHERE $timeFilter GROUP BY time($__interval), \"component\" fill(null)",
+          "rawQuery": true,
+          "refId": "A"
+        }
+      ],
+      "title": "AI Engine State Entries",
+      "type": "timeseries",
+      "id": 110
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "description": "Series count only. Per-IP detail is available on the analyzer inspector, not in the shared dashboard. Only populated when the analyzer runs with -enable-high-cardinality-metrics.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 0,
+        "y": 363
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name"
+      },
+      "targets": [
+        {
+          "alias": "Recent Detections",
+          "query": "SELECT count(\"gauge\") FROM \"packetyeeter_ai_recent_detections\" WHERE $timeFilter",
+          "rawQuery": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Recent AI Detections",
+      "type": "stat",
+      "id": 111
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "description": "The per-IP series is summed so no address is rendered; JA4H is a fingerprint, not an identifier. Only populated when the analyzer runs with -enable-high-cardinality-metrics.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 9,
+        "x": 6,
+        "y": 363
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "last",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "alias": "All IPs (summed)",
+          "query": "SELECT sum(\"rate\") FROM (SELECT non_negative_derivative(max(\"counter\"), 1s) AS \"rate\" FROM \"packetyeeter_ai_detections_by_ip_total\" WHERE $timeFilter GROUP BY time($__interval), \"ip\" fill(null)) GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "A"
+        },
+        {
+          "alias": "JA4H $tag_ja4h",
+          "query": "SELECT non_negative_derivative(max(\"counter\"), 1s) FROM \"packetyeeter_ai_detections_by_ja4h_total\" WHERE $timeFilter GROUP BY time($__interval), \"ja4h\" fill(null)",
+          "rawQuery": true,
+          "refId": "B"
+        }
+      ],
+      "title": "AI Detections by Fingerprint (rate/sec)",
+      "type": "timeseries",
+      "id": 112
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "description": "Only populated when the analyzer runs with -enable-high-cardinality-metrics.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 9,
+        "x": 15,
+        "y": 363
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "last",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "alias": "$tag_ja4h",
+          "query": "SELECT max(\"gauge\") FROM \"packetyeeter_ai_signal_ewma_by_ja4h\" WHERE $timeFilter GROUP BY time($__interval), \"ja4h\" fill(null)",
+          "rawQuery": true,
+          "refId": "A"
+        }
+      ],
+      "title": "AI Signal EWMA by JA4H",
+      "type": "timeseries",
+      "id": 113
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 371
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "last",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "alias": "$tag_asn $tag_org",
+          "query": "SELECT non_negative_derivative(max(\"counter\"), 1s) FROM \"packetyeeter_ai_signals_by_asn_total\" WHERE $timeFilter GROUP BY time($__interval), \"asn\", \"org\" fill(null)",
+          "rawQuery": true,
+          "refId": "A"
+        }
+      ],
+      "title": "AI Signals by ASN (rate/sec)",
+      "type": "timeseries",
+      "id": 114
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 371
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "last",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "alias": "Observations/sec",
+          "query": "SELECT non_negative_derivative(max(\"counter\"), 1s) FROM \"packetyeeter_baseline_observations_total\" WHERE $timeFilter GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "A"
+        },
+        {
+          "alias": "Mean z-score ($tag_metric)",
+          "query": "SELECT non_negative_derivative(max(\"sum\"), 1s) / non_negative_derivative(max(\"count\"), 1s) FROM \"packetyeeter_baseline_anomaly_zscore\" WHERE $timeFilter GROUP BY time($__interval), \"metric\" fill(null)",
+          "rawQuery": true,
+          "refId": "B"
+        }
+      ],
+      "title": "Adaptive Baseline Observations & Anomaly Z-Score",
+      "type": "timeseries",
+      "id": 115
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 379
+      },
+      "panels": [],
+      "title": "Protocol Rates, SPOE & Reputation",
+      "type": "row",
+      "id": 116
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "pps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 380
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "last",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "alias": "UDP",
+          "query": "SELECT max(\"gauge\") FROM \"packetyeeter_udp_total_rate_pps\" WHERE $timeFilter GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "A"
+        },
+        {
+          "alias": "ICMP",
+          "query": "SELECT max(\"gauge\") FROM \"packetyeeter_icmp_total_rate_pps\" WHERE $timeFilter GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "B"
+        }
+      ],
+      "title": "Aggregate Protocol Rate (pps)",
+      "type": "timeseries",
+      "id": 117
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 380
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "last",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "alias": "Reports/sec",
+          "query": "SELECT non_negative_derivative(max(\"counter\"), 1s) FROM \"packetyeeter_spoe_reports_total\" WHERE $timeFilter GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "A"
+        },
+        {
+          "alias": "Processing avg (s)",
+          "query": "SELECT non_negative_derivative(max(\"sum\"), 1s) / non_negative_derivative(max(\"count\"), 1s) FROM \"packetyeeter_spoe_processing_seconds\" WHERE $timeFilter GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "B"
+        },
+        {
+          "alias": "Handler avg (s)",
+          "query": "SELECT non_negative_derivative(max(\"sum\"), 1s) / non_negative_derivative(max(\"count\"), 1s) FROM \"packetyeeter_spoe_handler_seconds\" WHERE $timeFilter GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "C"
+        }
+      ],
+      "title": "SPOE Throughput & Latency",
+      "type": "timeseries",
+      "id": 118
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "description": "Grouped by fingerprint and match type only; user-agent strings are not broken out. UA hits require -enable-high-cardinality-metrics.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 388
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "last",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "alias": "Misses",
+          "query": "SELECT non_negative_derivative(max(\"counter\"), 1s) FROM \"packetyeeter_ja4db_misses_total\" WHERE $timeFilter GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "A"
+        },
+        {
+          "alias": "UA hits $tag_type/$tag_match_type",
+          "query": "SELECT non_negative_derivative(max(\"counter\"), 1s) FROM \"packetyeeter_ja4db_user_agent_hits_total\" WHERE $timeFilter GROUP BY time($__interval), \"type\", \"match_type\" fill(null)",
+          "rawQuery": true,
+          "refId": "B"
+        }
+      ],
+      "title": "JA4DB Lookup Outcomes (rate/sec)",
+      "type": "timeseries",
+      "id": 119
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "description": "Scores are averaged per entity type; the per-entity key label is never rendered. Score series require -enable-high-cardinality-metrics.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 388
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "last",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "alias": "Entries ($tag_type)",
+          "query": "SELECT max(\"gauge\") FROM \"packetyeeter_reputation_entries_total\" WHERE $timeFilter GROUP BY time($__interval), \"type\" fill(null)",
+          "rawQuery": true,
+          "refId": "A"
+        },
+        {
+          "alias": "Mean Score ($tag_type)",
+          "query": "SELECT mean(\"gauge\") FROM \"packetyeeter_reputation_score\" WHERE $timeFilter GROUP BY time($__interval), \"type\" fill(null)",
+          "rawQuery": true,
+          "refId": "B"
+        }
+      ],
+      "title": "Reputation Store",
+      "type": "timeseries",
+      "id": 120
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 396
+      },
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "alias": "lag_ms",
+          "query": "SELECT last(\"gauge\") as \"lag_ms\" FROM \"packetyeeter_proxy_lag_ewma_by_asn_ms\" WHERE $timeFilter GROUP BY \"asn\", \"org\"",
+          "rawQuery": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Proxy Lag EWMA by ASN (ms)",
+      "type": "table",
+      "id": 121
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 396
+      },
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "alias": "avg_seconds",
+          "query": "SELECT last(\"sum\") / last(\"count\") as \"avg_seconds\" FROM \"packetyeeter_latency_by_asn_seconds\" WHERE $timeFilter GROUP BY \"asn\", \"org\"",
+          "rawQuery": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Request Latency by ASN (seconds)",
+      "type": "table",
+      "id": 122
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "description": "Series count only. packetyeeter_threat_intel_info carries per-IP labels and is intentionally not broken out here. Only populated when the analyzer runs with -enable-high-cardinality-metrics.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 0,
+        "y": 404
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name"
+      },
+      "targets": [
+        {
+          "alias": "Enriched IPs",
+          "query": "SELECT count(\"gauge\") FROM \"packetyeeter_threat_intel_info\" WHERE $timeFilter",
+          "rawQuery": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Threat Intel Enriched IPs",
+      "type": "stat",
+      "id": 123
     }
   ],
   "refresh": "1m",
@@ -4447,5 +7918,5 @@
   "timezone": "browser",
   "title": "PacketYeeter",
   "uid": "packetyeeter-main",
-  "version": 1
+  "version": 2
 }
