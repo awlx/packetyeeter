@@ -23,6 +23,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/sirupsen/logrus"
+	"golang.org/x/sys/unix"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/keepalive"
@@ -836,10 +837,48 @@ func avgRTTNanos(totalRTT int64, rttCount int) int64 {
 	return totalRTT / int64(rttCount)
 }
 
+const pendingHandshakeTimeout = 3 * time.Second
+
+func monotonicNowNS() (uint64, error) {
+	var ts unix.Timespec
+	if err := unix.ClockGettime(unix.CLOCK_MONOTONIC, &ts); err != nil {
+		return 0, err
+	}
+	if ts.Sec < 0 || ts.Nsec < 0 {
+		return 0, fmt.Errorf("invalid monotonic timestamp: %d.%09d", ts.Sec, ts.Nsec)
+	}
+	return uint64(ts.Sec)*uint64(time.Second) + uint64(ts.Nsec), nil
+}
+
+func pendingHandshakeExpired(nowNS, beginNS uint64) bool {
+	if beginNS == 0 || nowNS < beginNS {
+		return false
+	}
+	return nowNS-beginNS >= uint64(pendingHandshakeTimeout)
+}
+
+func pendingHandshakeRate(count int, interval time.Duration) float64 {
+	if count <= 0 {
+		return 0
+	}
+	if interval <= 0 {
+		interval = time.Second
+	}
+	return float64(count) / interval.Seconds()
+}
+
 // sendPendingHandshakes sends incomplete TCP handshakes to analyzer
-// Aggregates by source IP to avoid flooding the analyzer
+// once they have remained incomplete for pendingHandshakeTimeout. Consumed
+// entries are deleted so map polling cannot turn one missed final ACK into a
+// fresh signal every second.
 func (c *Collector) sendPendingHandshakes() {
 	if c.Maps == nil || c.Maps.PendingHandshakes == nil {
+		return
+	}
+
+	nowNS, err := monotonicNowNS()
+	if err != nil {
+		c.Logger.WithError(err).Error("Failed to read monotonic clock for pending handshakes")
 		return
 	}
 
@@ -850,29 +889,55 @@ func (c *Collector) sendPendingHandshakes() {
 		totalRTT int64
 		ports    map[uint16]bool
 	}
+	type pendingIPv4 struct {
+		key ebpf.TcpSessionKey
+		val ebpf.HandshakeStatusGeneric
+	}
+	type pendingIPv6 struct {
+		key ebpf.TcpSessionKeyV6
+		val ebpf.HandshakeStatusGeneric
+	}
 	ipv4Stats := make(map[uint32]*ipStats)
 	const maxBatchSize = 1000 // Limit signals per poll to prevent overwhelming analyzer
+	expiredIPv4 := make([]pendingIPv4, 0)
+	selectedIPv4 := make(map[uint32]struct{})
 
 	var key ebpf.TcpSessionKey
 	var val ebpf.HandshakeStatusGeneric
 
 	iter := c.Maps.PendingHandshakes.Iterate()
 	for iter.Next(&key, &val) {
-		stats, ok := ipv4Stats[key.Saddr]
-		if !ok {
-			// Stop aggregating if we hit batch size limit
-			if len(ipv4Stats) >= maxBatchSize {
-				break
+		if !pendingHandshakeExpired(nowNS, val.BeginTime) {
+			continue
+		}
+		if _, ok := selectedIPv4[key.Saddr]; !ok {
+			if len(selectedIPv4) >= maxBatchSize {
+				continue
 			}
+			selectedIPv4[key.Saddr] = struct{}{}
+		}
+		expiredIPv4 = append(expiredIPv4, pendingIPv4{key: key, val: val})
+	}
+	if err := iter.Err(); err != nil {
+		c.Logger.WithError(err).Warn("Failed to iterate IPv4 pending handshakes")
+	}
+
+	for _, pending := range expiredIPv4 {
+		if err := c.Maps.PendingHandshakes.Delete(&pending.key); err != nil {
+			c.Logger.WithError(err).Debug("Failed to consume expired IPv4 pending handshake")
+			continue
+		}
+		stats, ok := ipv4Stats[pending.key.Saddr]
+		if !ok {
 			stats = &ipStats{ports: make(map[uint16]bool)}
-			ipv4Stats[key.Saddr] = stats
+			ipv4Stats[pending.key.Saddr] = stats
 		}
 		stats.count++
-		if rtt, ok := handshakeRTTNanos(val.SynAckTime, val.BeginTime); ok {
+		if rtt, ok := handshakeRTTNanos(pending.val.SynAckTime, pending.val.BeginTime); ok {
 			stats.totalRTT += rtt
 			stats.rttCount++
 		}
-		stats.ports[key.Dport] = true
+		stats.ports[pending.key.Dport] = true
 	}
 
 	// Send aggregated signals (one per IP)
@@ -891,11 +956,11 @@ func (c *Collector) sendPendingHandshakes() {
 			asn, org = c.GeoIP.Lookup(ipAddr)
 		}
 
-		pollSec := c.Config.PollInterval.Seconds()
-		if pollSec == 0 {
-			pollSec = 1
+		observationWindow := c.Config.PollInterval
+		if observationWindow <= 0 {
+			observationWindow = time.Second
 		}
-		weight := float64(stats.count) / pollSec // pps approximation
+		weight := pendingHandshakeRate(stats.count, observationWindow)
 		if weight > 50000 {
 			weight = 50000
 		}
@@ -913,8 +978,11 @@ func (c *Collector) sendPendingHandshakes() {
 				HandshakeRttNs: avgRTTNanos(stats.totalRTT, stats.rttCount), // Average RTT over completed handshakes
 			},
 			Metadata: map[string]string{
-				"pending_count": fmt.Sprintf("%d", stats.count),
-				"unique_ports":  fmt.Sprintf("%d", len(stats.ports)),
+				"aggregate_snapshot": "true",
+				"handshake_timeout":  pendingHandshakeTimeout.String(),
+				"observation_window": observationWindow.String(),
+				"pending_count":      fmt.Sprintf("%d", stats.count),
+				"unique_ports":       fmt.Sprintf("%d", len(stats.ports)),
 			},
 		}
 
@@ -932,26 +1000,45 @@ func (c *Collector) sendPendingHandshakes() {
 
 	type ipv6Key [16]byte
 	ipv6Stats := make(map[ipv6Key]*ipStats)
+	expiredIPv6 := make([]pendingIPv6, 0)
+	selectedIPv6 := make(map[ipv6Key]struct{})
 
 	var key6 ebpf.TcpSessionKeyV6
 	iter6 := c.Maps.PendingHandshakesV6.Iterate()
 	for iter6.Next(&key6, &val) {
+		if !pendingHandshakeExpired(nowNS, val.BeginTime) {
+			continue
+		}
 		k := ipv6Key(key6.Saddr)
+		if _, ok := selectedIPv6[k]; !ok {
+			if len(selectedIPv6) >= maxBatchSize {
+				continue
+			}
+			selectedIPv6[k] = struct{}{}
+		}
+		expiredIPv6 = append(expiredIPv6, pendingIPv6{key: key6, val: val})
+	}
+	if err := iter6.Err(); err != nil {
+		c.Logger.WithError(err).Warn("Failed to iterate IPv6 pending handshakes")
+	}
+
+	for _, pending := range expiredIPv6 {
+		if err := c.Maps.PendingHandshakesV6.Delete(&pending.key); err != nil {
+			c.Logger.WithError(err).Debug("Failed to consume expired IPv6 pending handshake")
+			continue
+		}
+		k := ipv6Key(pending.key.Saddr)
 		stats, ok := ipv6Stats[k]
 		if !ok {
-			// Stop aggregating if we hit batch size limit
-			if len(ipv6Stats) >= maxBatchSize {
-				break
-			}
 			stats = &ipStats{ports: make(map[uint16]bool)}
 			ipv6Stats[k] = stats
 		}
 		stats.count++
-		if rtt, ok := handshakeRTTNanos(val.SynAckTime, val.BeginTime); ok {
+		if rtt, ok := handshakeRTTNanos(pending.val.SynAckTime, pending.val.BeginTime); ok {
 			stats.totalRTT += rtt
 			stats.rttCount++
 		}
-		stats.ports[key6.Dport] = true
+		stats.ports[pending.key.Dport] = true
 	}
 
 	for saddr, stats := range ipv6Stats {
@@ -967,14 +1054,13 @@ func (c *Collector) sendPendingHandshakes() {
 			asn, org = c.GeoIP.Lookup(ipAddr)
 		}
 
-		// Normalize identically to the v4 branch: convey a pps rate clamped
-		// to 50000, not a raw per-poll count (which scales with PollInterval
-		// and is unbounded), so v4 and v6 handshake weights are comparable.
-		pollSec := c.Config.PollInterval.Seconds()
-		if pollSec == 0 {
-			pollSec = 1
+		// Normalize identically to the v4 branch so v4 and v6 handshake
+		// weights are comparable.
+		observationWindow := c.Config.PollInterval
+		if observationWindow <= 0 {
+			observationWindow = time.Second
 		}
-		weight := float64(stats.count) / pollSec
+		weight := pendingHandshakeRate(stats.count, observationWindow)
 		if weight > 50000 {
 			weight = 50000
 		}
@@ -992,8 +1078,11 @@ func (c *Collector) sendPendingHandshakes() {
 				HandshakeRttNs: avgRTTNanos(stats.totalRTT, stats.rttCount),
 			},
 			Metadata: map[string]string{
-				"pending_count": fmt.Sprintf("%d", stats.count),
-				"unique_ports":  fmt.Sprintf("%d", len(stats.ports)),
+				"aggregate_snapshot": "true",
+				"handshake_timeout":  pendingHandshakeTimeout.String(),
+				"observation_window": observationWindow.String(),
+				"pending_count":      fmt.Sprintf("%d", stats.count),
+				"unique_ports":       fmt.Sprintf("%d", len(stats.ports)),
 			},
 		}
 
