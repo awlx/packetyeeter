@@ -6,6 +6,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sirupsen/logrus"
+
 	"PacketYeeter/pkg/analyzer/aidetection"
 	"PacketYeeter/pkg/metrics"
 )
@@ -13,6 +15,32 @@ import (
 // Contains performs a case-insensitive substring check
 func Contains(s, substr string) bool {
 	return strings.Contains(strings.ToLower(s), strings.ToLower(substr))
+}
+
+// mlConfirmsReputationBlock applies the optional ML veto consistently across
+// transport and HTTP reputation blocks. A nil model means the operator did not
+// configure -ml-model, so reputation remains the sole decision source.
+func (a *Analyzer) mlConfirmsReputationBlock(ip net.IP, asn string, score float64, source string) bool {
+	if a.MLModel == nil {
+		return true
+	}
+
+	prediction := a.MLModel.Predict(a.extractMLFeatures(ip, asn, score))
+	confirmed := prediction.IsBot && prediction.Confidence >= a.Config.AIConfidenceThreshold
+	if !confirmed {
+		metrics.MLBlocksOverridden.Inc()
+	}
+
+	logrus.WithFields(logrus.Fields{
+		"ip":            ip.String(),
+		"reputation":    score,
+		"ml_confidence": prediction.Confidence,
+		"ml_category":   prediction.Category,
+		"ml_tier":       prediction.ModelTier,
+		"source":        source,
+	}).Debug("ML reputation-block decision")
+
+	return confirmed
 }
 
 // blockedMu guards blockedIPs and blockedASNs: trackBlocked runs concurrently
@@ -80,6 +108,10 @@ func (a *Analyzer) extractMLFeatures(ip net.IP, asn string, reputationScore floa
 		SignalRate:      0,
 		ReputationScore: reputationScore,
 		HasASN:          asn != "" && asn != "Unknown",
+		// HybridModel's pattern-checker contract carries the ASN in this
+		// legacy field; keep the direct reputation gate consistent with the
+		// AI engine's feature extraction.
+		GeoCountry: asn,
 	}
 
 	// Get pattern data if available. Use the narrow summary accessor rather

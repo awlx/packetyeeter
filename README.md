@@ -327,7 +327,7 @@ sudo ./packetyeeter-collector -i eth0 -analyzer-addr 127.0.0.1:9090
 | `-reputation-max-entries` | `500000` | Max tracked reputation entries. |
 | `-reputation-max-age` | `24h` | Max age before a reputation entry is evicted. |
 | `-reputation-asn-max-hosts` | `5000` | Max tracked hosts per ASN. |
-| `-ai-confidence-threshold` | `0.7` | Minimum AI confidence to flag a bot/scraper. Also the bar the ML model must clear to confirm a reputation-threshold block when `-ml-model` is set. |
+| `-ai-confidence-threshold` | `0.7` | Minimum AI confidence in `(0,1]` to flag a bot/scraper. Also the bar the ML model must clear to confirm a reputation-threshold block when `-ml-model` is set. |
 | `-ai-workers` | `16` | AI detection worker pool size. |
 | `-ai-queue-size` | `10000` | AI detection queue size. |
 | `-max-collectors` | `1024` | Maximum concurrent collector streams. Bounds fan-out and goroutines on the unauthenticated signal plane. |
@@ -337,7 +337,7 @@ sudo ./packetyeeter-collector -i eth0 -analyzer-addr 127.0.0.1:9090
 | `-ddos-min-total` | `1500` | Min total events for a DDoS categorization. |
 | `-ddos-require-highfreq` | `true` | Require high-frequency traffic for DDoS categorization. |
 | `-disable-ddos-category` | `false` | Disable the DDoS categorization path. |
-| `-enable-high-cardinality-metrics` | `false` | Emit per-IP / per-JA4H high-cardinality metrics. |
+| `-enable-high-cardinality-metrics` | `false` | Emit per-IP, per-JA4H, and exact-ASN/org high-cardinality metrics. |
 | `-enable-pprof` | `false` | Enable the pprof HTTP server. |
 | `-pprof-addr` | `:6060` | pprof listen address. |
 | `-sustained-enabled` | `false` | Enable sustained-download detection (measurement only; see `-sustained-enforce`). |

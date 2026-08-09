@@ -234,10 +234,13 @@ func (m *ONNXModel) Train(features aidetection.MLFeatures, isBot bool) error {
 
 // Close releases model resources
 func (m *ONNXModel) Close() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.session != nil {
 		if err := m.session.Destroy(); err != nil {
 			return fmt.Errorf("failed to destroy ONNX session: %w", err)
 		}
+		m.session = nil
 	}
 	return nil
 }
@@ -569,6 +572,12 @@ func loadONNXModelInternal(modelPath string, threshold float64) (*ONNXModel, err
 	if session == nil {
 		return nil, fmt.Errorf("failed to create ONNX session")
 	}
+	keepSession := false
+	defer func() {
+		if !keepSession {
+			_ = session.Destroy()
+		}
+	}()
 
 	// Try to auto-detect feature count by testing inference with different sizes
 	nFeatures := 41 // Default fallback
@@ -647,11 +656,13 @@ func loadONNXModelInternal(modelPath string, threshold float64) (*ONNXModel, err
 		return nil, fmt.Errorf("ONNX model expects %d features, but only 41, 116, and 126 have a defined feature layout in this build (see docs/advanced_features.md); refusing to load to avoid feeding misaligned features into enforcement", nFeatures)
 	}
 
-	return &ONNXModel{
+	model := &ONNXModel{
 		modelPath:   modelPath,
 		session:     session,
 		nFeatures:   nFeatures,
 		threshold:   threshold,
 		outputNames: outputNames,
-	}, nil
+	}
+	keepSession = true
+	return model, nil
 }

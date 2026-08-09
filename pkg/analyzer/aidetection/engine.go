@@ -868,9 +868,7 @@ func (e *Engine) markASNActive(asn, org, ipStr string, now time.Time) {
 	if active > 0 {
 		ratio = float64(abusive) / float64(active)
 	}
-	metrics.ASNActiveIPs.WithLabelValues(asn, org).Set(float64(active))
-	metrics.ASNAbusiveIPs.WithLabelValues(asn, org).Set(float64(abusive))
-	metrics.ASNAbuseRatio.WithLabelValues(asn, org).Set(ratio)
+	metrics.SetASNActivity(asn, org, active, abusive, ratio)
 }
 
 func (e *Engine) markASNAbusive(asn, org string, ip net.IP) {
@@ -908,9 +906,7 @@ func (e *Engine) markASNAbusive(asn, org string, ip net.IP) {
 	if active > 0 {
 		ratio = float64(abusive) / float64(active)
 	}
-	metrics.ASNActiveIPs.WithLabelValues(asn, org).Set(float64(active))
-	metrics.ASNAbusiveIPs.WithLabelValues(asn, org).Set(float64(abusive))
-	metrics.ASNAbuseRatio.WithLabelValues(asn, org).Set(ratio)
+	metrics.SetASNActivity(asn, org, active, abusive, ratio)
 }
 
 func (e *Engine) getASNRatio(asn string) float64 {
@@ -965,9 +961,7 @@ func (e *Engine) cleanupASNMaps() {
 		if org == "" {
 			org = "Unknown"
 		}
-		metrics.ASNActiveIPs.WithLabelValues(asn, org).Set(float64(active))
-		metrics.ASNAbusiveIPs.WithLabelValues(asn, org).Set(float64(abusive))
-		metrics.ASNAbuseRatio.WithLabelValues(asn, org).Set(ratio)
+		metrics.SetASNActivity(asn, org, active, abusive, ratio)
 	}
 }
 
@@ -1337,7 +1331,7 @@ func (e *Engine) processSignal(signal Signal, windowSignals map[string][]Signal,
 	if orgTag == "" {
 		orgTag = "Unknown"
 	}
-	metrics.AISignalsByASN.WithLabelValues(asnTag, orgTag, string(signal.Type)).Inc()
+	metrics.IncAISignalForASN(asnTag, orgTag, string(signal.Type))
 	// Track active IPs per ASN for proportional scaling
 	e.markASNActive(asnTag, orgTag, ipStr, now)
 
@@ -2616,8 +2610,7 @@ func (e *Engine) handleDetection(key string, signals []Signal, ewmaBaseline, con
 	if orgTag == "" {
 		orgTag = "Unknown"
 	}
-	metrics.AIDetectionsByASN.WithLabelValues(asnTag, orgTag).Inc()
-	metrics.AISignalEWMAByASN.WithLabelValues(asnTag, orgTag).Set(ewmaBaseline)
+	metrics.ObserveAIDetectionForASN(asnTag, orgTag, ewmaBaseline)
 
 	if event.JA4H != "" && metrics.IsHighCardinalityEnabled() {
 		metrics.AIDetectionsByJA4H.WithLabelValues(event.JA4H).Inc()

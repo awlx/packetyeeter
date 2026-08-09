@@ -1,43 +1,49 @@
 # PacketYeeter Changelog
 
-## 2026-08-09 - ML block gate no longer vetoes every reputation block
+## 2026-08-09 - Honor optional ML enforcement configuration
 
-### An unconfigured ML model was silently blocking all enforcement
-**Problem**: The reputation-threshold block path was gated on
-`a.MLModel != nil`, but `a.MLModel` was constructed unconditionally at startup
-regardless of `-ml-model`. `NewModelManager()` hardcodes `enabled: true` with an
-untrained `SimpleThresholdModel`, so deployments that never opted into ML still
-had every reputation block vetoed by it. That instance is also never trained --
-the only `Train()` call sites target the separate AI-engine model -- so
-`sampleCount` stayed below `minSamples` forever and prediction always came from
-a pristine fallback.
-
-Compounding this, the statistical model could not return `IsBot: true` for *any*
-input: `signalRateWeight` (0.15) and `diversityWeight` (0.10) were declared and
-initialized but never referenced in `Predict()`, stranding 25% of the weight
-mass and capping achievable confidence at 0.61 -- below the 0.65 `botThreshold`.
-The gate then compared against a hardcoded `0.7` rather than the operator's
-`-ai-confidence-threshold`.
-
-Observed in production: 853k `packetyeeter_ml_blocks_overridden_total` across
-two analyzers with zero confirmations, and ~50 warn-level log lines per second.
+**Problem**: The direct reputation-block path always constructed a separate,
+untrained statistical `ModelManager`, even when `-ml-model` was unset. That
+made an unconfigured model veto reputation blocks. When `-ml-model` was set,
+the configured ONNX model was loaded only into the AI engine; the separate
+reputation gate still used the statistical model, and its model watcher could
+not reload the ONNX model it did not own.
 
 **Solution**:
-- `a.MLModel` is only constructed when `-ml-model` is set. Without it the gate
-  stays out of the decision path entirely.
-- `Predict()` applies all eight declared weights, which now sum to 1.0. A
-  maximally hostile entity scores 0.936 (was 0.61).
-- `calculateBehavioralScore` reads `ReputationScore` on its real scale and
-  polarity. It previously tested `ReputationScore < 0.3` against a raw,
-  unbounded engine score where higher means worse, so the branch was dead for
-  every entity the gate actually sees.
-- The gate uses `-ai-confidence-threshold` instead of a hardcoded constant.
-- The two per-signal rejection logs dropped from warn to debug;
-  `packetyeeter_ml_blocks_overridden_total` remains the aggregate signal.
+- Without `-ml-model`, reputation-threshold blocks are no longer ML-gated.
+- With `-ml-model`, one validated `HybridModel` is shared by the AI engine and
+  reputation gate. A configured model that cannot load now fails analyzer
+  startup instead of silently substituting an untrained heuristic.
+- Model reloads update that shared model, and shutdown releases its ONNX
+  resources.
+- The reputation gate uses the resolved `-ai-confidence-threshold`, including
+  the documented 0.7 default, and treats equality as meeting the threshold.
+- Per-request model decisions are debug-level; the
+  `packetyeeter_ml_blocks_overridden_total` counter remains the aggregate
+  signal.
+- The statistical fallback no longer treats a pristine raw reputation score
+  as suspicious. Reputation is already blended separately against the
+  configured ban threshold by the detection engine.
 
-Operators running with `-ml-model` unset were effectively in monitor mode for
-reputation-based blocking regardless of `-dry-run`. Review thresholds and stage
-the rollout before lifting `-dry-run`.
+The built-in statistical model's scoring was deliberately left unchanged:
+changing enforcement calibration requires representative labeled traffic, not
+synthetic maximum-score tests.
+
+## 2026-08-09 - Bound default metric cardinality
+
+Exact ASN/organization metric families are now gated by
+`-enable-high-cardinality-metrics`, matching the existing per-IP and
+fingerprint metrics. They previously emitted thousands of persistent series
+even with the flag disabled because organization names are free-text labels and
+every observed ASN created multiple series. Aggregate counters and histograms
+remain enabled by default.
+
+## 2026-08-09 - Surface perf-ring telemetry loss
+
+Collector perf readers now count and warn on kernel-reported lost samples via
+`packetyeeter_perf_lost_samples_total{reader="tcp_metadata|incidents"}`.
+Previously `perf.Record.LostSamples` was ignored, making overload look like a
+clean absence of detections.
 
 ## 2026-08-09 - Sustained-download detection
 

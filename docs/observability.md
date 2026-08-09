@@ -243,3 +243,11 @@ traffic before paging operators.
 
 Metrics endpoints and the inspector are unauthenticated. Bind them to loopback
 or trusted management networks, or protect them with firewall/VPN controls.
+
+## Collector perf-ring health
+
+`packetyeeter_perf_lost_samples_total{reader}` counts records the kernel could
+not deliver before the collector drained the perf ring. The bounded `reader`
+label is `tcp_metadata` or `incidents`. Any sustained increase means telemetry
+is incomplete; inspect collector CPU/load and incident volume before treating
+an absence of signals as clean traffic.

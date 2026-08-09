@@ -276,7 +276,7 @@ func (a *Analyzer) processHTTPRequest(sig *apiv1.Signal, ip net.IP, asn string, 
 		metrics.HTTPRequestRateByIP.WithLabelValues(ip.String()).Set(ipRate)
 	}
 	if asn != "" && asn != "Unknown" {
-		metrics.HTTPRequestRateByASN.WithLabelValues(asn, org).Set(asnRate)
+		metrics.SetHTTPRequestRateForASN(asn, org, asnRate)
 	}
 
 	protocolOrBackground := isProtocolOrBackgroundRequest(ctx.Method, ctx.Host, ctx.Path, ctx.Accept, userAgent)
@@ -515,7 +515,7 @@ func (a *Analyzer) processHTTPRequest(sig *apiv1.Signal, ip net.IP, asn string, 
 			// re-derive the organization via a second GeoIP lookup and emit a
 			// duplicate label-distinct series carrying the raw (non-EWMA) lag.
 			if asn != "" && asn != "Unknown" {
-				metrics.ProxyLagEWMAByASN.WithLabelValues(asn, org).Set(ewmaLag)
+				metrics.SetProxyLagForASN(asn, org, ewmaLag)
 			}
 
 			if isAnomaly && a.shouldEmitLatencyAnomaly(ip) {
@@ -730,32 +730,7 @@ func (a *Analyzer) processHTTPRequest(sig *apiv1.Signal, ip net.IP, asn string, 
 	// Check reputation threshold and potentially block
 	score := a.Reputation.GetScore(ip.String(), reputation.TypeIP)
 	if score > a.Config.ReputationThreshold {
-		shouldBlock := true
-		if a.MLModel != nil {
-			features := a.extractMLFeatures(ip, asn, score)
-			prediction := a.MLModel.Predict(features)
-			shouldBlock = prediction.IsBot && prediction.Confidence > a.Config.AIConfidenceThreshold
-			if !shouldBlock {
-				metrics.MLBlocksOverridden.Inc()
-			}
-
-			if shouldBlock {
-				logrus.WithFields(logrus.Fields{
-					"ip":            ip.String(),
-					"reputation":    score,
-					"ml_confidence": prediction.Confidence,
-					"ml_category":   prediction.Category,
-				}).Info("ML model confirmed HTTP block decision")
-			} else {
-				// Debug, not Warn: this is per-request. See the equivalent
-				// site in service.go; MLBlocksOverridden is the aggregate.
-				logrus.WithFields(logrus.Fields{
-					"ip":            ip.String(),
-					"reputation":    score,
-					"ml_confidence": prediction.Confidence,
-				}).Debug("ML model rejected HTTP block")
-			}
-		}
+		shouldBlock := a.mlConfirmsReputationBlock(ip, asn, score, "http")
 
 		if shouldBlock && !a.Config.DryRun {
 			metrics.HAProxyBlocks.Inc()

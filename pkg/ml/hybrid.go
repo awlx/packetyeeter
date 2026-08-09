@@ -1,6 +1,7 @@
 package ml
 
 import (
+	"fmt"
 	"sync"
 	"time"
 
@@ -36,8 +37,10 @@ type PatternChecker interface {
 	CheckPattern(userAgent, asn, ja4h string) (matched bool, label string, confidence float64, key string)
 }
 
-// NewHybridModel creates a hybrid model with ONNX + fallback
-func NewHybridModel(onnxPath string, threshold float64) *HybridModel {
+// NewHybridModel creates a hybrid model with ONNX + fallback. A non-empty ONNX
+// path is an explicit operator request, so failure to load it is returned
+// rather than silently changing enforcement to the statistical fallback.
+func NewHybridModel(onnxPath string, threshold float64) (*HybridModel, error) {
 	h := &HybridModel{
 		statisticalModel: NewSimpleThresholdModel(),
 		lastUpdate:       time.Now(),
@@ -47,14 +50,26 @@ func NewHybridModel(onnxPath string, threshold float64) *HybridModel {
 	if onnxPath != "" {
 		onnx, err := LoadONNXModel(onnxPath, threshold)
 		if err != nil {
-			logrus.WithError(err).Warn("Failed to load ONNX model, using statistical fallback only")
-		} else {
-			h.onnxModel = onnx
-			logrus.WithField("model_path", onnxPath).Info("Hybrid model: ONNX loaded successfully")
+			return nil, fmt.Errorf("load ONNX model %q: %w", onnxPath, err)
 		}
+		h.onnxModel = onnx
+		logrus.WithField("model_path", onnxPath).Info("Hybrid model: ONNX loaded successfully")
 	}
 
-	return h
+	return h, nil
+}
+
+// Reload atomically reloads the configured ONNX model in place. The HybridModel
+// object is shared by the AI engine and the optional reputation gate, so one
+// reload updates both decision paths.
+func (h *HybridModel) Reload(modelPath string) error {
+	h.mu.RLock()
+	onnxModel := h.onnxModel
+	h.mu.RUnlock()
+	if onnxModel == nil {
+		return fmt.Errorf("cannot reload ONNX model: no ONNX model is active")
+	}
+	return onnxModel.Reload(modelPath)
 }
 
 // SetPatternChecker injects the pattern checker (from feedback loop)

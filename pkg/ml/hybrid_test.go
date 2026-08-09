@@ -25,7 +25,10 @@ func (f *fakePatternChecker) CheckPattern(userAgent, asn, ja4h string) (bool, st
 }
 
 func TestHybridModelPredictPassesRealIdentifiersToPatternChecker(t *testing.T) {
-	h := NewHybridModel("", 0.5)
+	h, err := NewHybridModel("", 0.5)
+	if err != nil {
+		t.Fatalf("NewHybridModel: %v", err)
+	}
 	checker := &fakePatternChecker{}
 	h.SetPatternChecker(checker)
 
@@ -49,7 +52,10 @@ func TestHybridModelPredictPassesRealIdentifiersToPatternChecker(t *testing.T) {
 }
 
 func TestHybridModelPredictUsesPatternMatchWhenFound(t *testing.T) {
-	h := NewHybridModel("", 0.5)
+	h, err := NewHybridModel("", 0.5)
+	if err != nil {
+		t.Fatalf("NewHybridModel: %v", err)
+	}
 	checker := &fakePatternChecker{matched: true, label: "malicious", confidence: 0.9}
 	h.SetPatternChecker(checker)
 
@@ -63,5 +69,11 @@ func TestHybridModelPredictUsesPatternMatchWhenFound(t *testing.T) {
 	}
 	if !result.IsBot {
 		t.Fatalf("expected IsBot=true for malicious pattern match")
+	}
+}
+
+func TestNewHybridModelRejectsConfiguredMissingModel(t *testing.T) {
+	if _, err := NewHybridModel(t.TempDir()+"/missing.onnx", 0.7); err == nil {
+		t.Fatal("expected configured missing ONNX model to fail")
 	}
 }

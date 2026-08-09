@@ -46,6 +46,7 @@ const (
 	defaultReputationMaxAge      = 24 * time.Hour
 	defaultReputationASNMaxHosts = 5000
 	defaultPprofAddr             = ":6060"
+	defaultAIConfidenceThreshold = 0.7
 	// defaultMaxCollectors bounds how many collector streams may be registered
 	// at once. The signal plane is an unauthenticated gRPC listener, so without
 	// a cap a peer opening many concurrent streams grows the collectors map,
@@ -173,7 +174,7 @@ type Analyzer struct {
 	Entropy        *entropy.EntropyAnalyzer
 	GeoIP          *geoip.Provider
 	PatternTracker *patterns.PatternTracker
-	MLModel        *ml.ModelManager
+	MLModel        aidetection.MLModel
 	ModelWatcher   *ml.ModelWatcher // Watches for model file changes
 
 	// Sustained-download detection. Nil when the feature is disabled, so every
@@ -276,6 +277,13 @@ func isAggregateSnapshot(sig *apiv1.Signal) bool {
 }
 
 func New(cfg Config) (*Analyzer, error) {
+	if cfg.AIConfidenceThreshold == 0 {
+		cfg.AIConfidenceThreshold = defaultAIConfidenceThreshold
+	}
+	if math.IsNaN(cfg.AIConfidenceThreshold) || math.IsInf(cfg.AIConfidenceThreshold, 0) ||
+		cfg.AIConfidenceThreshold < 0 || cfg.AIConfidenceThreshold > 1 {
+		return nil, fmt.Errorf("AI confidence threshold must be finite and between 0 and 1, got %v", cfg.AIConfidenceThreshold)
+	}
 	if cfg.ReputationMaxEntries == 0 {
 		cfg.ReputationMaxEntries = defaultReputationMaxEntries
 	}
@@ -408,10 +416,17 @@ func (a *Analyzer) Start() error {
 	// Initialize default ML model
 	// Initialize ML Model - Use Hybrid Model for pattern + ONNX + fallback
 	var mlModel aidetection.MLModel
+	var configuredHybrid *ml.HybridModel
 	if a.Config.MLModelPath != "" {
-		// Create hybrid model with ONNX + statistical fallback
-		hybridModel := ml.NewHybridModel(a.Config.MLModelPath, a.Config.AIConfidenceThreshold)
-		mlModel = hybridModel
+		// A configured model is safety-critical: fail startup rather than
+		// silently replacing it with an untrained statistical fallback.
+		configuredHybrid, err = ml.NewHybridModel(a.Config.MLModelPath, a.Config.AIConfidenceThreshold)
+		if err != nil {
+			a.Close()
+			return fmt.Errorf("initialize configured ML model: %w", err)
+		}
+		mlModel = configuredHybrid
+		a.MLModel = configuredHybrid
 		logrus.WithFields(logrus.Fields{
 			"model_path": a.Config.MLModelPath,
 			"threshold":  a.Config.AIConfidenceThreshold,
@@ -469,31 +484,14 @@ func (a *Analyzer) Start() error {
 	a.PatternTracker.StartCleanup()
 	logrus.Info("Pattern Tracker initialized")
 
-	// Initialize ML Model.
-	//
-	// -ml-model is what opts an operator into ML-gated enforcement. When it is
-	// unset we leave a.MLModel nil so the reputation block gate below stays out
-	// of the decision path entirely. Constructing a ModelManager here
-	// unconditionally used to hand an untrained statistical fallback a veto over
-	// every reputation block on deployments that never enabled ML at all.
-	if a.Config.MLModelPath != "" {
-		a.MLModel = ml.NewModelManager()
-		logrus.WithField("model_path", a.Config.MLModelPath).Info("ML Model initialized and enabled")
-	} else {
+	if configuredHybrid == nil {
 		logrus.Info("ML model not configured (-ml-model unset): reputation blocks are not ML-gated")
 	}
 
 	// Start model file watcher for dynamic reloading
-	if a.Config.MLModelPath != "" {
+	if configuredHybrid != nil {
 		reloadFunc := func(modelPath string) error {
-			// Check if primary model is an ONNX model and reload it
-			if a.MLModel != nil {
-				primaryModel := a.MLModel.GetPrimaryModel()
-				if onnxModel, ok := primaryModel.(*ml.ONNXModel); ok {
-					return onnxModel.Reload(modelPath)
-				}
-			}
-			return nil
+			return configuredHybrid.Reload(modelPath)
 		}
 
 		a.ModelWatcher = ml.NewModelWatcher(a.Config.MLModelPath, 10*time.Second, reloadFunc)
@@ -962,38 +960,7 @@ func (a *Analyzer) processSignal(sig *apiv1.Signal, cs *collectorStream) {
 	}
 
 	if score > a.Config.ReputationThreshold {
-		// Use ML model to validate blocking decision
-		shouldBlock := true
-		if a.MLModel != nil {
-			features := a.extractMLFeatures(ip, asn, score)
-			prediction := a.MLModel.Predict(features)
-
-			// Only block if ML model agrees (high confidence). The bar is the
-			// operator-configured -ai-confidence-threshold, not a hardcoded
-			// constant that silently diverged from it.
-			shouldBlock = prediction.IsBot && prediction.Confidence > a.Config.AIConfidenceThreshold
-			if !shouldBlock {
-				metrics.MLBlocksOverridden.Inc()
-			}
-
-			if shouldBlock {
-				logrus.WithFields(logrus.Fields{
-					"ip":            ip.String(),
-					"reputation":    score,
-					"ml_confidence": prediction.Confidence,
-					"ml_category":   prediction.Category,
-				}).Info("ML model confirmed block decision")
-			} else {
-				// Per-signal, so this is Debug rather than Warn: at prod rates
-				// these two sites emitted ~50 lines/s (228k lines in 40min).
-				// metrics.MLBlocksOverridden above is the aggregate signal.
-				logrus.WithFields(logrus.Fields{
-					"ip":            ip.String(),
-					"reputation":    score,
-					"ml_confidence": prediction.Confidence,
-				}).Debug("ML model rejected block - potential false positive")
-			}
-		}
+		shouldBlock := a.mlConfirmsReputationBlock(ip, asn, score, "signal")
 
 		if shouldBlock && !a.Config.DryRun {
 			// Increment appropriate block metric based on signal type
@@ -1894,7 +1861,6 @@ func (a *Analyzer) Close() {
 		logrus.Info("Stopping model watcher...")
 		a.ModelWatcher.Stop()
 	}
-
 	// Shutdown gRPC server with timeout
 	if a.grpcServer != nil {
 		stopped := make(chan struct{})
@@ -1909,6 +1875,11 @@ func (a *Analyzer) Close() {
 		case <-time.After(5 * time.Second):
 			logrus.Warn("gRPC server graceful stop timeout, forcing stop")
 			a.grpcServer.Stop()
+		}
+	}
+	if model, ok := a.MLModel.(interface{ Close() error }); ok {
+		if err := model.Close(); err != nil {
+			logrus.WithError(err).Warn("Failed to close ML model")
 		}
 	}
 
@@ -1926,6 +1897,9 @@ func (a *Analyzer) Close() {
 	}
 	if a.GeoIP != nil {
 		a.GeoIP.Close()
+	}
+	if a.JA4DB != nil {
+		a.JA4DB.Stop()
 	}
 
 	// Wait for goroutines with timeout
