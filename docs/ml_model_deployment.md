@@ -1,5 +1,10 @@
 # ML Model Deployment Guide
 
+> The commands below use `$COLLECTOR_HOST` for the host running the collector
+> whose labeled dataset you are collecting, and whose inspector UI you are
+> reading. Export it first, e.g.
+> `export COLLECTOR_HOST=webfrontend01.example.com`.
+
 ## Overview
 
 The PacketYeeter ML model is used to **enhance** detection accuracy, not replace rule-based detection. It works as follows:
@@ -46,7 +51,7 @@ Use the training script with your labeled data:
 
 ```bash
 # Collect labeled data from false positive reports
-ssh webfrontend03.ov.ffmuc.net 'sudo cat /var/lib/packetyeeter/labeled_dataset.jsonl' > labeled_data.jsonl
+ssh $COLLECTOR_HOST 'sudo cat /var/lib/packetyeeter/labeled_dataset.jsonl' > labeled_data.jsonl
 
 # Train the model (requires Python 3.11/3.12)
 python3 scripts/train_model.py \
@@ -121,8 +126,8 @@ sudo nano /etc/default/packetyeeter-analyzer
 ML_MODEL_PATH=/var/lib/packetyeeter/model.onnx
 
 # Copy model to server
-scp model.onnx webfrontend03.ov.ffmuc.net:/tmp/
-ssh webfrontend03.ov.ffmuc.net 'sudo mv /tmp/model.onnx /var/lib/packetyeeter/'
+scp model.onnx $COLLECTOR_HOST:/tmp/
+ssh $COLLECTOR_HOST 'sudo mv /tmp/model.onnx /var/lib/packetyeeter/'
 
 # Restart analyzer
 sudo systemctl restart packetyeeter-analyzer
@@ -208,10 +213,10 @@ curl http://localhost:9091/metrics | grep ml_
 
 ```bash
 # Check labeled dataset
-ssh webfrontend03.ov.ffmuc.net 'sudo cat /var/lib/packetyeeter/labeled_dataset.jsonl | jq .'
+ssh $COLLECTOR_HOST 'sudo cat /var/lib/packetyeeter/labeled_dataset.jsonl | jq .'
 
 # Count labels
-ssh webfrontend03.ov.ffmuc.net 'sudo cat /var/lib/packetyeeter/labeled_dataset.jsonl | jq -r .label | sort | uniq -c'
+ssh $COLLECTOR_HOST 'sudo cat /var/lib/packetyeeter/labeled_dataset.jsonl | jq -r .label | sort | uniq -c'
 ```
 
 ### False Positive Rate
@@ -219,7 +224,7 @@ ssh webfrontend03.ov.ffmuc.net 'sudo cat /var/lib/packetyeeter/labeled_dataset.j
 Check the Feedback Loop tab in the web interface:
 - Target: 1.0% FP rate
 - Threshold auto-adjusts based on FP rate
-- View stats at http://webfrontend03.ov.ffmuc.net:9092 → Feedback Loop tab
+- View stats at http://$COLLECTOR_HOST:9092 → Feedback Loop tab
 
 ## Best Practices
 

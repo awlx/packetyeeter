@@ -170,7 +170,7 @@ if isKnown {
 
 ### Deployment
 ```bash
-./deploy.sh webfrontend03.ext.ffmuc.net
+./deploy.sh webfrontend01.example.com
 ```
 
 ### Next Steps

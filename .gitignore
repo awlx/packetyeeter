@@ -4,6 +4,12 @@ packetyeeter-collector
 packetyeeter-analyzer
 yeetctl
 yeetexplorer
+# Anchored: `go build -o analyzer ./cmd/analyzer` drops a binary at the repo
+# root that would otherwise be committed. Leading slash so the nested
+# cmd/analyzer and pkg/collector source trees stay tracked.
+/analyzer
+/collector
+/labeler
 /bin/
 dist/
 

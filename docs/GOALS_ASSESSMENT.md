@@ -324,8 +324,8 @@ Engine {
 - ✅ UI functional (legitimate bot labeling, statistics)
 
 ### Deployed To
-- ✅ `webfrontend03.ext.ffmuc.net` (external)
-- ✅ `webfrontend03.ov.ffmuc.net` (vlan101)
+- ✅ External-facing frontend
+- ✅ Internal (VLAN) frontend
 - ✅ Latest deployment: January 29, 2026
 
 ### Monitoring Recommendations
@@ -434,7 +434,7 @@ Engine {
 
 ### Testing
 - [x] Local compilation successful
-- [x] Deployed to staging (webfrontend03.ext/ov.ffmuc.net)
+- [x] Deployed to staging (external + internal frontends)
 - [x] No runtime errors reported
 - [x] ML model predictions working
 - [x] Learning window tracking working
