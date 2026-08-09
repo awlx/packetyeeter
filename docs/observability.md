@@ -174,6 +174,10 @@ not being read" is distinguishable from "nothing crossed a threshold":
   carried. Flat while requests are flowing means egress accounting is off, and
   only the breadth/shape path can fire.
 
+Both are incremented by the collector process, so scrape them from the
+**collector's** `-metrics-addr` (default `:2112`), not the analyzer's. The
+analyzer registers the same names and will report a constant `0` for them.
+
 Detection outcome:
 
 - `packetyeeter_sustained_decisions_total{path,outcome}` (counter). `path` is

@@ -48,6 +48,36 @@ The collector is intentionally less restricted because it loads eBPF, attaches X
   allowlists (health checks, monitoring, upstream proxies) before enforcing.
 - Roll back by re-enabling dry-run or stopping collectors before changing eBPF-related systemd hardening.
 
+## Breaking change: `-haproxy-port` removed
+
+The collector no longer accepts `-haproxy-port`. It backed a HAProxy peer
+(stick-table) listener that was never wired to anything, and it has been deleted
+along with the flag.
+
+Go's flag parser rejects unknown flags, so a collector started with
+`-haproxy-port` exits immediately with status 2. Under `Restart=on-failure` this
+is a crash loop, not a clean failure, so **update the units before installing the
+new binary**:
+
+1. Remove `HAPROXY_PORT=` from `/etc/default/packetyeeter-collector`.
+2. Remove `-haproxy-port "$HAPROXY_PORT"` from `ExecStart=`.
+3. Check for a drop-in that overrides `ExecStart=`. A drop-in shadows the main
+   unit, so editing only the main unit leaves the flag in place:
+
+   ```bash
+   systemctl cat packetyeeter-collector | grep -n 'haproxy-port'
+   ```
+
+   That prints every file that still passes it, including
+   `/etc/systemd/system/packetyeeter-collector.service.d/*.conf`.
+4. `systemctl daemon-reload`, then install the binary and restart.
+
+Verify the flag is gone from the resolved command before restarting:
+
+```bash
+systemctl show packetyeeter-collector -p ExecStart --value | grep -c haproxy-port  # expect 0
+```
+
 ## Sustained-download detection rollout
 
 Sustained-download detection selects on duration and breadth rather than rate,

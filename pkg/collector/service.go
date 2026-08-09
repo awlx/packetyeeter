@@ -1774,6 +1774,11 @@ func (c *Collector) startCollectorMetricsServer() *http.Server {
 	registry.MustRegister(metrics.SPOEProcessingLatency)
 	registry.MustRegister(metrics.KernelIncidents)
 
+	// Egress accounting is produced by this process, so it is only ever
+	// observable here -- the analyzer's registry would report a constant 0.
+	registry.MustRegister(metrics.EgressVolumeSignals)
+	registry.MustRegister(metrics.EgressBytesReported)
+
 	// Create HTTP handler with custom registry
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
