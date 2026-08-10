@@ -307,9 +307,26 @@ func (a *Analyzer) processHTTPRequest(sig *apiv1.Signal, ip net.IP, asn string, 
 		}
 	}
 
-	// HTTP error tracking (404/403 scanner detection)
+	// HTTP error tracking (404/403/4xx scanner and service-abuse detection).
+	// Protocol endpoints such as DoH still participate here: path-entropy and
+	// timing heuristics skip them, but a flood of client errors (especially
+	// HTTP 400) is still actionable scanner/abuse evidence.
 	if ctx.StatusCode > 0 {
-		count404, count403, consecutive := a.trackHTTPErrors(ip, ctx.StatusCode, ctx.Path)
+		count404, count403, count4xx, consecutive := a.trackHTTPErrors(ip, ctx.StatusCode, ctx.Path)
+
+		errorMeta := func(extra map[string]interface{}) map[string]interface{} {
+			m := createHTTPMetadata(extra)
+			if ctx.StatusCode > 0 {
+				m["status_code"] = ctx.StatusCode
+			}
+			if ctx.DstIp != "" {
+				m["dest_ip"] = ctx.DstIp
+			}
+			if ctx.DstPort > 0 {
+				m["dst_port"] = ctx.DstPort
+			}
+			return m
+		}
 
 		// Excessive 404 errors - likely path enumeration or vulnerability scanner
 		if count404 >= 10 {
@@ -319,7 +336,7 @@ func (a *Analyzer) processHTTPRequest(sig *apiv1.Signal, ip net.IP, asn string, 
 				if weight > 15.0 {
 					weight = 15.0
 				}
-				a.SignalBuilder.EmitHTTPErrorSignal(ip, asn, org, aidetection.SignalExcessiveNotFound, weight, count404, count403, consecutive)
+				a.SignalBuilder.EmitHTTPErrorSignal(ip, asn, org, aidetection.SignalExcessiveNotFound, weight, count404, count403, count4xx, consecutive, errorMeta(nil))
 			}
 		}
 
@@ -331,7 +348,21 @@ func (a *Analyzer) processHTTPRequest(sig *apiv1.Signal, ip net.IP, asn string, 
 				if weight > 15.0 {
 					weight = 15.0
 				}
-				a.SignalBuilder.EmitHTTPErrorSignal(ip, asn, org, aidetection.SignalExcessiveForbidden, weight, count404, count403, consecutive)
+				a.SignalBuilder.EmitHTTPErrorSignal(ip, asn, org, aidetection.SignalExcessiveForbidden, weight, count404, count403, count4xx, consecutive, errorMeta(nil))
+			}
+		}
+
+		// High volume of any 4xx (including HTTP 400 DoH bad requests). This
+		// catches abuse that never builds a long consecutive streak because
+		// successes are interleaved, and status codes outside 403/404.
+		if count4xx >= 20 {
+			metrics.PathEntropySignals.WithLabelValues("excessive_4xx").Inc()
+			if a.SignalBuilder != nil {
+				weight := 5.0 + float64(count4xx-20)*0.25
+				if weight > 15.0 {
+					weight = 15.0
+				}
+				a.SignalBuilder.EmitHTTPErrorSignal(ip, asn, org, aidetection.SignalExcessiveClientError, weight, count404, count403, count4xx, consecutive, errorMeta(nil))
 			}
 		}
 
@@ -343,7 +374,7 @@ func (a *Analyzer) processHTTPRequest(sig *apiv1.Signal, ip net.IP, asn string, 
 				if weight > 20.0 {
 					weight = 20.0
 				}
-				a.SignalBuilder.EmitHTTPErrorSignal(ip, asn, org, aidetection.SignalErrorBurst, weight, count404, count403, consecutive)
+				a.SignalBuilder.EmitHTTPErrorSignal(ip, asn, org, aidetection.SignalErrorBurst, weight, count404, count403, count4xx, consecutive, errorMeta(nil))
 			}
 		}
 	}

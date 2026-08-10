@@ -1676,21 +1676,25 @@ func (e *Engine) evaluateWindow(windowSignals map[string][]Signal) {
 	}
 
 	highSeverity := map[SignalType]bool{
-		SignalHoneypot:          true,
-		SignalNumericSequence:   true,
-		SignalAlphaSequence:     true,
-		SignalJA4TAbuse:         true,
-		SignalHighFrequency:     true,
-		SignalConnectionPattern: true,
-		SignalPortScanning:      true,
-		SignalGeoAnomaly:        true,
-		SignalTimingPattern:     true,
-		SignalICMPFlood:         true,
-		SignalUDPFlood:          true,
-		SignalSYNFlood:          true,
-		SignalBadFlags:          true,
-		SignalJA4HBotMatch:      true,
-		SignalKnownScanner:      true,
+		SignalHoneypot:             true,
+		SignalNumericSequence:      true,
+		SignalAlphaSequence:        true,
+		SignalJA4TAbuse:            true,
+		SignalHighFrequency:        true,
+		SignalConnectionPattern:    true,
+		SignalPortScanning:         true,
+		SignalGeoAnomaly:           true,
+		SignalTimingPattern:        true,
+		SignalICMPFlood:            true,
+		SignalUDPFlood:             true,
+		SignalSYNFlood:             true,
+		SignalBadFlags:             true,
+		SignalJA4HBotMatch:         true,
+		SignalKnownScanner:         true,
+		SignalErrorBurst:           true,
+		SignalExcessiveNotFound:    true,
+		SignalExcessiveForbidden:   true,
+		SignalExcessiveClientError: true,
 	}
 
 	floodWeightByASN := make(map[string]float64)
@@ -1779,6 +1783,13 @@ func (e *Engine) evaluateWindow(windowSignals map[string][]Signal) {
 		case ddos:
 			detected = true
 			confidence = 0.9
+		case hasHigh && (len(signals) >= e.staticThreshold || totalWeight >= float64(e.staticThreshold)):
+			// A single high-severity type (e.g. pure error_burst / excessive_4xx
+			// DoH carpet bomb) must still be able to fire. Previously every
+			// non-DDoS branch required uniqueTypeCount >= 2, so a source that
+			// only produced one strong HTTP-error vector never detected.
+			detected = true
+			confidence = 0.85
 		case uniqueTypeCount >= 2 && lowOnly:
 			// Low-severity-only combinations (e.g. "missing Accept-Language"
 			// repeated dozens of times plus one generic tcp_metadata event)

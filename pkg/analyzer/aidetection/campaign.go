@@ -497,6 +497,14 @@ func (a *CampaignAggregator) evaluateCampaignLocked(c *attackCampaign) (Campaign
 	weakSourceBreadth := len(sourceIPs) >= a.cfg.MinWeakSourceIPs &&
 		weakSourceWeights(sourceWeights, a.cfg.WeakSourceMaxWeight) &&
 		averageWeight(totalWeight, len(c.events)) <= a.cfg.WeakSignalMaxWeight
+	// HTTP client-error vectors are intentionally high weight (error_burst is
+	// 8–20). That fails the weak-signal average-weight gate above, so a
+	// distributed 4xx flood against a single service (one dest IP/VIP, e.g.
+	// DoH HTTP 400) never formed a campaign. Allow source breadth alone for
+	// those vectors without requiring destination spread or low weights.
+	httpErrorSourceBreadth := isHTTPClientErrorVector(c.vector) &&
+		len(sourceIPs) >= a.cfg.MinWeakSourceIPs &&
+		len(c.events) >= a.cfg.MinSignals
 
 	reason := ""
 	switch {
@@ -508,6 +516,8 @@ func (a *CampaignAggregator) evaluateCampaignLocked(c *attackCampaign) (Campaign
 		reason = "destination_port_breadth"
 	case weakSourceBreadth:
 		reason = "weak_source_breadth"
+	case httpErrorSourceBreadth:
+		reason = "http_error_source_breadth"
 	}
 	if reason == "" {
 		return CampaignDetection{}, false
@@ -617,6 +627,15 @@ func fnv64(s string) uint64 {
 		h *= prime64
 	}
 	return h
+}
+
+func isHTTPClientErrorVector(v SignalType) bool {
+	switch v {
+	case SignalErrorBurst, SignalExcessiveNotFound, SignalExcessiveForbidden, SignalExcessiveClientError:
+		return true
+	default:
+		return false
+	}
 }
 
 func weakSourceWeights(weights map[string]float64, maxWeight float64) bool {

@@ -45,7 +45,11 @@ func CalculateConfidence(
 		signalTypes[SignalKnownScanner] +
 		signalTypes[SignalICMPFlood] +
 		signalTypes[SignalUDPFlood] +
-		signalTypes[SignalSYNFlood]
+		signalTypes[SignalSYNFlood] +
+		signalTypes[SignalErrorBurst] +
+		signalTypes[SignalExcessiveNotFound] +
+		signalTypes[SignalExcessiveForbidden] +
+		signalTypes[SignalExcessiveClientError]
 	if highSeverityCount > 0 {
 		severityScore := math.Min(float64(highSeverityCount)/3.0, 1.0)
 		confidence += severityScore * 0.2
@@ -96,8 +100,10 @@ func InferCategoryFromSignals(signalTypes map[SignalType]int) BotCategory {
 		return BotCategoryDDoS
 	}
 
-	// Scanners
-	if signalTypes[SignalKnownScanner] > 0 || signalTypes[SignalPortScanning] > 0 {
+	// Scanners / HTTP error abuse
+	if signalTypes[SignalKnownScanner] > 0 || signalTypes[SignalPortScanning] > 0 ||
+		signalTypes[SignalErrorBurst] > 0 || signalTypes[SignalExcessiveNotFound] > 0 ||
+		signalTypes[SignalExcessiveForbidden] > 0 || signalTypes[SignalExcessiveClientError] > 0 {
 		return BotCategoryScanner
 	}
 

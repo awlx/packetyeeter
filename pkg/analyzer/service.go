@@ -126,6 +126,7 @@ type httpErrorWindow struct {
 	Total            int
 	NotFound404      int
 	Forbidden403     int
+	ClientError4xx   int // Any 4xx in the window (including 400/401/429/...)
 	ConsecutiveError int // Consecutive 4xx errors
 	LastStatus       uint32
 }
@@ -1682,14 +1683,14 @@ func (a *Analyzer) checkJA4Consistency(ip net.IP, ja4, ja4h string) (int, int) {
 	return len(pw.JA4Set), len(pw.JA4HSet)
 }
 
-// trackHTTPErrors tracks 404 and 403 errors to detect scanners and vulnerability probers
-// Returns (total404, total403, consecutive4xx) for the IP in the window
-func (a *Analyzer) trackHTTPErrors(ip net.IP, statusCode uint32, path string) (int, int, int) {
+// trackHTTPErrors tracks HTTP client errors to detect scanners and abuse.
+// Returns (total404, total403, total4xx, consecutive4xx) for the IP in the window.
+func (a *Analyzer) trackHTTPErrors(ip net.IP, statusCode uint32, path string) (int, int, int, int) {
 	const window = 3 * time.Minute
 	const maxEvents = 100
 
 	if ip == nil || statusCode == 0 {
-		return 0, 0, 0
+		return 0, 0, 0, 0
 	}
 
 	key := ip.String()
@@ -1701,7 +1702,7 @@ func (a *Analyzer) trackHTTPErrors(ip net.IP, statusCode uint32, path string) (i
 
 	if w == nil {
 		if len(a.httpErrorWindows) >= 20000 {
-			return 0, 0, 0
+			return 0, 0, 0, 0
 		}
 		w = &httpErrorWindow{}
 		a.httpErrorWindows[key] = w
@@ -1720,6 +1721,9 @@ func (a *Analyzer) trackHTTPErrors(ip net.IP, statusCode uint32, path string) (i
 		w.NotFound404++
 	} else if statusCode == 403 {
 		w.Forbidden403++
+	}
+	if statusCode >= 400 && statusCode < 500 {
+		w.ClientError4xx++
 	}
 
 	// Track consecutive 4xx errors
@@ -1747,13 +1751,16 @@ func (a *Analyzer) trackHTTPErrors(ip net.IP, statusCode uint32, path string) (i
 		} else if old.StatusCode == 403 {
 			w.Forbidden403--
 		}
+		if old.StatusCode >= 400 && old.StatusCode < 500 {
+			w.ClientError4xx--
+		}
 		i++
 	}
 	if i > 0 {
 		w.Events = w.Events[i:]
 	}
 
-	return w.NotFound404, w.Forbidden403, w.ConsecutiveError
+	return w.NotFound404, w.Forbidden403, w.ClientError4xx, w.ConsecutiveError
 }
 
 func alphaToInt(s string) int64 {

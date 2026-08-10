@@ -168,20 +168,26 @@ func (b *SignalBuilder) EmitSequentialPath(ip net.IP, asn, org, path string, sig
 	})
 }
 
-// EmitHTTPErrorSignal emits signals for excessive HTTP errors (404, 403) indicating scanners
-func (b *SignalBuilder) EmitHTTPErrorSignal(ip net.IP, asn, org string, signalType SignalType, weight float64, count404, count403, consecutive int) {
+// EmitHTTPErrorSignal emits signals for excessive HTTP client errors indicating scanners/abuse.
+// Callers should pass host/path/dest/collector metadata so campaign aggregation can attribute
+// single-destination service floods (e.g. DoH 400 carpet bombs).
+func (b *SignalBuilder) EmitHTTPErrorSignal(ip net.IP, asn, org string, signalType SignalType, weight float64, count404, count403, count4xx, consecutive int, metadata map[string]interface{}) {
+	if metadata == nil {
+		metadata = make(map[string]interface{})
+	}
+	metadata["404_count"] = count404
+	metadata["403_count"] = count403
+	metadata["4xx_count"] = count4xx
+	metadata["consecutive_error"] = consecutive
+
 	b.Emit(Signal{
-		IP:     ip,
-		Type:   signalType,
-		Source: SourceSPOE,
-		ASN:    asn,
-		Org:    org,
-		Weight: weight,
-		Metadata: map[string]interface{}{
-			"404_count":         count404,
-			"403_count":         count403,
-			"consecutive_error": consecutive,
-		},
+		IP:       ip,
+		Type:     signalType,
+		Source:   SourceSPOE,
+		ASN:      asn,
+		Org:      org,
+		Weight:   weight,
+		Metadata: metadata,
 	})
 }
 

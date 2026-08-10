@@ -1,5 +1,21 @@
 # PacketYeeter Changelog
 
+## 2026-08-10 - Detect distributed HTTP 4xx / DoH bad-request floods
+
+- Per-IP HTTP error tracking now counts all 4xx responses (not only 404/403)
+  and emits `excessive_4xx` when volume crosses a window threshold, so abuse
+  that interleaves successes or uses HTTP 400 (e.g. DoH `/dns-query`) is
+  visible without a long consecutive streak.
+- HTTP error signals (`error_burst`, `excessive_404`, `excessive_403`,
+  `excessive_4xx`) are high-severity for window evaluation. A single strong
+  HTTP-error type can trigger detection; previously every non-DDoS path
+  required two distinct signal types, so pure 4xx floods never fired.
+- Campaign aggregation adds `http_error_source_breadth` so high-weight HTTP
+  error vectors from many sources against one service still form an observe-
+  only campaign (weak-signal average-weight gates no longer hide them).
+- HTTP error signal metadata includes host/path/status/dest so operators and
+  campaign keys can attribute service-scoped floods.
+
 ## 2026-08-09 - Collector UDP fragment policy and edge-triggered incidents
 
 - Fragmented UDP / IPv6 Fragment headers no longer hard-drop by default.

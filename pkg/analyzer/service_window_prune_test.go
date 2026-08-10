@@ -15,12 +15,15 @@ func TestTrackHTTPErrorsCapKeepsWindow(t *testing.T) {
 	a := &Analyzer{httpErrorWindows: make(map[string]*httpErrorWindow)}
 	ip := net.ParseIP("192.0.2.1")
 
-	var count404 int
+	var count404, count4xx int
 	for i := 0; i < 101; i++ {
-		count404, _, _ = a.trackHTTPErrors(ip, 404, fmt.Sprintf("/probe/%d", i))
+		count404, _, count4xx, _ = a.trackHTTPErrors(ip, 404, fmt.Sprintf("/probe/%d", i))
 	}
 	if count404 != 100 {
 		t.Fatalf("count404 after 101 events = %d, want 100 (window flushed instead of trimmed)", count404)
+	}
+	if count4xx != 100 {
+		t.Fatalf("count4xx after 101 events = %d, want 100", count4xx)
 	}
 	if got := len(a.httpErrorWindows[ip.String()].Events); got != 100 {
 		t.Fatalf("retained events = %d, want 100", got)
