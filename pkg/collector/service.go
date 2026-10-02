@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -74,6 +75,11 @@ type Config struct {
 	// ScrubSlowPathPPS caps the packets per second xdp_scrub hands to the
 	// kernel, across all CPUs (0 = unlimited).
 	ScrubSlowPathPPS uint32
+	// FingerprintInterval is how often scrub fingerprints are read and sent
+	// (0 = off: XDP does not count them).
+	FingerprintInterval time.Duration
+	// FingerprintTop is how many buckets per destination are sent.
+	FingerprintTop int
 }
 
 // Collector is a thin relay layer that:
@@ -147,7 +153,9 @@ type Collector struct {
 	managementListener net.Listener
 
 	draining        atomic.Bool
-	rules           *ruleEngine // scrub mode only
+	rules           *ruleEngine    // scrub mode only
+	fingerprints    *fingerprinter // scrub mode with -fingerprint-interval only
+	collectorID     string
 	readinessChecks []readinessCheck
 	// lastLocalAddrsErr is only touched by pollMaps.
 	lastLocalAddrsErr string
@@ -254,6 +262,7 @@ func (c *Collector) Start(ctx context.Context) error {
 		InsideIface:  c.Config.InsideInterface,
 		XDPMode:      c.Config.XDPMode,
 		AllowGeneric: c.Config.AllowGeneric,
+		Fingerprints: scrub && c.Config.FingerprintInterval > 0,
 	})
 	if err := c.Loader.Load(); err != nil {
 		return fmt.Errorf("failed to load eBPF: %w", err)
@@ -326,6 +335,17 @@ func (c *Collector) Start(ctx context.Context) error {
 		}
 		if err := c.syncLocalAddrs(); err != nil {
 			return fmt.Errorf("failed to populate local_addrs: %w", err)
+		}
+		if c.Config.FingerprintInterval > 0 {
+			host, err := os.Hostname()
+			if err != nil {
+				c.Logger.WithError(err).Warn("Failed to read hostname; fingerprints carry an empty collector_id")
+			}
+			c.collectorID = host
+			c.fingerprints = newFingerprinter(c.Maps)
+			if err := c.fingerprints.start(); err != nil {
+				return fmt.Errorf("failed to enable fingerprints: %w", err)
+			}
 		}
 	}
 	if err := c.Loader.Attach(); err != nil {
@@ -407,6 +427,10 @@ func (c *Collector) Start(ctx context.Context) error {
 	if c.rules != nil {
 		c.wg.Add(1)
 		go c.runRuleExpiry()
+	}
+	if c.fingerprints != nil {
+		c.wg.Add(1)
+		go c.runFingerprints()
 	}
 
 	// Start metrics endpoint (SPOE metrics only)
@@ -1946,6 +1970,13 @@ func (c *Collector) startCollectorMetricsServer() *http.Server {
 			ruleCounts:  c.rules.Counts,
 			logger:      c.Logger,
 		})
+		if c.fingerprints != nil {
+			registry.MustRegister(&fingerprintOverflowMetric{read: c.Maps.FingerprintOverflow, logger: c.Logger})
+			registry.MustRegister(metrics.ScrubFingerprintBuckets)
+			registry.MustRegister(metrics.ScrubFingerprintCapped)
+			metrics.ScrubFingerprintCapped.WithLabelValues("bucket").Add(0)
+			metrics.ScrubFingerprintCapped.WithLabelValues("destination").Add(0)
+		}
 		mux.Handle("/readyz", readyzHandler(c.scrubReady))
 	}
 	mux.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
