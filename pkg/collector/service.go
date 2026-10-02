@@ -66,6 +66,9 @@ type Config struct {
 	// ReadyzDrain is how long a scrub node reports not-ready before detaching
 	// on shutdown, so the controller can move traffic away first.
 	ReadyzDrain time.Duration
+	// ScrubSlowPathPPS caps the packets per second xdp_scrub hands to the
+	// kernel, across all CPUs (0 = unlimited).
+	ScrubSlowPathPPS uint32
 }
 
 // Collector is a thin relay layer that:
@@ -140,6 +143,8 @@ type Collector struct {
 
 	draining        atomic.Bool
 	readinessChecks []readinessCheck
+	// lastLocalAddrsErr is only touched by pollMaps.
+	lastLocalAddrsErr string
 
 	// Lifecycle
 	ctx    context.Context
@@ -303,6 +308,9 @@ func (c *Collector) Start(ctx context.Context) error {
 	// Attach only once the maps hold the configuration, so no packet is ever
 	// judged against an empty allowlist or without monitor mode.
 	if scrub {
+		if err := c.Maps.SetScrubSlowPathPPS(c.Config.ScrubSlowPathPPS); err != nil {
+			return fmt.Errorf("failed to set -scrub-slow-path-pps: %w", err)
+		}
 		if err := c.syncLocalAddrs(); err != nil {
 			return fmt.Errorf("failed to populate local_addrs: %w", err)
 		}
@@ -713,9 +721,7 @@ func (c *Collector) pollMaps() {
 			c.sendEgressVolume()
 			c.pruneStaleState()
 			if c.Config.Mode == ebpf.ModeScrub {
-				if err := c.syncLocalAddrs(); err != nil {
-					c.Logger.WithError(err).Warn("Failed to sync local_addrs")
-				}
+				c.reportLocalAddrsSync(c.syncLocalAddrs())
 			}
 		}
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"math"
 	"os"
 	"os/signal"
 	"syscall"
@@ -23,7 +24,8 @@ func main() {
 		insideIf        = flag.String("inside-if", "", "Scrub mode: inside port that clean traffic is forwarded to")
 		xdpMode         = flag.String("xdp-mode", "auto", "XDP attach mode: auto, native or generic")
 		allowGeneric    = flag.Bool("allow-generic", false, "Scrub mode: allow generic XDP (labs only, far slower)")
-		readyzDrain     = flag.Duration("readyz-drain", 5*time.Second, "Scrub mode: how long /readyz reports not ready on shutdown before detaching")
+		readyzDrain     = flag.Duration("readyz-drain", collector.DefaultReadyzDrain, "Scrub mode: how long /readyz reports not ready on shutdown before detaching")
+		slowPathPPS     = flag.Uint("scrub-slow-path-pps", collector.DefaultScrubSlowPathPPS, "Scrub mode: max packets/s handed to the kernel slow path across all CPUs, excess dropped (0 = unlimited)")
 		analyzerAddr    = flag.String("analyzer-addr", "127.0.0.1:9090", "Analyzer gRPC address")
 		metricsAddr     = flag.String("metrics-addr", ":2112", "Prometheus metrics HTTP listen address")
 		spoePort        = flag.Int("spoe-port", 9876, "SPOE agent port")
@@ -89,6 +91,8 @@ func main() {
 		XDPMode:         attachMode,
 		AllowGeneric:    *allowGeneric,
 		ReadyzDrain:     *readyzDrain,
+
+		ScrubSlowPathPPS: uint32(min(*slowPathPPS, math.MaxUint32)),
 	}
 
 	coll, err := collector.New(cfg, logger)

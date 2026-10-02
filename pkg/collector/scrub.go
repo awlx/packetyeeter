@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"PacketYeeter/pkg/collector/ebpf"
 	"PacketYeeter/pkg/metrics"
@@ -15,6 +16,12 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
+)
+
+// Defaults of the scrub-only flags.
+const (
+	DefaultReadyzDrain      = 5 * time.Second
+	DefaultScrubSlowPathPPS = 100000
 )
 
 func validateModeConfig(cfg Config) error {
@@ -249,7 +256,8 @@ func readyzHandler(ready func() error) http.HandlerFunc {
 
 // syncLocalAddrs is polled rather than driven by netlink events: until a new
 // address lands in local_addrs, the FIB lookup already hands its traffic to
-// the kernel (NOT_FWDED); the map only exempts it from scrubbing checks.
+// the kernel (counted as slow_path{reason="not_fwded"}); the map only limits
+// it to the policy and blocklist checks.
 func (c *Collector) syncLocalAddrs() error {
 	addrs, err := net.InterfaceAddrs()
 	if err != nil {
@@ -262,6 +270,24 @@ func (c *Collector) syncLocalAddrs() error {
 		}
 	}
 	return c.Maps.SyncLocalAddrs(ips)
+}
+
+// reportLocalAddrsSync logs a poll-time sync failure only when it changes, and
+// once on recovery, so a persistent problem does not log on every poll.
+func (c *Collector) reportLocalAddrsSync(err error) {
+	msg := ""
+	if err != nil {
+		msg = err.Error()
+	}
+	if msg == c.lastLocalAddrsErr {
+		return
+	}
+	if err != nil {
+		c.Logger.WithError(err).Warn("Failed to sync local_addrs")
+	} else {
+		c.Logger.Info("local_addrs sync recovered")
+	}
+	c.lastLocalAddrsErr = msg
 }
 
 // scrubMetrics reads the kernel counters at scrape time, so the exported
@@ -277,6 +303,7 @@ func (s *scrubMetrics) Describe(ch chan<- *prometheus.Desc) {
 	ch <- metrics.ScrubBytesDesc
 	ch <- metrics.ScrubSlowPathDesc
 	ch <- metrics.ScrubTTLExpiredDesc
+	ch <- metrics.ScrubSlowPathLimitedDesc
 	ch <- metrics.ScrubReadyDesc
 }
 
@@ -303,4 +330,5 @@ func (s *scrubMetrics) Collect(ch chan<- prometheus.Metric) {
 		ch <- prometheus.MustNewConstMetric(metrics.ScrubSlowPathDesc, prometheus.CounterValue, float64(st.SlowPath[r]), reason)
 	}
 	ch <- prometheus.MustNewConstMetric(metrics.ScrubTTLExpiredDesc, prometheus.CounterValue, float64(st.SlowPath[ebpf.ScrubSlowTTL]))
+	ch <- prometheus.MustNewConstMetric(metrics.ScrubSlowPathLimitedDesc, prometheus.CounterValue, float64(st.SlowLimited))
 }

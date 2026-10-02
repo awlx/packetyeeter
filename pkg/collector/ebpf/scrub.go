@@ -1,6 +1,7 @@
 package ebpf
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"net"
@@ -14,13 +15,19 @@ import (
 var (
 	ScrubVerdictNames    = []string{"forward", "drop", "slow_path", "local"}
 	ScrubFamilyNames     = []string{"ipv4", "ipv6", "other"}
-	ScrubSlowReasonNames = []string{"no_neigh", "ttl", "mtu", "fib_fail", "egress_other", "vlan", "malformed"}
+	ScrubSlowReasonNames = []string{"no_neigh", "ttl", "mtu", "fib_fail", "egress_other", "vlan", "malformed", "not_fwded"}
 )
 
 const (
-	scrubSlowBase  = 4 * 3
-	scrubStatsSize = scrubSlowBase + 7
-	ScrubSlowTTL   = 1
+	scrubSlowBase     = 4 * 3
+	scrubSlowReasons  = 8
+	scrubSlowLimited  = scrubSlowBase + scrubSlowReasons
+	scrubStatsSize    = scrubSlowLimited + 1
+	ScrubSlowTTL      = 1
+	ScrubSlowNotFwded = 7
+
+	// LocalAddrsMax mirrors LOCAL_ADDRS_MAX in protector.bpf.c.
+	LocalAddrsMax = 4096
 )
 
 // ScrubCounter mirrors struct scrub_counter in protector.bpf.c.
@@ -31,8 +38,11 @@ type ScrubCounter struct {
 
 // ScrubStats is the scrub_stats map summed over CPUs.
 type ScrubStats struct {
-	Verdicts [4][3]ScrubCounter // [verdict][family]
-	SlowPath [7]uint64          // packets by slow-path reason
+	Verdicts [4][3]ScrubCounter       // [verdict][family]
+	SlowPath [scrubSlowReasons]uint64 // packets by slow-path reason
+	// SlowLimited counts slow-path packets over -scrub-slow-path-pps
+	// (dropped, or passed in monitor mode).
+	SlowLimited uint64
 }
 
 // sumScrubStats folds per-CPU values, indexed like scrub_stats, into totals.
@@ -47,8 +57,10 @@ func sumScrubStats(perIndex [][]ScrubCounter) ScrubStats {
 		switch {
 		case i < scrubSlowBase:
 			s.Verdicts[i/3][i%3] = total
-		case i < scrubStatsSize:
+		case i < scrubSlowLimited:
 			s.SlowPath[i-scrubSlowBase] = total.Packets
+		case i == scrubSlowLimited:
+			s.SlowLimited = total.Packets
 		}
 	}
 	return s
@@ -82,11 +94,9 @@ func (m *Maps) HasTxPort(ifindex int) (bool, error) {
 	return true, nil
 }
 
-// SyncLocalAddrs makes local_addrs_v4/v6 hold exactly addrs.
-func (m *Maps) SyncLocalAddrs(addrs []net.IP) error {
-	if m.LocalAddrsV4 == nil || m.LocalAddrsV6 == nil {
-		return fmt.Errorf("local_addrs maps not loaded")
-	}
+// splitLocalAddrs dedups addrs by family and reports an error if either
+// family exceeds the local_addrs capacity.
+func splitLocalAddrs(addrs []net.IP, capacity int) (map[[4]byte]struct{}, map[[16]byte]struct{}, error) {
 	want4 := map[[4]byte]struct{}{}
 	want6 := map[[16]byte]struct{}{}
 	for _, ip := range addrs {
@@ -96,8 +106,26 @@ func (m *Maps) SyncLocalAddrs(addrs []net.IP) error {
 			want6[[16]byte(v6)] = struct{}{}
 		}
 	}
+	var err error
+	if len(want4) > capacity || len(want6) > capacity {
+		err = fmt.Errorf("node has %d IPv4 and %d IPv6 addresses, local_addrs holds at most %d per family; "+
+			"traffic to the excess addresses is not exempt from forwarding", len(want4), len(want6), capacity)
+	}
+	return want4, want6, err
+}
+
+// SyncLocalAddrs makes local_addrs_v4/v6 hold exactly addrs, as far as
+// capacity allows.
+func (m *Maps) SyncLocalAddrs(addrs []net.IP) error {
+	if m.LocalAddrsV4 == nil || m.LocalAddrsV6 == nil {
+		return fmt.Errorf("local_addrs maps not loaded")
+	}
+	want4, want6, capErr := splitLocalAddrs(addrs, LocalAddrsMax)
 
 	var errs []string
+	if capErr != nil {
+		errs = append(errs, capErr.Error())
+	}
 	var k4 [4]byte
 	var k6 [16]byte
 	var v uint8
@@ -108,12 +136,18 @@ func (m *Maps) SyncLocalAddrs(addrs []net.IP) error {
 			stale4 = append(stale4, k4)
 		}
 	}
+	if err := it.Err(); err != nil {
+		return fmt.Errorf("iterate local_addrs_v4: %w", err)
+	}
 	var stale6 [][16]byte
 	it6 := m.LocalAddrsV6.Iterate()
 	for it6.Next(&k6, &v) {
 		if _, ok := want6[k6]; !ok {
 			stale6 = append(stale6, k6)
 		}
+	}
+	if err := it6.Err(); err != nil {
+		return fmt.Errorf("iterate local_addrs_v6: %w", err)
 	}
 	for _, k := range stale4 {
 		if err := m.LocalAddrsV4.Delete(k); err != nil {
@@ -125,15 +159,24 @@ func (m *Maps) SyncLocalAddrs(addrs []net.IP) error {
 			errs = append(errs, fmt.Sprintf("delete %v: %v", net.IP(k[:]), err))
 		}
 	}
+	// Report failed adds as a count so a full map does not produce one
+	// message per address.
+	var addFailed int
+	var firstAddErr error
 	for k := range want4 {
 		if err := m.LocalAddrsV4.Put(k, uint8(1)); err != nil {
-			errs = append(errs, fmt.Sprintf("add %v: %v", net.IP(k[:]), err))
+			addFailed++
+			firstAddErr = cmp.Or(firstAddErr, fmt.Errorf("add %v: %w", net.IP(k[:]), err))
 		}
 	}
 	for k := range want6 {
 		if err := m.LocalAddrsV6.Put(k, uint8(1)); err != nil {
-			errs = append(errs, fmt.Sprintf("add %v: %v", net.IP(k[:]), err))
+			addFailed++
+			firstAddErr = cmp.Or(firstAddErr, fmt.Errorf("add %v: %w", net.IP(k[:]), err))
 		}
+	}
+	if addFailed > 0 {
+		errs = append(errs, fmt.Sprintf("%d adds failed, first: %v", addFailed, firstAddErr))
 	}
 	if len(errs) > 0 {
 		return fmt.Errorf("sync local_addrs: %s", strings.Join(errs, "; "))

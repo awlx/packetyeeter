@@ -308,6 +308,9 @@ var (
 	ScrubTTLExpiredDesc = prometheus.NewDesc("packetyeeter_scrub_ttl_expired_total",
 		"Packets arriving with TTL/hop limit <= 1; a rising rate indicates a routing loop",
 		nil, nil)
+	ScrubSlowPathLimitedDesc = prometheus.NewDesc("packetyeeter_scrub_slow_path_limited_total",
+		"Slow-path packets over -scrub-slow-path-pps, dropped (or passed in monitor mode)",
+		nil, nil)
 	ScrubReadyDesc = prometheus.NewDesc("packetyeeter_scrub_ready",
 		"1 when /readyz reports the scrub node ready, else 0",
 		nil, nil)

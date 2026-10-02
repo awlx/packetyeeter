@@ -12,6 +12,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/sirupsen/logrus"
+	logrustest "github.com/sirupsen/logrus/hooks/test"
 )
 
 func TestValidateModeConfig(t *testing.T) {
@@ -133,6 +134,18 @@ func TestNeedIPv6Forwarding(t *testing.T) {
 	}
 }
 
+func TestReportLocalAddrsSync(t *testing.T) {
+	logger, hook := logrustest.NewNullLogger()
+	c := &Collector{Logger: logger}
+	full := errors.New("local_addrs full")
+	for _, err := range []error{nil, full, full, full, nil, nil} {
+		c.reportLocalAddrsSync(err)
+	}
+	if got := len(hook.AllEntries()); got != 2 {
+		t.Fatalf("logged %d entries, want 2 (failure once, recovery once)", got)
+	}
+}
+
 func TestScrubReadyz(t *testing.T) {
 	failing := errors.New("eth1 is down")
 	c := &Collector{readinessChecks: []readinessCheck{
@@ -164,6 +177,7 @@ func TestScrubMetrics(t *testing.T) {
 	var st ebpf.ScrubStats
 	st.Verdicts[0][0] = ebpf.ScrubCounter{Packets: 7, Bytes: 700} // forward/ipv4
 	st.SlowPath[ebpf.ScrubSlowTTL] = 3
+	st.SlowLimited = 9
 	m := &scrubMetrics{
 		stats:  func() (ebpf.ScrubStats, error) { return st, nil },
 		ready:  func() error { return nil },
@@ -173,14 +187,20 @@ func TestScrubMetrics(t *testing.T) {
 # HELP packetyeeter_scrub_ready 1 when /readyz reports the scrub node ready, else 0
 # TYPE packetyeeter_scrub_ready gauge
 packetyeeter_scrub_ready 1
+# HELP packetyeeter_scrub_slow_path_limited_total Slow-path packets over -scrub-slow-path-pps, dropped (or passed in monitor mode)
+# TYPE packetyeeter_scrub_slow_path_limited_total counter
+packetyeeter_scrub_slow_path_limited_total 9
 # HELP packetyeeter_scrub_ttl_expired_total Packets arriving with TTL/hop limit <= 1; a rising rate indicates a routing loop
 # TYPE packetyeeter_scrub_ttl_expired_total counter
 packetyeeter_scrub_ttl_expired_total 3
 `
-	if err := testutil.CollectAndCompare(m, strings.NewReader(want), "packetyeeter_scrub_ready", "packetyeeter_scrub_ttl_expired_total"); err != nil {
+	if err := testutil.CollectAndCompare(m, strings.NewReader(want), "packetyeeter_scrub_ready", "packetyeeter_scrub_slow_path_limited_total", "packetyeeter_scrub_ttl_expired_total"); err != nil {
 		t.Error(err)
 	}
 	if got := testutil.CollectAndCount(m, "packetyeeter_scrub_packets_total"); got != 12 {
 		t.Errorf("scrub_packets_total series = %d, want 12 (4 verdicts x 3 families)", got)
+	}
+	if got := testutil.CollectAndCount(m, "packetyeeter_scrub_slow_path_total"); got != len(ebpf.ScrubSlowReasonNames) {
+		t.Errorf("scrub_slow_path_total series = %d, want %d", got, len(ebpf.ScrubSlowReasonNames))
 	}
 }
