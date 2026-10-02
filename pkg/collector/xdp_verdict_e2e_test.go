@@ -6,7 +6,9 @@
 //
 //	sudo -E go test -tags e2e_ebpf -run 'TestXDPVerdicts|TestSynMonitor' -v ./pkg/collector/
 //
-// YEET_BPF_OBJ points it at another object, e.g. a build of the base branch.
+// YEET_BPF_OBJ points it at another object, e.g. a build of the base branch
+// to compare the logged verdicts; there checkBlockedUnchanged fails by design,
+// since the base branch still adds to the IPv4 blocked value per drop.
 package collector
 
 import (
@@ -349,7 +351,12 @@ func TestSynMonitorTracksPastEventBudget(t *testing.T) {
 	// One CPU, so all SYNs draw from one budget.
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
-	var set unix.CPUSet
+	var orig, set unix.CPUSet
+	if err := unix.SchedGetaffinity(0, &orig); err != nil {
+		t.Fatalf("get affinity: %v", err)
+	}
+	// The thread returns to the runtime's pool after unlock: unpin it.
+	defer unix.SchedSetaffinity(0, &orig)
 	set.Set(0)
 	if err := unix.SchedSetaffinity(0, &set); err != nil {
 		t.Fatalf("pin to CPU 0: %v", err)
