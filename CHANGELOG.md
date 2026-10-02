@@ -8,6 +8,9 @@
   (re)connect and once a minute, so collectors converge without
   acknowledgements. Off unless the analyzer runs with
   `-enable-rule-api`, since the gRPC listener is unauthenticated.
+- Optional `-rule-state-dir`: the analyzer persists pushed rules and restores
+  them on start, so a restart does not clear scrub collectors' rules until the
+  controller pushes again.
 - Collectors announce `role=host|scrub` (and their hostname) when they connect;
   the analyzer does not score that announcement, and older analyzers drop it
   because it carries no IP.

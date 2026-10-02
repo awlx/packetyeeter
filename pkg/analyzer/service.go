@@ -90,6 +90,7 @@ type Config struct {
 	InspectorTrustedHosts        []string // Extra Host/Origin hostnames the inspector trusts for mutating requests (in addition to loopback), e.g. a reverse-proxy hostname
 	DryRun                       bool     // Monitor mode - log detections but don't block
 	EnableRuleAPI                bool     // Accept PushRules; off because the gRPC listener is unauthenticated
+	RuleStateDir                 string   // Persist pushed rules here across restarts; empty disables
 	Sustained                    sustained.Config
 }
 
@@ -234,7 +235,8 @@ type Analyzer struct {
 	httpErrorMu      sync.Mutex
 
 	// Desired scrub-mode runtime rules, by scope
-	rules ruleStore
+	rules         ruleStore
+	rulePersister *ruleStatePersister // nil unless -rule-state-dir is set
 	// Per instance rather than a package variable: syncs started by
 	// StopEnforcement outlive the call that started them. 0 = default.
 	ruleSyncTimeout time.Duration
@@ -573,6 +575,7 @@ func (a *Analyzer) Start() error {
 	a.wg.Add(1)
 	go a.runBaselineCalibrator()
 
+	a.restoreRules()
 	if a.Config.EnableRuleAPI {
 		a.wg.Add(1)
 		go a.runRuleResync()

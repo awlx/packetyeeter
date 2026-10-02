@@ -149,6 +149,7 @@ func (a *Analyzer) PushRules(ctx context.Context, rs *apiv1.RuleSet) (*apiv1.Pus
 	if err := a.rules.replace(scope, wire, now); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
+	a.persistRules()
 
 	n := a.syncScrubCollectors(ctx)
 	logrus.WithFields(logrus.Fields{

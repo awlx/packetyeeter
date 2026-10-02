@@ -256,6 +256,17 @@ also encode to at most 3 MiB. A rule is withdrawn from collectors 5 seconds
 before its `expires_at`, so a collector whose clock runs slightly ahead does
 not reject the whole set.
 
+Rules live in the analyzer's memory: after a restart it would send scrub
+collectors an empty set, clearing their rules until the controller pushes
+again. With `-rule-state-dir DIR` the analyzer writes every accepted push to
+`DIR/scrub-rules.json` (mode 0600, written atomically) and restores the
+unexpired rules on start, before collectors connect. Restored rules are
+checked like pushed ones; invalid or expired entries are skipped. A file that
+cannot be read as rule state is renamed to `scrub-rules.json.corrupt-<time>`
+and the analyzer starts without rules. Failures are logged and counted in
+`packetyeeter_rule_state_errors_total{op}`. The file is as sensitive as the
+rule API itself: keep the directory writable by the analyzer only.
+
 While the analyzer is not enforcing (`-dry-run`, or the runtime kill switch),
 only `PASS` rules are sent, and pulling the kill switch withdraws the `DROP`
 and `RATE_LIMIT` rules collectors already hold.
