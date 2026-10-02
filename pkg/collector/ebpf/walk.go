@@ -84,8 +84,9 @@ func walk[K, V any](w *MapWalker, m walkMap, fn func(K, V) bool) error {
 // walkBatch reports unsupported only if the very first lookup failed for lack
 // of kernel support, so nothing has been passed to fn yet.
 func walkBatch[K, V any](chunk int, m walkMap, fn func(K, V) bool) (unsupported bool, err error) {
-	keys := make([]K, chunk)
-	vals := make([]V, chunk)
+	buf := getWalkBuf[K, V](chunk)
+	defer walkBufPool[K, V]().Put(buf)
+	keys, vals := buf.keys[:chunk], buf.vals[:chunk]
 	var cursor ebpf.MapBatchCursor
 	first := true
 	for {
@@ -95,6 +96,7 @@ func walkBatch[K, V any](chunk int, m walkMap, fn func(K, V) bool) (unsupported 
 			// leaves the cursor on that bucket, so retry it with more room.
 			keys = make([]K, 2*len(keys))
 			vals = make([]V, 2*len(vals))
+			buf.keys, buf.vals = keys, vals
 			continue
 		}
 		if first && errors.Is(err, ebpf.ErrNotSupported) {
@@ -113,6 +115,31 @@ func walkBatch[K, V any](chunk int, m walkMap, fn func(K, V) bool) (unsupported 
 			return false, fmt.Errorf("walk %s: %w", m, err)
 		}
 	}
+}
+
+type walkBuf[K, V any] struct {
+	keys []K
+	vals []V
+}
+
+// Chunk buffers are pooled per key/value type: every poll walks ten maps,
+// and fresh 100+ KiB buffers each time are pure GC load on a near-empty map.
+var walkBufPools sync.Map // (*walkBuf[K, V])(nil) -> *sync.Pool
+
+func walkBufPool[K, V any]() *sync.Pool {
+	id := (*walkBuf[K, V])(nil)
+	if p, ok := walkBufPools.Load(id); ok {
+		return p.(*sync.Pool)
+	}
+	p, _ := walkBufPools.LoadOrStore(id, new(sync.Pool))
+	return p.(*sync.Pool)
+}
+
+func getWalkBuf[K, V any](chunk int) *walkBuf[K, V] {
+	if b, ok := walkBufPool[K, V]().Get().(*walkBuf[K, V]); ok && len(b.keys) >= chunk {
+		return b
+	}
+	return &walkBuf[K, V]{keys: make([]K, chunk), vals: make([]V, chunk)}
 }
 
 func walkIter[K, V any](m walkMap, fn func(K, V) bool) error {

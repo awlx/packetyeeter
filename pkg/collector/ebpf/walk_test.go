@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -247,5 +248,23 @@ func TestDeleteKeys(t *testing.T) {
 				t.Fatalf("batch-capable map used %d single deletes", m.deletes)
 			}
 		})
+	}
+}
+
+func TestWalkReusesChunkBuffers(t *testing.T) {
+	m := newFakeMap(true, 3)
+	w := &MapWalker{}
+	walk(w, m, func(uint32, uint64) bool { return true })
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	for i := 0; i < 100; i++ {
+		m.cursors = map[*ebpf.MapBatchCursor]int{}
+		walk(w, m, func(uint32, uint64) bool { return true })
+	}
+	runtime.ReadMemStats(&after)
+	// Fresh buffers would be 100 x 4096 x 12 bytes, about 4.7 MiB. The bound
+	// leaves room for -race, where sync.Pool drops a quarter of its Puts.
+	if d := after.TotalAlloc - before.TotalAlloc; d > 3<<20 {
+		t.Fatalf("100 walks allocated %d bytes; chunk buffers not reused", d)
 	}
 }
