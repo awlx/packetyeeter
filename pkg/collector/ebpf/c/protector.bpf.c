@@ -1008,17 +1008,18 @@ static __always_inline int check_l4_v4(struct xdp_md *ctx, struct iphdr *ip, voi
         int scan_type = check_tcp_flags(tcp);
         if (scan_type != BAD_FLAGS_NONE) {
             // An update of an existing LRU key still takes a fresh node and
-            // the LRU lock; a repeat scanner only needs its fields refreshed.
+            // the LRU lock, so a repeat scan only refreshes last_seen. A
+            // changed scan replaces the whole record: in-place multi-field
+            // writes could leave userspace (or racing CPUs) a torn record.
+            __u32 flags_raw = tcp_flags_raw(tcp);
             struct bad_flags_info *cur = bpf_map_lookup_elem(&bad_flags, &saddr);
-            if (cur) {
+            if (cur && cur->scan_type == scan_type && cur->flags_raw == flags_raw) {
                 cur->last_seen = now;
-                cur->scan_type = scan_type;
-                cur->flags_raw = tcp_flags_raw(tcp);
             } else {
                 struct bad_flags_info info = {};
                 info.last_seen = now;
                 info.scan_type = scan_type;
-                info.flags_raw = tcp_flags_raw(tcp);
+                info.flags_raw = flags_raw;
                 bpf_map_update_elem(&bad_flags, &saddr, &info, BPF_ANY);
             }
             emit_incident_v4(ctx, saddr, INCIDENT_BAD_FLAGS, now);
@@ -1083,17 +1084,16 @@ static __always_inline int check_l4_v6(struct xdp_md *ctx, __u8 l4_proto, void *
         if ((void *)(tcp + 1) > data_end) return CHECK_STOP;
         int scan_type = check_tcp_flags(tcp);
         if (scan_type != BAD_FLAGS_NONE) {
-            // In place for a repeat scanner, as for IPv4.
+            // Refresh in place only for an identical repeat scan, as for IPv4.
+            __u32 flags_raw = tcp_flags_raw(tcp);
             struct bad_flags_info *cur = bpf_map_lookup_elem(&bad_flags_v6, saddr);
-            if (cur) {
+            if (cur && cur->scan_type == scan_type && cur->flags_raw == flags_raw) {
                 cur->last_seen = now;
-                cur->scan_type = scan_type;
-                cur->flags_raw = tcp_flags_raw(tcp);
             } else {
                 struct bad_flags_info info = {};
                 info.last_seen = now;
                 info.scan_type = scan_type;
-                info.flags_raw = tcp_flags_raw(tcp);
+                info.flags_raw = flags_raw;
                 bpf_map_update_elem(&bad_flags_v6, saddr, &info, BPF_ANY);
             }
             emit_incident_v6(ctx, saddr, INCIDENT_BAD_FLAGS, now);

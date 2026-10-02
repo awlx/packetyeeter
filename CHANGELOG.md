@@ -8,9 +8,10 @@
   showed a TTL that grew under attack. IPv4 blocks now expire on time, as IPv6
   blocks already did; dropping blocked IPv4 sources from several CPUs is also
   much cheaper.
-- Bad TCP flag scans refresh the existing `bad_flags`/`bad_flags_v6` entry in
-  place instead of re-inserting it per packet. Contents and alerting are
-  unchanged.
+- A repeat of the same bad TCP flag scan refreshes `last_seen` on the existing
+  `bad_flags`/`bad_flags_v6` entry in place instead of re-inserting it per
+  packet; a different scan from the same source still replaces the whole
+  entry. Contents and alerting are unchanged.
 - `tc_ingress_syn_monitor` checks the per-CPU event budget before building a
   JA4T event, so SYNs past the budget skip the event work. Handshake tracking
   still runs for every SYN.
