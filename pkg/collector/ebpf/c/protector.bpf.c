@@ -820,6 +820,270 @@ static __always_inline int parse_ipv6_l4(struct ipv6hdr *ip6, void *data_end,
     return -1; // unreachable, but keeps the verifier and compiler happy
 }
 
+// --- Shared XDP stages ---
+//
+// Checks return a CHECK_* verdict rather than an XDP action because host mode
+// passes surviving packets to the local stack while scrub mode forwards them.
+#define CHECK_CONTINUE 0
+#define CHECK_DROP     1
+#define CHECK_STOP     2 // header not inspectable; the caller picks the action
+
+#define CONFIG_KEY_ICMP_LIMIT   0
+#define CONFIG_KEY_MONITOR_MODE 1
+#define CONFIG_KEY_UDP_LIMIT    2
+#define DEFAULT_ICMP_LIMIT 100
+#define DEFAULT_UDP_LIMIT  2500
+
+static __always_inline int monitor_mode_enabled(void) {
+    __u32 key = CONFIG_KEY_MONITOR_MODE;
+    __u32 *monitor_mode = bpf_map_lookup_elem(&config_map, &key);
+    return monitor_mode && *monitor_mode == 1;
+}
+
+static __always_inline __u32 config_limit(__u32 key, __u32 fallback) {
+    __u32 *thresh = bpf_map_lookup_elem(&config_map, &key);
+    if (thresh && *thresh > 0)
+        return *thresh;
+    return fallback;
+}
+
+static __always_inline int is_vlan_proto(__u16 h_proto) {
+    return h_proto == bpf_htons(ETH_P_8021Q) || h_proto == bpf_htons(ETH_P_8021AD);
+}
+
+// *h_proto is still a VLAN EtherType when more tags are stacked than we parse;
+// callers must fail closed on that.
+static __always_inline int parse_eth_vlan(void *data, void *data_end, __u16 *h_proto, void **l3) {
+    struct ethhdr *eth = data;
+    if ((void *)(eth + 1) > data_end)
+        return -1;
+
+    __u16 proto = eth->h_proto;
+    void *cursor = (void *)(eth + 1);
+
+    #pragma unroll
+    for (int i = 0; i < 3; i++) {
+        if (is_vlan_proto(proto)) {
+            struct vlan_hdr *vlan = cursor;
+            if ((void *)(vlan + 1) > data_end)
+                return -1;
+            proto = vlan->h_vlan_encapsulated_proto;
+            cursor = (void *)(vlan + 1);
+        } else {
+            break;
+        }
+    }
+
+    *h_proto = proto;
+    *l3 = cursor;
+    return 0;
+}
+
+static __always_inline int source_allowlisted_v4(__u32 saddr) {
+    struct lpm_key_v4 key = { .prefixlen = 32, .data = saddr };
+    return bpf_map_lookup_elem(&allowlist_v4, &key) != NULL;
+}
+
+static __always_inline int source_allowlisted_v6(struct in6_addr *saddr) {
+    struct lpm_key_v6 key;
+    key.prefixlen = 128;
+    __builtin_memcpy(key.data, saddr, 16);
+    return bpf_map_lookup_elem(&allowlist_v6, &key) != NULL;
+}
+
+static __always_inline void count_policy_block_v4(__u32 saddr) {
+    __u64 *cnt = bpf_map_lookup_elem(&policy_blocks, &saddr);
+    if (cnt) {
+        __sync_fetch_and_add(cnt, 1);
+    } else {
+        __u64 one = 1;
+        bpf_map_update_elem(&policy_blocks, &saddr, &one, BPF_ANY);
+    }
+}
+
+static __always_inline void count_policy_block_v6(struct in6_addr *saddr) {
+    __u64 *cnt = bpf_map_lookup_elem(&policy_blocks_v6, saddr);
+    if (cnt) {
+        __sync_fetch_and_add(cnt, 1);
+    } else {
+        __u64 one = 1;
+        bpf_map_update_elem(&policy_blocks_v6, saddr, &one, BPF_ANY);
+    }
+}
+
+// POLICY_MONITOR must also suppress drops by every later check, hence the
+// pointer.
+static __always_inline int check_policy_v4(struct xdp_md *ctx, __u32 saddr, __u64 now, int *is_monitor) {
+    struct lpm_key_v4 key = { .prefixlen = 32, .data = saddr };
+    struct policy_entry *policy = bpf_map_lookup_elem(&policy_v4, &key);
+    if (!policy)
+        return CHECK_CONTINUE;
+    if (policy->action == POLICY_MONITOR) {
+        *is_monitor = 1;
+    } else if (policy->action == POLICY_BLOCK) {
+        count_policy_block_v4(saddr);
+        emit_incident_v4(ctx, saddr, INCIDENT_POLICY_BLOCK, now);
+        if (!*is_monitor) return CHECK_DROP;
+    }
+    return CHECK_CONTINUE;
+}
+
+static __always_inline int check_policy_v6(struct xdp_md *ctx, struct in6_addr *saddr, __u64 now, int *is_monitor) {
+    struct lpm_key_v6 key;
+    key.prefixlen = 128;
+    __builtin_memcpy(key.data, saddr, 16);
+    struct policy_entry *policy = bpf_map_lookup_elem(&policy_v6, &key);
+    if (!policy)
+        return CHECK_CONTINUE;
+    if (policy->action == POLICY_MONITOR) {
+        *is_monitor = 1;
+    } else if (policy->action == POLICY_BLOCK) {
+        count_policy_block_v6(saddr);
+        emit_incident_v6(ctx, saddr, INCIDENT_POLICY_BLOCK, now);
+        if (!*is_monitor) return CHECK_DROP;
+    }
+    return CHECK_CONTINUE;
+}
+
+static __always_inline int check_blocked_v4(struct xdp_md *ctx, __u32 saddr, __u64 now, int is_monitor) {
+    __u64 *val = bpf_map_lookup_elem(&blocked_ips, &saddr);
+    if (!val)
+        return CHECK_CONTINUE;
+    __sync_fetch_and_add(val, 1);
+    emit_incident_v4(ctx, saddr, INCIDENT_BLOCKED_IP, now);
+    if (!is_monitor) return CHECK_DROP;
+    return CHECK_CONTINUE;
+}
+
+static __always_inline int check_blocked_v6(struct xdp_md *ctx, struct in6_addr *saddr, __u64 now, int is_monitor) {
+    __u64 *val = bpf_map_lookup_elem(&blocked_ips_v6, saddr);
+    if (!val)
+        return CHECK_CONTINUE;
+    emit_incident_v6(ctx, saddr, INCIDENT_BLOCKED_IP, now);
+    if (!is_monitor) return CHECK_DROP;
+    return CHECK_CONTINUE;
+}
+
+static __always_inline int check_l4_v4(struct xdp_md *ctx, struct iphdr *ip, void *data_end,
+                                       __u32 saddr, __u64 now, int is_monitor) {
+    if (ip->protocol == IPPROTO_ICMP) {
+        __u32 limit = config_limit(CONFIG_KEY_ICMP_LIMIT, DEFAULT_ICMP_LIMIT);
+        __u8 first_trip = 0;
+        if (check_rate_limit(&icmp_rates, &saddr, limit, now, &first_trip)) {
+            if (first_trip)
+                emit_incident_v4(ctx, saddr, INCIDENT_ICMP_RATE, now);
+            if (!is_monitor) return CHECK_DROP;
+        }
+    }
+
+    if (ip->protocol == IPPROTO_UDP) {
+        int is_frag = (ip->frag_off & bpf_htons(IP_MF | IP_OFFSET)) != 0;
+        if (is_frag && udp_frag_mode() == UDP_FRAG_MODE_DROP) {
+            // Legacy hard-drop path. Still budget-limited; prefer RATE mode
+            // on low-MTU/VPN paths where fragmentation is legitimate.
+            emit_incident_v4(ctx, saddr, INCIDENT_UDP_FRAG, now);
+            if (!is_monitor) return CHECK_DROP;
+        }
+
+        // Rate Limit UDP (covers non-frag and RATE-mode fragments)
+        __u32 limit = config_limit(CONFIG_KEY_UDP_LIMIT, DEFAULT_UDP_LIMIT);
+        __u8 first_trip = 0;
+        if (check_rate_limit(&udp_rates, &saddr, limit, now, &first_trip)) {
+            if (first_trip) {
+                // Prefer udp_frag label when the trip was on fragmented UDP
+                // so operators can still see fragment pressure under RATE mode.
+                __u8 reason = is_frag ? INCIDENT_UDP_FRAG : INCIDENT_UDP_RATE;
+                emit_incident_v4(ctx, saddr, reason, now);
+            }
+            if (!is_monitor) return CHECK_DROP;
+        }
+    }
+
+    if (ip->protocol == IPPROTO_TCP) {
+        struct tcphdr *tcp = ipv4_tcp_header(ip, data_end);
+        if (!tcp) return CHECK_STOP;
+        int scan_type = check_tcp_flags(tcp);
+        if (scan_type != BAD_FLAGS_NONE) {
+            struct bad_flags_info info = {};
+            info.last_seen = now;
+            info.scan_type = scan_type;
+            info.flags_raw = tcp_flags_raw(tcp);
+            bpf_map_update_elem(&bad_flags, &saddr, &info, BPF_ANY);
+            emit_incident_v4(ctx, saddr, INCIDENT_BAD_FLAGS, now);
+            if (!is_monitor) return CHECK_DROP;
+        }
+    }
+
+    return CHECK_CONTINUE;
+}
+
+static __always_inline int check_l4_v6(struct xdp_md *ctx, __u8 l4_proto, void *l4_hdr, void *data_end,
+                                       struct in6_addr *saddr, __u64 now, int is_monitor) {
+    if (l4_proto == IPPROTO_ICMPV6) {
+        __u32 limit = config_limit(CONFIG_KEY_ICMP_LIMIT, DEFAULT_ICMP_LIMIT); // Shared threshold
+        __u8 first_trip = 0;
+        if (check_rate_limit(&icmp_rates_v6, saddr, limit, now, &first_trip)) {
+            if (first_trip)
+                emit_incident_v6(ctx, saddr, INCIDENT_ICMP_RATE, now);
+            if (!is_monitor) return CHECK_DROP;
+        }
+    }
+
+    if (l4_proto == IPPROTO_UDP) {
+        __u32 limit = config_limit(CONFIG_KEY_UDP_LIMIT, DEFAULT_UDP_LIMIT); // Shared threshold
+        __u8 first_trip = 0;
+        if (check_rate_limit(&udp_rates_v6, saddr, limit, now, &first_trip)) {
+            if (first_trip)
+                emit_incident_v6(ctx, saddr, INCIDENT_UDP_RATE, now);
+            if (!is_monitor) return CHECK_DROP;
+        }
+    }
+
+    // IPv6 Fragment extension header. DROP mode keeps the legacy hard drop.
+    // RATE mode rate-limits first-fragment UDP and otherwise passes so
+    // low-MTU paths are not unconditionally blackholed.
+    if (l4_proto == IP6_EXT_FRAGMENT) {
+        if (udp_frag_mode() == UDP_FRAG_MODE_DROP) {
+            emit_incident_v6(ctx, saddr, INCIDENT_UDP_FRAG, now);
+            if (!is_monitor) return CHECK_DROP;
+        } else {
+            struct ip6_frag_hdr *fh = l4_hdr;
+            if ((void *)(fh + 1) <= data_end) {
+                // Offset is the high 13 bits; M flag is bit 0. Offset 0 is
+                // the first fragment and still carries the upper-layer header.
+                __u16 fo = bpf_ntohs(fh->frag_off);
+                if ((fo & 0xFFF8) == 0 && fh->nexthdr == IPPROTO_UDP) {
+                    __u32 limit = config_limit(CONFIG_KEY_UDP_LIMIT, DEFAULT_UDP_LIMIT);
+                    __u8 first_trip = 0;
+                    if (check_rate_limit(&udp_rates_v6, saddr, limit, now, &first_trip)) {
+                        if (first_trip)
+                            emit_incident_v6(ctx, saddr, INCIDENT_UDP_FRAG, now);
+                        if (!is_monitor) return CHECK_DROP;
+                    }
+                }
+            }
+        }
+    }
+
+    // TCP flag check, on the L4 header located past any extension headers
+    if (l4_proto == IPPROTO_TCP) {
+        struct tcphdr *tcp = l4_hdr;
+        if ((void *)(tcp + 1) > data_end) return CHECK_STOP;
+        int scan_type = check_tcp_flags(tcp);
+        if (scan_type != BAD_FLAGS_NONE) {
+            struct bad_flags_info info = {};
+            info.last_seen = now;
+            info.scan_type = scan_type;
+            info.flags_raw = tcp_flags_raw(tcp);
+            bpf_map_update_elem(&bad_flags_v6, saddr, &info, BPF_ANY);
+            emit_incident_v6(ctx, saddr, INCIDENT_BAD_FLAGS, now);
+            if (!is_monitor) return CHECK_DROP;
+        }
+    }
+
+    return CHECK_CONTINUE;
+}
+
 // --- XDP Program ---
 
 SEC("xdp")
@@ -827,36 +1091,18 @@ int xdp_filter(struct xdp_md *ctx) {
     void *data = (void *)(long)ctx->data;
     void *data_end = (void *)(long)ctx->data_end;
 
-    struct ethhdr *eth = data;
-    if ((void *)(eth + 1) > data_end)
+    __u16 h_proto = 0;
+    void *cursor = data;
+    if (parse_eth_vlan(data, data_end, &h_proto, &cursor) < 0)
         return XDP_PASS;
 
-    __u16 h_proto = eth->h_proto;
-    void *cursor = (void *)(eth + 1);
-
-    // Handle VLANs (up to 3 stacked tags)
-    #pragma unroll
-    for (int i = 0; i < 3; i++) {
-        if (h_proto == bpf_htons(ETH_P_8021Q) || h_proto == bpf_htons(ETH_P_8021AD)) {
-            struct vlan_hdr *vlan = cursor;
-            if ((void *)(vlan + 1) > data_end)
-                return XDP_PASS;
-            h_proto = vlan->h_vlan_encapsulated_proto;
-            cursor = (void *)(vlan + 1);
-        } else {
-            break;
-        }
-    }
-
-    __u32 key_monitor = 1;
-    __u32 *monitor_mode = bpf_map_lookup_elem(&config_map, &key_monitor);
-    int is_monitor = (monitor_mode && *monitor_mode == 1);
+    int is_monitor = monitor_mode_enabled();
 
     // Frame stacked deeper than the tags we parse: h_proto is still a VLAN
     // ethertype, so neither the IPv4 nor IPv6 branch below would match and the
     // frame would fall through to XDP_PASS uninspected. Fail closed - we cannot
     // see its L3/L4 to enforce on it - while honoring monitor/dry-run mode.
-    if (h_proto == bpf_htons(ETH_P_8021Q) || h_proto == bpf_htons(ETH_P_8021AD)) {
+    if (is_vlan_proto(h_proto)) {
         if (!is_monitor)
             return XDP_DROP;
     }
@@ -867,140 +1113,42 @@ int xdp_filter(struct xdp_md *ctx) {
             return XDP_PASS;
 
         __u64 now = bpf_ktime_get_ns();
-
-        // 0. AllowList Check
-        struct lpm_key_v4 key_allowed = { .prefixlen = 32, .data = ip->saddr };
-        if (bpf_map_lookup_elem(&allowlist_v4, &key_allowed)) {
-            return XDP_PASS;
-        }
-
-        // 0.5 Policy Engine Check (per-CIDR operator override)
-        struct policy_entry *policy = bpf_map_lookup_elem(&policy_v4, &key_allowed);
-        if (policy) {
-            if (policy->action == POLICY_MONITOR) {
-                is_monitor = 1;
-            } else if (policy->action == POLICY_BLOCK) {
-                __u32 saddr_policy = ip->saddr;
-                __u64 *cnt = bpf_map_lookup_elem(&policy_blocks, &saddr_policy);
-                if (cnt) {
-                    __sync_fetch_and_add(cnt, 1);
-                } else {
-                    __u64 one = 1;
-                    bpf_map_update_elem(&policy_blocks, &saddr_policy, &one, BPF_ANY);
-                }
-                emit_incident_v4(ctx, saddr_policy, INCIDENT_POLICY_BLOCK, now);
-                if (!is_monitor) return XDP_DROP;
-            }
-        }
-
-        // 1. Blocked IP Check
         // Copy to stack to ensure alignment and safety
         __u32 saddr = ip->saddr;
-        __u64 *val = bpf_map_lookup_elem(&blocked_ips, &saddr);
-        if (val) {
-            __sync_fetch_and_add(val, 1);
-            emit_incident_v4(ctx, saddr, INCIDENT_BLOCKED_IP, now);
-            if (!is_monitor) return XDP_DROP;
-        }
 
-        // 2. ICMP Rate Limit
-        if (ip->protocol == IPPROTO_ICMP) {
-             __u32 key_icmp_limit = 0;
-             __u32 *icmp_thresh = bpf_map_lookup_elem(&config_map, &key_icmp_limit);
-             __u32 limit = 100;
-             if (icmp_thresh && *icmp_thresh > 0) limit = *icmp_thresh;
-             
-             __u8 first_trip = 0;
-             if (check_rate_limit(&icmp_rates, &saddr, limit, now, &first_trip)) {
-                 if (first_trip)
-                     emit_incident_v4(ctx, saddr, INCIDENT_ICMP_RATE, now);
-                 if (!is_monitor) return XDP_DROP;
-             }
-        }
-        
-        // 3. UDP Checks (Fragment policy + Rate Limit)
-        if (ip->protocol == IPPROTO_UDP) {
-             int is_frag = (ip->frag_off & bpf_htons(IP_MF | IP_OFFSET)) != 0;
-             if (is_frag && udp_frag_mode() == UDP_FRAG_MODE_DROP) {
-                 // Legacy hard-drop path. Still budget-limited; prefer RATE mode
-                 // on low-MTU/VPN paths where fragmentation is legitimate.
-                 emit_incident_v4(ctx, saddr, INCIDENT_UDP_FRAG, now);
-                 if (!is_monitor) return XDP_DROP;
-             }
-             
-             // Rate Limit UDP (covers non-frag and RATE-mode fragments)
-             __u32 key_udp_limit = 2;
-             __u32 *udp_thresh = bpf_map_lookup_elem(&config_map, &key_udp_limit);
-             __u32 limit = 2500; // Default safer UDP limit
-             if (udp_thresh && *udp_thresh > 0) limit = *udp_thresh;
+        // 0. AllowList Check
+        if (source_allowlisted_v4(saddr))
+            return XDP_PASS;
 
-             __u8 first_trip = 0;
-             if (check_rate_limit(&udp_rates, &saddr, limit, now, &first_trip)) {
-                 if (first_trip) {
-                     // Prefer udp_frag label when the trip was on fragmented UDP
-                     // so operators can still see fragment pressure under RATE mode.
-                     __u8 reason = is_frag ? INCIDENT_UDP_FRAG : INCIDENT_UDP_RATE;
-                     emit_incident_v4(ctx, saddr, reason, now);
-                 }
-                 if (!is_monitor) return XDP_DROP;
-             }
-        }
+        // 0.5 Policy Engine Check (per-CIDR operator override)
+        if (check_policy_v4(ctx, saddr, now, &is_monitor) == CHECK_DROP)
+            return XDP_DROP;
 
-        // 4. TCP Flag Check
-        if (ip->protocol == IPPROTO_TCP) {
-             struct tcphdr *tcp = ipv4_tcp_header(ip, data_end);
-             if (!tcp) return XDP_PASS;
-             int scan_type = check_tcp_flags(tcp);
-             if (scan_type != BAD_FLAGS_NONE) {
-                 struct bad_flags_info info = {};
-                 info.last_seen = now;
-                 info.scan_type = scan_type;
-                 info.flags_raw = tcp_flags_raw(tcp);
-                 bpf_map_update_elem(&bad_flags, &saddr, &info, BPF_ANY);
-                 emit_incident_v4(ctx, saddr, INCIDENT_BAD_FLAGS, now);
-                 if (!is_monitor) return XDP_DROP;
-             }
-        }
+        // 1. Blocked IP Check
+        if (check_blocked_v4(ctx, saddr, now, is_monitor) == CHECK_DROP)
+            return XDP_DROP;
+
+        if (check_l4_v4(ctx, ip, data_end, saddr, now, is_monitor) == CHECK_DROP)
+            return XDP_DROP;
 
     } else if (h_proto == bpf_htons(ETH_P_IPV6)) {
         struct ipv6hdr *ip6 = cursor;
         if ((void *)(ip6 + 1) > data_end)
             return XDP_PASS;
-        
+
         struct in6_addr saddr = ip6->saddr;
         __u64 now = bpf_ktime_get_ns();
 
         // 0. AllowList Check
-        struct lpm_key_v6 key_allowed;
-        key_allowed.prefixlen = 128;
-        __builtin_memcpy(key_allowed.data, &saddr, 16);
-        if (bpf_map_lookup_elem(&allowlist_v6, &key_allowed)) {
+        if (source_allowlisted_v6(&saddr))
             return XDP_PASS;
-        }
 
         // 0.5 Policy Engine Check (per-CIDR operator override)
-        struct policy_entry *policy6 = bpf_map_lookup_elem(&policy_v6, &key_allowed);
-        if (policy6) {
-            if (policy6->action == POLICY_MONITOR) {
-                is_monitor = 1;
-            } else if (policy6->action == POLICY_BLOCK) {
-                __u64 *cnt6 = bpf_map_lookup_elem(&policy_blocks_v6, &saddr);
-                if (cnt6) {
-                    __sync_fetch_and_add(cnt6, 1);
-                } else {
-                    __u64 one = 1;
-                    bpf_map_update_elem(&policy_blocks_v6, &saddr, &one, BPF_ANY);
-                }
-                emit_incident_v6(ctx, &saddr, INCIDENT_POLICY_BLOCK, now);
-                if (!is_monitor) return XDP_DROP;
-            }
-        }
+        if (check_policy_v6(ctx, &saddr, now, &is_monitor) == CHECK_DROP)
+            return XDP_DROP;
 
-        __u64 *val = bpf_map_lookup_elem(&blocked_ips_v6, &saddr);
-        if (val) {
-            emit_incident_v6(ctx, &saddr, INCIDENT_BLOCKED_IP, now);
-            if (!is_monitor) return XDP_DROP;
-        }
+        if (check_blocked_v6(ctx, &saddr, now, is_monitor) == CHECK_DROP)
+            return XDP_DROP;
 
         // Resolve the true upper-layer protocol behind any IPv6 extension
         // headers. Dispatching on ip6->nexthdr alone lets a single extension
@@ -1019,79 +1167,8 @@ int xdp_filter(struct xdp_md *ctx) {
             return XDP_PASS;
         }
 
-        // IPv6 ICMPv6 Rate Limit
-        if (l4_proto == IPPROTO_ICMPV6) {
-             __u32 key_icmp_limit = 0; // Shared threshold
-             __u32 *icmp_thresh = bpf_map_lookup_elem(&config_map, &key_icmp_limit);
-             __u32 limit = 100;
-             if (icmp_thresh && *icmp_thresh > 0) limit = *icmp_thresh;
-
-             __u8 first_trip = 0;
-             if (check_rate_limit(&icmp_rates_v6, &saddr, limit, now, &first_trip)) {
-                 if (first_trip)
-                     emit_incident_v6(ctx, &saddr, INCIDENT_ICMP_RATE, now);
-                 if (!is_monitor) return XDP_DROP;
-             }
-        }
-
-        // IPv6 UDP Rate Limit
-        if (l4_proto == IPPROTO_UDP) {
-             __u32 key_udp_limit = 2; // Shared threshold
-             __u32 *udp_thresh = bpf_map_lookup_elem(&config_map, &key_udp_limit);
-             __u32 limit = 2500;
-             if (udp_thresh && *udp_thresh > 0) limit = *udp_thresh;
-
-             __u8 first_trip = 0;
-             if (check_rate_limit(&udp_rates_v6, &saddr, limit, now, &first_trip)) {
-                 if (first_trip)
-                     emit_incident_v6(ctx, &saddr, INCIDENT_UDP_RATE, now);
-                 if (!is_monitor) return XDP_DROP;
-             }
-        }
-        // IPv6 Fragment extension header. DROP mode keeps the legacy hard drop.
-        // RATE mode rate-limits first-fragment UDP and otherwise passes so
-        // low-MTU paths are not unconditionally blackholed.
-        if (l4_proto == IP6_EXT_FRAGMENT) {
-            if (udp_frag_mode() == UDP_FRAG_MODE_DROP) {
-                emit_incident_v6(ctx, &saddr, INCIDENT_UDP_FRAG, now);
-                if (!is_monitor) return XDP_DROP;
-            } else {
-                struct ip6_frag_hdr *fh = l4_hdr;
-                if ((void *)(fh + 1) <= data_end) {
-                    // Offset is the high 13 bits; M flag is bit 0. Offset 0 is
-                    // the first fragment and still carries the upper-layer header.
-                    __u16 fo = bpf_ntohs(fh->frag_off);
-                    if ((fo & 0xFFF8) == 0 && fh->nexthdr == IPPROTO_UDP) {
-                        __u32 key_udp_limit = 2;
-                        __u32 *udp_thresh = bpf_map_lookup_elem(&config_map, &key_udp_limit);
-                        __u32 limit = 2500;
-                        if (udp_thresh && *udp_thresh > 0) limit = *udp_thresh;
-                        __u8 first_trip = 0;
-                        if (check_rate_limit(&udp_rates_v6, &saddr, limit, now, &first_trip)) {
-                            if (first_trip)
-                                emit_incident_v6(ctx, &saddr, INCIDENT_UDP_FRAG, now);
-                            if (!is_monitor) return XDP_DROP;
-                        }
-                    }
-                }
-            }
-        }
-
-        // IPv6 TCP Flag Check, on the L4 header located past any extension headers
-        if (l4_proto == IPPROTO_TCP) {
-            struct tcphdr *tcp = l4_hdr;
-            if ((void *)(tcp + 1) > data_end) return XDP_PASS;
-            int scan_type = check_tcp_flags(tcp);
-            if (scan_type != BAD_FLAGS_NONE) {
-                struct bad_flags_info info = {};
-                info.last_seen = now;
-                info.scan_type = scan_type;
-                info.flags_raw = tcp_flags_raw(tcp);
-                bpf_map_update_elem(&bad_flags_v6, &saddr, &info, BPF_ANY);
-                emit_incident_v6(ctx, &saddr, INCIDENT_BAD_FLAGS, now);
-                if (!is_monitor) return XDP_DROP;
-            }
-        }
+        if (check_l4_v6(ctx, l4_proto, l4_hdr, data_end, &saddr, now, is_monitor) == CHECK_DROP)
+            return XDP_DROP;
     }
 
     return XDP_PASS;
