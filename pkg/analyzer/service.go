@@ -1030,7 +1030,10 @@ func (a *Analyzer) processSignal(sig *apiv1.Signal, cs *collectorStream) {
 
 func (a *Analyzer) sendCommand(cs *collectorStream, cmd *apiv1.Command) {
 	if a.Config.DryRun {
-		logrus.WithFields(logrus.Fields{"cmd": cmd.String()}).Debug("Dry run: not sending command")
+		// cmd.String() renders the whole proto even when Debug is off.
+		if logrus.IsLevelEnabled(logrus.DebugLevel) {
+			logrus.WithFields(logrus.Fields{"cmd": cmd.String()}).Debug("Dry run: not sending command")
+		}
 		return
 	}
 

@@ -180,7 +180,7 @@ const batchEvictHeadroom = 10
 
 // EnforceMaxSizeBatch keeps m at or below maxSize while amortizing the cost of
 // locating the oldest entries. When m exceeds maxSize it removes, in a single
-// single selection pass, the overflow plus a maxSize/batchEvictHeadroom headroom margin,
+// selection pass, the overflow plus a maxSize/batchEvictHeadroom headroom margin,
 // so a caller on a hot insert path pays the O(n) scan once per batch rather
 // than on every insert (unlike EnforceMaxSize, which evicts one-at-a-time).
 // Prefer this on paths that insert under load — per-signal or per-packet caches
