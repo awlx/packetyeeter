@@ -29,6 +29,8 @@ SRC6=fd01:1::2; OUT6=fd01:1::1; IN6=fd01:2::1; DST6=fd01:2::2
 # (routed to it, but it does not forward).
 HS4=10.201.1.5; HS6=fd01:1::5; HOLE4=10.201.3.9; HOLE6=fd01:3::9
 TTL1_4=10.201.1.6  # its SYNs expire on the scrub node and must not be reported
+SLOWACK4=10.201.1.7  # SYN forwarded in XDP, ACK left to the kernel: not reported
+RSTACK4=10.201.1.8   # SYN then RST|ACK, which does not complete a handshake
 
 log()  { printf '\033[1;36m[test]\033[0m %s\n' "$*"; }
 pass() { printf '\033[1;32m[pass]\033[0m %s\n' "$*"; }
@@ -72,6 +74,8 @@ src ip addr add "$BLOCKED4/24" dev src0
 src ip addr add "$POLICY4/24" dev src0
 src ip addr add "$HS4/24" dev src0
 src ip addr add "$TTL1_4/24" dev src0
+src ip addr add "$SLOWACK4/24" dev src0
+src ip addr add "$RSTACK4/24" dev src0
 src ip -6 addr add "$SRC6/64" dev src0 nodad
 src ip -6 addr add "$HS6/64" dev src0 nodad
 scr ip addr add "$OUT4/24" dev out0
@@ -259,6 +263,28 @@ syn_only "$HS4" "$HOLE4" & syn4=$!
 syn_only "$HS6" "$HOLE6" & syn6=$!
 syn_only "$TTL1_4" "$DST4" 1 & synttl=$!
 wait "$syn4" "$syn6" "$synttl"
+raw_tcp() { # SRC DST then FLAGS:TTL pairs, sent in order on one 4-tuple
+  src python3 -c '
+import socket, struct, sys
+src, dst = sys.argv[1], sys.argv[2]
+def csum(b):
+    if len(b) % 2:
+        b += b"\0"
+    s = sum(struct.unpack("!%dH" % (len(b) // 2), b))
+    s = (s >> 16) + (s & 0xFFFF)
+    return ~(s + (s >> 16)) & 0xFFFF
+sock = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_RAW)
+for pair in sys.argv[3:]:
+    flags, ttl = (int(x, 0) for x in pair.split(":"))
+    tcp = struct.pack("!HHIIBBHHH", 40001, 80, 1000, 1, 5 << 4, flags, 64240, 0, 0)
+    pseudo = socket.inet_aton(src) + socket.inet_aton(dst) + struct.pack("!BBH", 0, 6, len(tcp))
+    tcp = tcp[:16] + struct.pack("!H", csum(pseudo + tcp)) + tcp[18:]
+    ip = struct.pack("!BBHHHBBH4s4s", 0x45, 0, 20 + len(tcp), 0, 0, ttl, 6, 0,
+                     socket.inet_aton(src), socket.inet_aton(dst))
+    sock.sendto(ip + tcp, (dst, 0))' "$@"
+}
+raw_tcp "$SLOWACK4" "$HOLE4" 0x02:64 0x10:1
+raw_tcp "$RSTACK4" "$HOLE4" 0x02:64 0x14:64
 reported() { grep -q "type=SIGNAL_INCOMPLETE_HANDSHAKE .*ip=$1\$" "$SINK_LOG"; }
 for _ in $(seq 30); do reported "$HS4" && reported "$HS6" && break; sleep 0.2; done
 sleep 2 # two more polls, so an expired entry for a completed handshake would have surfaced
@@ -266,6 +292,8 @@ reported "$HS4" && pass "unanswered IPv4 SYN reported as incomplete handshake" |
 reported "$HS6" && pass "unanswered IPv6 SYN reported as incomplete handshake" || bad "no incomplete handshake signal for $HS6"
 reported "$SRC4" || reported "$SRC6" && bad "completed handshake reported as incomplete" || pass "completed handshakes not reported"
 reported "$TTL1_4" && bad "SYN the node did not forward was reported" || pass "SYNs left to the kernel not reported"
+reported "$SLOWACK4" && bad "handshake whose ACK took the kernel path was reported" || pass "ACKs left to the kernel still complete a handshake"
+reported "$RSTACK4" && pass "RST|ACK does not count as a completed handshake" || bad "RST|ACK closed the handshake"
 
 log "IPv6 transit with forwarding disabled is visible"
 nf=$(metric packetyeeter_scrub_slow_path_total 'reason="not_fwded"')
