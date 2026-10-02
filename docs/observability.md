@@ -270,14 +270,27 @@ time:
   `packetyeeter_scrub_bytes_total{verdict,family}` (counters): `verdict` is
   `forward` (XDP redirect), `drop`, `slow_path` (handed to the kernel) or
   `local` (the node's own, multicast or link-local traffic); `family` is
-  `ipv4`, `ipv6` or `other`.
+  `ipv4`, `ipv6` or `other`. `drop` includes blocked or policy-matched traffic
+  to the node's own addresses, slow-path packets over `-scrub-slow-path-pps`,
+  and the rare frames the redirect itself rejects. Bytes count only the linear
+  part of each frame (multi-buffer/jumbo frames are undercounted, because the
+  helper that would include fragments needs Linux 5.18).
 - `packetyeeter_scrub_slow_path_total{reason}` (counter): why packets took the
   kernel path: `no_neigh`, `ttl`, `mtu`, `fib_fail`, `egress_other` (route out
   of a port other than the inside port), `vlan`, `malformed` (monitor mode
-  only). A steady `no_neigh` or `egress_other` rate means traffic is not being
-  forwarded in XDP.
+  only), `not_fwded` (the kernel will not forward it: forwarding is disabled on
+  the outside port, or the destination is a local address not yet synced). A
+  steady `no_neigh` or `egress_other` rate means traffic is not being forwarded
+  in XDP; a steady `not_fwded` rate means transit traffic is being blackholed,
+  usually because IPv6 forwarding is off. Packets are counted here even when
+  the slow-path limit then drops them.
+- `packetyeeter_scrub_slow_path_limited_total` (counter): slow-path packets over
+  `-scrub-slow-path-pps`, dropped (passed in monitor mode). A rising rate means
+  a flood targets the slow path, or the cap is below the normal slow-path rate
+  and is delaying neighbour resolution and ICMP errors.
 - `packetyeeter_scrub_ttl_expired_total` (counter): packets arriving with TTL or
-  hop limit <= 1. A rising rate indicates a routing loop.
+  hop limit <= 1; an alias of `packetyeeter_scrub_slow_path_total{reason="ttl"}`,
+  kept for dashboards. A rising rate indicates a routing loop.
 - `packetyeeter_scrub_ready` (gauge): 1 while `/readyz` returns 200.
 
 ## Collector perf-ring health

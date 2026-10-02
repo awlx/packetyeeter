@@ -299,10 +299,11 @@ sudo ./packetyeeter-collector -i eth0 -analyzer-addr 127.0.0.1:9090
 | :--- | :--- | :--- |
 | `-i` | `eth0` | Network interface to attach eBPF programs to. In scrub mode, the outside port. |
 | `-mode` | `host` | `host` protects this host (XDP + TC). `scrub` forwards clean traffic from `-i` to `-inside-if`; see [scrub mode](docs/operations.md#scrub-mode). |
-| `-inside-if` | `""` | Scrub mode: inside port clean traffic is forwarded to. Required in scrub mode. |
+| `-inside-if` | `""` | Scrub mode: inside port clean traffic is forwarded to. Required in scrub mode; rejected in host mode. |
 | `-xdp-mode` | `auto` | XDP attach mode: `auto` (kernel default; in scrub mode native, failing unless `-allow-generic`), `native`, or `generic`. |
-| `-allow-generic` | `false` | Scrub mode: allow generic XDP. Labs only; far slower than native. |
-| `-readyz-drain` | `5s` | Scrub mode: how long `/readyz` reports not ready on shutdown before XDP detaches. |
+| `-allow-generic` | `false` | Scrub mode: allow generic XDP. Labs only; far slower than native. Rejected in host mode. |
+| `-readyz-drain` | `5s` | Scrub mode: how long `/readyz` reports not ready on shutdown before XDP detaches. The control plane keeps running meanwhile. |
+| `-scrub-slow-path-pps` | `100000` | Scrub mode: max packets/s handed to the kernel slow path across all CPUs; excess is dropped (counted in monitor mode). `0` = unlimited. |
 | `-analyzer-addr` | `127.0.0.1:9090` | Analyzer gRPC address to connect to. |
 | `-metrics-addr` | `:2112` | Prometheus metrics HTTP listen address. |
 | `-spoe-port` | `9876` | HAProxy SPOE agent port. |
