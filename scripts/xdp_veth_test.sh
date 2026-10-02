@@ -87,6 +87,7 @@ for t in clang ip nping go; do command -v "$t" >/dev/null || need+=("$t"); done
 if [[ ${#need[@]} -gt 0 ]]; then
   warn "missing: ${need[*]}"
   warn "install on Fedora/Nobara: sudo dnf install -y clang llvm libbpf-devel bpftool nmap kernel-headers"
+  warn "install on Debian/Ubuntu:  sudo apt install -y clang llvm libbpf-dev linux-tools-generic nmap"
   fail "toolchain incomplete"
 fi
 HAVE_BPFTOOL=0; command -v bpftool >/dev/null && HAVE_BPFTOOL=1 || \
@@ -146,7 +147,7 @@ kill -0 "$SINK_PID" 2>/dev/null || { cat "$SINK_LOG"; fail "sink exited early"; 
 # -v surfaces the per-poll debug counters; -dry-run so nothing is enforced.
 log "starting collector on $VETH_HOST (dry-run, verbose) -> sink"
 "$COLLECTOR_BIN" -i "$VETH_HOST" -dry-run -v -analyzer-addr "$SINK_ADDR" \
-  -poll-interval 1s -socket "" -spoe-port 0 -haproxy-port 0 >"$COLLECTOR_LOG" 2>&1 &
+  -poll-interval 1s -socket "" -spoe-port 0 >"$COLLECTOR_LOG" 2>&1 &
 COLLECTOR_PID=$!
 sleep 3
 kill -0 "$COLLECTOR_PID" 2>/dev/null || { cat "$COLLECTOR_LOG"; fail "collector exited early"; }
