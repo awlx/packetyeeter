@@ -1,5 +1,15 @@
 # PacketYeeter Changelog
 
+## 2026-10-02 - Scrub mode handshake map per-CPU LRU
+
+- `xdp_scrub` tracks handshakes in its own `scrub_handshakes(_v6)` maps, LRU
+  hashes with per-CPU LRU lists (`BPF_F_NO_COMMON_LRU`), instead of sharing
+  `pending_handshakes(_v6)` with host mode. A random-source SYN flood no longer
+  contends on one LRU lock across CPUs. Host mode is unchanged, and each mode
+  only creates its own pair of maps.
+- The 500k-entry capacity is now split evenly across CPUs for eviction, so
+  under a flood hitting few RX queues old entries are evicted earlier.
+
 ## 2026-10-02 - Scrub mode handshake tracking fixes
 
 - An ACK the kernel forwards (slow path, e.g. right after a neighbour

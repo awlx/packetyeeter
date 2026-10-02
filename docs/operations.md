@@ -226,6 +226,11 @@ avoids these signals; the per-source rate limits and blocks still apply. Signals
 threshold as host mode. Handshake RTT (JA4L) needs the SYN-ACK and is not
 available in scrub mode.
 
+Scrub nodes keep these entries in `scrub_handshakes(_v6)` (500k entries per
+family) with per-CPU LRU lists: under a random-source SYN flood each CPU evicts
+its own oldest entries, so a CPU taking most of the flood evicts sooner than
+the total size suggests. A SYN evicted before its ACK is never reported.
+
 A connection's SYN and first ACK must cross the same scrub node. With several
 nodes, keep ECMP hashing on the 5-tuple, and expect a short burst of
 incomplete-handshake signals whenever flows move: a node draining or joining,
