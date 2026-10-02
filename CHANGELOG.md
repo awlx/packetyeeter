@@ -7,11 +7,12 @@
   server stalled that collector's signal processing for 5 seconds. Lookups now
   run on a bounded worker pool with per-IP de-duplication; a full queue drops
   the lookup instead of waiting.
-- Detection change: until an IP's verification completes, its requests are
-  unverified - no verified-bot exemption, no impersonation penalty, and the
-  browser-claim header heuristics are skipped. Requests after completion get
-  the cached verdict as before. Dropped lookups are treated as plain
-  unverified requests. See `docs/operations.md#bot-verification`.
+- Detection change: until an IP's verification completes (at most the
+  5-second DNS budget), its requests are unverified - no verified-bot
+  exemption, no impersonation penalty, and the browser-claim header heuristics
+  are skipped. Requests after completion get the cached verdict as before.
+  Dropped lookups, and lookups still pending past the DNS budget, are treated
+  as plain unverified requests. See `docs/operations.md#bot-verification`.
 - New metrics `packetyeeter_bot_verification_queue_depth`,
   `packetyeeter_bot_verification_queue_drops_total{reason}` and
   `packetyeeter_bot_verification_pending_total{bot_type}`.

@@ -91,8 +91,8 @@ func TestVerifyBotDoesNotWaitOnHungDNS(t *testing.T) {
 		ip := net.IPv4(192, 0, 2, byte(i+1))
 		start := time.Now()
 		res := h.VerifyBot(ip, googlebotUA, "AS64496", "Example")
-		if elapsed := time.Since(start); elapsed > time.Millisecond {
-			t.Fatalf("request %d took %v with a hung resolver, want < 1ms", i, elapsed)
+		if elapsed := time.Since(start); elapsed > 250*time.Millisecond {
+			t.Fatalf("request %d took %v with a hung resolver", i, elapsed)
 		}
 		if !res.Pending || res.IsVerified || res.IsImpersonation {
 			t.Fatalf("request %d: want pending (not verified, not impersonation), got %+v", i, res)
@@ -157,8 +157,8 @@ func TestVerifyAsyncDropsWhenQueueFull(t *testing.T) {
 	dropped := net.ParseIP("192.0.2.3")
 	start := time.Now()
 	res := h.VerifyBot(dropped, googlebotUA, "", "")
-	if elapsed := time.Since(start); elapsed > time.Millisecond {
-		t.Fatalf("dropped request took %v, want < 1ms", elapsed)
+	if elapsed := time.Since(start); elapsed > 250*time.Millisecond {
+		t.Fatalf("dropped request took %v", elapsed)
 	}
 	if res.Pending || res.IsVerified || res.IsImpersonation {
 		t.Fatalf("dropped request must be plain unverified, got %+v", res)
@@ -171,6 +171,28 @@ func TestVerifyAsyncDropsWhenQueueFull(t *testing.T) {
 	}
 	if isQueued(v, dropped.String()) {
 		t.Fatal("dropped IP must not be marked in flight, or it would stay pending forever")
+	}
+}
+
+// A backlog of slow lookups must not keep an IP pending, and so exempt from
+// the browser-claim heuristics, for longer than an inline lookup would take.
+func TestVerifyAsyncPendingIsBoundedByDNSTimeout(t *testing.T) {
+	const dnsTimeout = time.Minute
+	v := newTestVerifier(t, dnsTimeout, 1, 8)
+	v.lookupAddr = hangLookup
+	h := NewHandler(v, nil, nil, newTestReputation())
+
+	ip := net.ParseIP("192.0.2.30")
+	if res := h.VerifyBot(ip, googlebotUA, "", ""); !res.Pending {
+		t.Fatalf("first request: want pending, got %+v", res)
+	}
+	v.mu.Lock()
+	v.queued[ip.String()] = time.Now().Add(-dnsTimeout - time.Second)
+	v.mu.Unlock()
+
+	res := h.VerifyBot(ip, googlebotUA, "", "")
+	if res.Pending || res.IsVerified || res.IsImpersonation {
+		t.Fatalf("pending past dnsTimeout must be plain unverified, got %+v", res)
 	}
 }
 

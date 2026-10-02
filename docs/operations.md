@@ -122,7 +122,8 @@ in-flight lookups are cancelled on analyzer shutdown.
 
 Until an IP has a cached verdict, its requests are handled as follows:
 
-- **Pending** (lookup queued or running): the request is unverified. It gets
+- **Pending** (lookup queued or running, for at most the 5-second DNS
+  budget since it was queued): the request is unverified. It gets
   neither the verified-bot exemption (no positive signal, no raised
   sustained-download floors) nor the impersonation penalty. Heuristics that
   presume a browser UA claim is false (header order, `sec-ch`, `Sec-Fetch-*`,
@@ -133,7 +134,9 @@ Until an IP has a cached verdict, its requests are handled as follows:
 - **Dropped** (queue full, or the verdict cache is full): no lookup is started
   and the request is handled as a plain unverified client, with all
   heuristics. Treating it as pending would let a lookup flood switch those
-  heuristics off.
+  heuristics off. The same applies once a lookup has been queued or running
+  for longer than the DNS budget, so a backlog cannot stretch the pending
+  window.
 
 Requests after the lookup completes get the cached verdict: verified bots are
 exempt, impersonators are penalised. In practice the first request or few from

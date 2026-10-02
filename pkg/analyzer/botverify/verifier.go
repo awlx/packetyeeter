@@ -108,9 +108,9 @@ type VerificationResult struct {
 	// Pending: no cached verdict yet and a lookup is queued or running.
 	// Carries neither verification nor impersonation.
 	Pending bool
-	// Dropped: no cached verdict and no lookup was started (queue or cache
-	// full, or verifier closed). Carries neither verification nor
-	// impersonation.
+	// Dropped: no cached verdict and none due in time: no lookup was started
+	// (queue or cache full, or verifier closed), or it has been pending
+	// longer than dnsTimeout. Carries neither verification nor impersonation.
 	Dropped bool
 }
 
@@ -179,9 +179,10 @@ type Verifier struct {
 	lookupHost func(ctx context.Context, host string) ([]string, error)
 
 	// Async lookup pool for VerifyAsync. queued holds IPs that are queued or
-	// being looked up (guarded by mu) so a burst from one IP costs one lookup.
+	// being looked up, with their enqueue time (guarded by mu), so a burst
+	// from one IP costs one lookup.
 	queue  chan asyncJob
-	queued map[string]struct{}
+	queued map[string]time.Time
 	ctx    context.Context // cancelled by Close; parent of every DNS lookup
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -228,7 +229,7 @@ func newVerifier(cacheTTL, dnsTimeout time.Duration, geoIP GeoIPProvider, worker
 		maxCacheEntries: 50000,
 		resolver:        net.DefaultResolver,
 		queue:           make(chan asyncJob, queueSize),
-		queued:          make(map[string]struct{}),
+		queued:          make(map[string]time.Time),
 	}
 	v.ctx, v.cancel = context.WithCancel(context.Background())
 	// Default DNS seams call the resolver with the caller-supplied context.
@@ -292,7 +293,13 @@ func (v *Verifier) VerifyAsync(ip net.IP, userAgent string) *VerificationResult 
 	if cached, ok := v.cache[ipStr]; ok && time.Since(cached.VerifiedAt) < v.cachedResultTTL(cached) {
 		return cached
 	}
-	if _, inFlight := v.queued[ipStr]; inFlight {
+	if since, inFlight := v.queued[ipStr]; inFlight {
+		// Pending skips heuristics, so cap it at what an inline lookup would
+		// have cost; otherwise a backlog (e.g. a flood of tarpitting PTR
+		// zones) stretches the bypass to minutes per IP.
+		if time.Since(since) > v.dnsTimeout {
+			return &VerificationResult{BotType: pattern.Type, Dropped: true, ErrorMessage: "verification backlog"}
+		}
 		return &VerificationResult{BotType: pattern.Type, Pending: true}
 	}
 	if v.ctx.Err() != nil {
@@ -307,7 +314,7 @@ func (v *Verifier) VerifyAsync(ip net.IP, userAgent string) *VerificationResult 
 	}
 	select {
 	case v.queue <- asyncJob{ip: ip, pattern: pattern}:
-		v.queued[ipStr] = struct{}{}
+		v.queued[ipStr] = time.Now()
 		metrics.BotVerificationQueueDepth.Set(float64(len(v.queue)))
 		return &VerificationResult{BotType: pattern.Type, Pending: true}
 	default:

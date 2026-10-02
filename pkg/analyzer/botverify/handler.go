@@ -177,8 +177,8 @@ func (h *Handler) VerifyBot(ip net.IP, userAgent, asn, org string) *VerifyResult
 				return result
 			}
 			if dnsResult.Dropped {
-				// No lookup will run, so a Pending pass here would be an
-				// unbounded heuristics bypass; plain unverified instead.
+				// No verdict is due in time, so a Pending pass here would be
+				// an open-ended heuristics bypass; plain unverified instead.
 				result.ErrorMessage = dnsResult.ErrorMessage
 				logrus.WithFields(logrus.Fields{
 					"ip":       ip.String(),
