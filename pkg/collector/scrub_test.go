@@ -66,11 +66,11 @@ func fakeSysctls(values map[string]string) sysctlReader {
 func TestCheckScrubSysctls(t *testing.T) {
 	base := map[string]string{
 		"net/ipv4/ip_forward":               "1",
-		"net/ipv4/conf/eth0/100/forwarding": "1",
+		"net/ipv4/conf/eth0.100/forwarding": "1",
 		"net/ipv6/conf/all/forwarding":      "1",
-		"net/ipv6/conf/eth0/100/forwarding": "1",
+		"net/ipv6/conf/eth0.100/forwarding": "1",
 		"net/ipv4/conf/all/rp_filter":       "0",
-		"net/ipv4/conf/eth0/100/rp_filter":  "2",
+		"net/ipv4/conf/eth0.100/rp_filter":  "2",
 	}
 	for name, tc := range map[string]struct {
 		set  map[string]string
@@ -79,13 +79,13 @@ func TestCheckScrubSysctls(t *testing.T) {
 	}{
 		"ok":                       {nil, true, true},
 		"ipv4 forwarding off":      {map[string]string{"net/ipv4/ip_forward": "0"}, false, false},
-		"ipv4 port forwarding off": {map[string]string{"net/ipv4/conf/eth0/100/forwarding": "0"}, false, false},
+		"ipv4 port forwarding off": {map[string]string{"net/ipv4/conf/eth0.100/forwarding": "0"}, false, false},
 		"ipv6 forwarding off":      {map[string]string{"net/ipv6/conf/all/forwarding": "0"}, true, false},
-		"ipv6 port forwarding off": {map[string]string{"net/ipv6/conf/eth0/100/forwarding": "0"}, true, false},
+		"ipv6 port forwarding off": {map[string]string{"net/ipv6/conf/eth0.100/forwarding": "0"}, true, false},
 		"ipv6 unused":              {map[string]string{"net/ipv6/conf/all/forwarding": "0"}, false, true},
-		"strict all":               {map[string]string{"net/ipv4/conf/all/rp_filter": "1", "net/ipv4/conf/eth0/100/rp_filter": "0"}, true, false},
-		"strict port":              {map[string]string{"net/ipv4/conf/eth0/100/rp_filter": "1"}, true, false},
-		"loose all, strict port":   {map[string]string{"net/ipv4/conf/all/rp_filter": "2", "net/ipv4/conf/eth0/100/rp_filter": "1"}, true, true},
+		"strict all":               {map[string]string{"net/ipv4/conf/all/rp_filter": "1", "net/ipv4/conf/eth0.100/rp_filter": "0"}, true, false},
+		"strict port":              {map[string]string{"net/ipv4/conf/eth0.100/rp_filter": "1"}, true, false},
+		"loose all, strict port":   {map[string]string{"net/ipv4/conf/all/rp_filter": "2", "net/ipv4/conf/eth0.100/rp_filter": "1"}, true, true},
 	} {
 		values := map[string]string{}
 		for k, v := range base {

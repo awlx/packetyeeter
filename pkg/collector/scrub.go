@@ -74,21 +74,17 @@ func readSysctlInt(read sysctlReader, name string) (int, error) {
 	return strconv.Atoi(v)
 }
 
-// sysctlIfName translates an interface name for a /proc/sys path, where a
-// VLAN interface's "." becomes "/".
-func sysctlIfName(name string) string {
-	return strings.ReplaceAll(name, ".", "/")
-}
-
 // checkForwarding requires kernel forwarding because the slow path and the
 // fail-open behaviour (collector stopped or crashed) both rely on the kernel
 // forwarding redirected traffic. bpf_fib_lookup checks the ingress (outside)
 // port's setting, the kernel's IPv6 forwarding path the global one.
+//
+// procfs keeps dots in interface names (conf/eth0.100); only sysctl(8) key
+// notation rewrites them to slashes.
 func checkForwarding(read sysctlReader, outside string, ipv6 bool) error {
-	port := sysctlIfName(outside)
-	names := []string{"net/ipv4/ip_forward", "net/ipv4/conf/" + port + "/forwarding"}
+	names := []string{"net/ipv4/ip_forward", "net/ipv4/conf/" + outside + "/forwarding"}
 	if ipv6 {
-		names = append(names, "net/ipv6/conf/all/forwarding", "net/ipv6/conf/"+port+"/forwarding")
+		names = append(names, "net/ipv6/conf/all/forwarding", "net/ipv6/conf/"+outside+"/forwarding")
 	}
 	for _, name := range names {
 		v, err := readSysctlInt(read, name)
@@ -96,7 +92,7 @@ func checkForwarding(read sysctlReader, outside string, ipv6 bool) error {
 			return fmt.Errorf("read %s: %w", name, err)
 		}
 		if v != 1 {
-			return fmt.Errorf("%s must be 1, is %d", strings.ReplaceAll(name, "/", "."), v)
+			return fmt.Errorf("/proc/sys/%s must be 1, is %d", name, v)
 		}
 	}
 	return nil
@@ -112,13 +108,13 @@ func checkScrubSysctls(read sysctlReader, outside string, ipv6 bool) error {
 	if err != nil {
 		return fmt.Errorf("read rp_filter: %w", err)
 	}
-	port, err := readSysctlInt(read, "net/ipv4/conf/"+sysctlIfName(outside)+"/rp_filter")
+	port, err := readSysctlInt(read, "net/ipv4/conf/"+outside+"/rp_filter")
 	if err != nil {
 		return fmt.Errorf("read rp_filter for %s: %w", outside, err)
 	}
 	// The kernel applies the larger of the two values.
 	if max(all, port) == 1 {
-		return fmt.Errorf("strict rp_filter on %s: set net.ipv4.conf.all.rp_filter and net.ipv4.conf.%s.rp_filter to 0 or 2", outside, outside)
+		return fmt.Errorf("strict rp_filter on %s: set /proc/sys/net/ipv4/conf/{all,%s}/rp_filter to 0 or 2", outside, outside)
 	}
 	return nil
 }
