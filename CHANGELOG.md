@@ -1,5 +1,14 @@
 # PacketYeeter Changelog
 
+## 2026-10-02 - Faster scrub rule matching
+
+- Port ranges are merged and sorted when a rule is installed, and IPv4 source
+  prefixes are sorted with their span recorded, so XDP binary-searches them
+  and rejects most packets on the source span. With 4096 rules and 32 covering
+  one destination, the veth bench's worst case improves from -53% to -28%
+  forwarding (see `docs/scrub-throughput.md`). No change to which packets
+  match.
+
 ## 2026-10-02 - Scrub mode throughput procedure and loop test
 
 - `docs/scrub-throughput.md`: how to measure a scrub node on real hardware

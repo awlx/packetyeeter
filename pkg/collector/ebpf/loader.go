@@ -311,6 +311,14 @@ func (l *Loader) Close() {
 	}
 }
 
+// Program returns a loaded program by name, for tests that run it directly.
+func (l *Loader) Program(name string) *ebpf.Program {
+	if l.coll == nil {
+		return nil
+	}
+	return l.coll.Programs[name]
+}
+
 func (l *Loader) GetMaps() *Maps {
 	return l.maps
 }

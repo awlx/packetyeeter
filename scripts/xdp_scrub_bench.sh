@@ -10,6 +10,9 @@
 #   b   4096 rules, the destination covered by 32 that all miss as late as
 #       possible, 1 sender CPU
 #   b2  as b, but the rules miss on their destination port
+#   b3  as b, but the sources surround the sender (same length, so XDP
+#       cannot reject on the source span)
+#   b4  as b3 with mixed source prefix lengths (linear source walk)
 #   c0  clean UDP only, SYN_CPUS sender CPUs (reference for c1/c2)
 #   c1  clean UDP + SYN flood from one fixed 4-tuple (handshake lookup hits)
 #   c2  clean UDP + SYN flood from random sources (one LRU insert per SYN);
@@ -19,7 +22,8 @@
 # trafgen (netsniff-ng). Run:
 #   sudo ./scripts/xdp_scrub_bench.sh
 # Tunables: DURATION (s, default 10), REPS (default 3), SYN_CPUS (default 3),
-# GEN_CPU_OFFSET (first generator CPU, default 1).
+# GEN_CPU_OFFSET (first generator CPU, default 1), SCENARIOS (default
+# "a b b2 b3 b4 c0 c1 c2"; b* are reported against a, c2 against c1).
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -27,6 +31,8 @@ DURATION="${DURATION:-10}"
 REPS="${REPS:-3}"
 SYN_CPUS="${SYN_CPUS:-3}"
 GEN_CPU_OFFSET="${GEN_CPU_OFFSET:-1}"
+SCENARIOS="${SCENARIOS:-a b b2 b3 b4 c0 c1 c2}"
+want() { [[ " $SCENARIOS " == *" $1 "* ]]; }
 WARMUP=2
 TOKEN="$(printf '%04x' $((RANDOM % 65536)))"
 NS_SRC="yeetbsrc_${TOKEN}"; NS_SCR="yeetbscr_${TOKEN}"; NS_DST="yeetbdst_${TOKEN}"
@@ -280,9 +286,8 @@ print(" ".join("%.0f" % statistics.median(c) for c in zip(*rows)))')
 log "load: $(cut -d' ' -f1-3 /proc/loadavg); ${REPS}x ${DURATION}s per scenario"
 
 log "a: no rules, 1 CPU"
-measure a "$WORK/udp.cfg" 1
+want a && measure a "$WORK/udp.cfg" 1
 
-log "b: loading 4096 IPv4 rules"
 EXPIRES=$(date -u -d '+1 hour' +%FT%TZ)
 # 31 rules sit on a covering /16 and 4065 on /32s (one of them the
 # destination's), so the destination's entry lists the maximum of 32.
@@ -297,11 +302,16 @@ mode, exp, dst, work = sys.argv[1:5]
 def body(rid, prefix, prio):
     r = {"id": rid, "dstPrefix": prefix, "protocols": [17],
          "action": "RULE_ACTION_DROP", "priority": prio, "expiresAt": exp}
-    if mode == "worst":
+    if mode in ("worst", "span", "mixed"):
+        srcs = {"worst": [f"192.0.2.{i}/32" for i in range(8)],
+                # Around the sender (10.201.1.2) without covering it.
+                "span": [f"10.201.1.{i}/32" for i in (0, 1, 3, 4, 5, 6, 7, 8)],
+                "mixed": ["10.201.1.0/32", "10.201.1.1/32", "10.201.1.3/32", "10.201.1.4/30",
+                          "10.201.1.8/29", "10.201.1.16/28", "10.201.1.32/27", "10.201.1.64/26"]}[mode]
         r.update({"fragment": False, "pktLen": {"from": 20, "to": 1500},
                   "srcPorts": [{"from": 1 + i, "to": 1 + i} for i in range(7)] + [{"from": 1024, "to": 65535}],
                   "dstPorts": [{"from": 100 + i, "to": 100 + i} for i in range(7)] + [{"from": 1, "to": 1023}],
-                  "srcPrefixes": [f"192.0.2.{i}/32" for i in range(8)]})
+                  "srcPrefixes": srcs})
     else:
         r["dstPorts"] = [{"from": 1000 + prio, "to": 1000 + prio}]
     return r
@@ -318,8 +328,9 @@ with open(f"{work}/rules_del.json", "w") as f:
 EOF
 }
 
-for mode in worst port; do
-  name=b; [[ $mode == port ]] && name=b2
+for mode in worst port span mixed; do
+  case $mode in worst) name=b ;; port) name=b2 ;; span) name=b3 ;; mixed) name=b4 ;; esac
+  want "$name" || continue
   log "$name: loading 4096 IPv4 rules ($mode case)"
   gen_rules "$mode"
   send_rules "$(cat "$WORK/rules_add.json")"
@@ -331,12 +342,9 @@ for mode in worst port; do
   wait_rules 0
 done
 
-log "c0: clean UDP only, $SYN_CPUS CPUs"
-measure c0 "$WORK/udp.cfg" "$SYN_CPUS"
-log "c1: clean UDP + fixed-tuple SYN flood (1:3), $SYN_CPUS CPUs"
-measure c1 "$WORK/syn_fixed.cfg" "$SYN_CPUS"
-log "c2: clean UDP + random-source SYN flood (1:3), $SYN_CPUS CPUs"
-measure c2 "$WORK/syn_rand.cfg" "$SYN_CPUS"
+want c0 && { log "c0: clean UDP only, $SYN_CPUS CPUs"; measure c0 "$WORK/udp.cfg" "$SYN_CPUS"; }
+want c1 && { log "c1: clean UDP + fixed-tuple SYN flood (1:3), $SYN_CPUS CPUs"; measure c1 "$WORK/syn_fixed.cfg" "$SYN_CPUS"; }
+want c2 && { log "c2: clean UDP + random-source SYN flood (1:3), $SYN_CPUS CPUs"; measure c2 "$WORK/syn_rand.cfg" "$SYN_CPUS"; }
 
 # ---- report ------------------------------------------------------------------
 delta() { awk -v a="$1" -v b="$2" 'BEGIN { if (a > 0) printf "%+.1f%%", (b - a) * 100 / a; else print "n/a" }'; }
@@ -346,6 +354,7 @@ echo "Kernel $(uname -r), $(nproc) CPUs ($(lscpu 2>/dev/null | awk -F': *' '/^Ve
   "load $(cut -d' ' -f1-3 /proc/loadavg); veth, native XDP, median of ${REPS}x ${DURATION}s"
 printf '%-4s %-46s %12s %12s %12s %4s %10s %10s\n' scen description "udp rx pps" "syn rx pps" "fwd pps" ref "fwd delta" "udp delta"
 row() { # NAME REF DESCRIPTION
+  want "$1" || return 0
   printf '%-4s %-46s %12s %12s %12s %4s %10s %10s\n' "$1" "$3" "$(col "$1" 1)" "$(col "$1" 2)" "$(col "$1" 3)" "$2" \
     "$( [[ "$1" == "$2" ]] && echo ref || delta "$(col "$2" 3)" "$(col "$1" 3)")" \
     "$( [[ "$1" == "$2" ]] && echo ref || delta "$(col "$2" 1)" "$(col "$1" 1)")"
@@ -353,8 +362,12 @@ row() { # NAME REF DESCRIPTION
 row a  a  "no rules, 1 CPU"
 row b  a  "4096 rules, 32 on dst, worst-case miss, 1 CPU"
 row b2 a  "4096 rules, 32 on dst, dst-port miss, 1 CPU"
+row b3 a  "as b, sources surround sender, 1 CPU"
+row b4 a  "as b3, mixed source lengths, 1 CPU"
 row c0 c0 "clean UDP, $SYN_CPUS CPUs"
 row c1 c0 "UDP + fixed-tuple SYN 1:3, $SYN_CPUS CPUs"
 # Against c1: same packet mix, so the difference is the LRU inserts.
 row c2 c1 "UDP + random-source SYN 1:3, $SYN_CPUS CPUs"
-echo "drop verdict pps (should be ~0): a=$(col a 4) b=$(col b 4) b2=$(col b2 4) c0=$(col c0 4) c1=$(col c1 4) c2=$(col c2 4)"
+drops=""
+for n in a b b2 b3 b4 c0 c1 c2; do want "$n" && drops+=" $n=$(col "$n" 4)"; done
+echo "drop verdict pps (should be ~0):$drops"

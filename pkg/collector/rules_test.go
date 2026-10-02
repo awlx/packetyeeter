@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"math"
 	"net/netip"
 	"reflect"
 	"slices"
@@ -709,5 +710,53 @@ func TestRateWindow(t *testing.T) {
 				t.Fatal("zero budget")
 			}
 		})
+	}
+}
+
+func TestRuleEncodingForBinarySearch(t *testing.T) {
+	pr := testRule("r", "192.0.2.0/24", 1, func(r *apiv1.Rule) {
+		r.Protocols = []uint32{6}
+		r.DstPorts = []*apiv1.PortRange{{From: 500, To: 600}, {From: 80, To: 80}, {From: 550, To: 700}, {From: 81, To: 90}, {From: 1000, To: 1000}}
+		r.SrcPrefixes = []string{"10.0.0.9/32", "10.0.0.3/32", "10.0.0.3/32", "10.0.0.7/32"}
+	})
+	r, err := parseRule(pr, ruleT0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := r.body
+	wantPorts := []ebpf.RuleRange{{From: 80, To: 90}, {From: 500, To: 700}, {From: 1000, To: 1000}}
+	if got := b.DstPorts[:b.NDstPorts]; !slices.Equal(got, wantPorts) {
+		t.Errorf("dst ports = %v, want sorted and merged %v", got, wantPorts)
+	}
+	if b.NSources != 3 || b.SrcBsearch != 1 {
+		t.Fatalf("sources = %d, bsearch = %d; want 3 deduplicated same-length sources", b.NSources, b.SrcBsearch)
+	}
+	for i, want := range []byte{3, 7, 9} {
+		if got := b.Sources[i].Addr[3]; got != want {
+			t.Errorf("source %d = .%d, want .%d", i, got, want)
+		}
+	}
+	if b.SrcLo != 0x0a000003 || b.SrcHi != 0x0a000009 {
+		t.Errorf("span = %08x-%08x, want 0a000003-0a000009", b.SrcLo, b.SrcHi)
+	}
+
+	mixed, err := parseRule(testRule("m", "192.0.2.0/24", 1, func(r *apiv1.Rule) {
+		r.SrcPrefixes = []string{"10.0.1.0/24", "10.0.0.8/29", "0.0.0.0/0"}
+	}), ruleT0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mb := mixed.body; mb.SrcBsearch != 0 || mb.SrcLo != 0 || mb.SrcHi != math.MaxUint32 {
+		t.Errorf("mixed lengths: bsearch=%d span=%08x-%08x, want linear walk over the whole space", mb.SrcBsearch, mb.SrcLo, mb.SrcHi)
+	}
+
+	v6, err := parseRule(testRule("v6", "2001:db8::/32", 1, func(r *apiv1.Rule) {
+		r.SrcPrefixes = []string{"2001:db8:1::/48"}
+	}), ruleT0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v6.body.SrcBsearch != 0 {
+		t.Error("IPv6 sources must use the linear walk")
 	}
 }
