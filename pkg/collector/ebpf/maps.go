@@ -32,6 +32,13 @@ type Maps struct {
 	TxPorts             *ebpf.Map // Scrub-mode redirect targets (inside port)
 	LocalAddrsV4        *ebpf.Map // Scrub node's own addresses, never forwarded
 	LocalAddrsV6        *ebpf.Map
+	ScrubRules          *ebpf.Map // Rule bodies by slot
+	RuleBuckets         *ebpf.Map // Per-slot rate-limit windows
+	RuleMatchCounts     *ebpf.Map // Per-CPU rule matches by action
+	RulesV4             *ebpf.Map // Map-in-map holding the current IPv4 rule trie
+	RulesV6             *ebpf.Map
+	RulesTrieSpecV4     *ebpf.MapSpec // Template for replacement tries
+	RulesTrieSpecV6     *ebpf.MapSpec
 	AllowedNets         []*net.IPNet // Userspace check
 	DryRun              bool
 }

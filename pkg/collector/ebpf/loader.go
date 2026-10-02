@@ -113,8 +113,22 @@ func (l *Loader) Load() error {
 		TxPorts:             l.coll.Maps["tx_ports"],
 		LocalAddrsV4:        l.coll.Maps["local_addrs_v4"],
 		LocalAddrsV6:        l.coll.Maps["local_addrs_v6"],
+		ScrubRules:          l.coll.Maps["scrub_rules"],
+		RuleBuckets:         l.coll.Maps["rule_buckets"],
+		RuleMatchCounts:     l.coll.Maps["rule_matches"],
+		RulesV4:             l.coll.Maps["rules_v4"],
+		RulesV6:             l.coll.Maps["rules_v6"],
+		RulesTrieSpecV4:     innerSpec(spec, "rules_v4"),
+		RulesTrieSpecV6:     innerSpec(spec, "rules_v6"),
 	}
 
+	return nil
+}
+
+func innerSpec(spec *ebpf.CollectionSpec, outer string) *ebpf.MapSpec {
+	if m, ok := spec.Maps[outer]; ok && m.InnerMap != nil {
+		return m.InnerMap.Copy()
+	}
 	return nil
 }
 
