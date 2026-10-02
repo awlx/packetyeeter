@@ -112,7 +112,9 @@ func main() {
 	<-sigChan
 
 	logger.Info("Shutting down collector...")
-	cancel()
+	// Do not cancel ctx here: in scrub mode Stop keeps the control plane
+	// (analyzer commands, block GC, local_addrs sync) running during the
+	// -readyz-drain period, and cancels it itself afterwards.
 
 	// Stop with timeout - SPOE library doesn't gracefully handle active connections
 	stopTimeout := 5 * time.Second

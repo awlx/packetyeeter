@@ -286,8 +286,11 @@ func (l *Loader) Close() {
 	if l.egressFilter != nil {
 		netlink.FilterDel(l.egressFilter)
 	}
-	for _, lnk := range l.links {
-		lnk.Close()
+	// Reverse attach order: in scrub mode xdp_scrub must detach before
+	// xdp_pass_inside, or redirects to the inside port are dropped by drivers
+	// that need an XDP program on the target (ixgbe, i40e, veth).
+	for i := len(l.links) - 1; i >= 0; i-- {
+		l.links[i].Close()
 	}
 	if l.coll != nil {
 		l.coll.Close()
