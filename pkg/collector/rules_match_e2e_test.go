@@ -22,6 +22,7 @@ import (
 	"PacketYeeter/pkg/collector/ebpf"
 
 	cebpf "github.com/cilium/ebpf"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -255,6 +256,43 @@ func referenceMatch(pr *apiv1.Rule, p testPkt) bool {
 	return false
 }
 
+// ruleCase names the XDP path a rule takes, so the test can insist that each
+// path was exercised by both matches and near misses.
+func ruleCase(pr *apiv1.Rule) string {
+	if len(pr.SrcPrefixes) == 0 {
+		return "no sources"
+	}
+	if netip.MustParsePrefix(pr.DstPrefix).Addr().Is6() {
+		return "v6 sources"
+	}
+	for _, s := range pr.SrcPrefixes {
+		if netip.MustParsePrefix(s).Bits() != netip.MustParsePrefix(pr.SrcPrefixes[0]).Bits() {
+			return "v4 mixed lengths"
+		}
+	}
+	return "v4 same length"
+}
+
+// srcNearMiss reports whether only the source prefixes reject p, with p's
+// source inside their span, so XDP gets past the span check.
+func srcNearMiss(pr *apiv1.Rule, p testPkt) bool {
+	if len(pr.SrcPrefixes) == 0 || referenceMatch(pr, p) {
+		return false
+	}
+	noSrc := proto.Clone(pr).(*apiv1.Rule)
+	noSrc.SrcPrefixes = nil
+	if !referenceMatch(noSrc, p) {
+		return false
+	}
+	lo, hi := false, false
+	for _, s := range pr.SrcPrefixes {
+		pf := netip.MustParsePrefix(s).Masked()
+		lo = lo || pf.Addr().Compare(p.src) <= 0
+		hi = hi || pf.Addr().Compare(p.src) > 0 || pf.Contains(p.src)
+	}
+	return lo && hi
+}
+
 func TestScrubRuleMatcher(t *testing.T) {
 	l := ebpf.NewLoader(ebpf.LoaderConfig{Mode: ebpf.ModeScrub, Interface: "lo"})
 	if err := l.Load(); err != nil {
@@ -274,6 +312,7 @@ func TestScrubRuleMatcher(t *testing.T) {
 	rng := rand.New(rand.NewSource(1))
 	var ids []string
 	checked, matched := 0, 0
+	matches, nearMisses := map[string]int{}, map[string]int{}
 	for round := range 40 {
 		var rules []*apiv1.Rule
 		for i := range 4 + rng.Intn(20) {
@@ -296,7 +335,9 @@ func TestScrubRuleMatcher(t *testing.T) {
 			for _, r := range rules {
 				if referenceMatch(r, p) {
 					want = true
-					break
+					matches[ruleCase(r)]++
+				} else if srcNearMiss(r, p) {
+					nearMisses[ruleCase(r)]++
 				}
 			}
 			if got := ret == 1; got != want {
@@ -308,5 +349,16 @@ func TestScrubRuleMatcher(t *testing.T) {
 			}
 		}
 	}
-	t.Logf("%d packets checked, %d matched a rule", checked, matched)
+	t.Logf("%d packets checked, %d matched a rule; matches %v, source near misses %v", checked, matched, matches, nearMisses)
+	if matched == 0 || matched == checked {
+		t.Fatalf("%d of %d packets matched; the generator must produce both outcomes", matched, checked)
+	}
+	for _, c := range []string{"no sources", "v4 same length", "v4 mixed lengths", "v6 sources"} {
+		if matches[c] == 0 {
+			t.Errorf("no packet matched a rule with %s", c)
+		}
+		if c != "no sources" && nearMisses[c] == 0 {
+			t.Errorf("no packet reached the source check of a rule with %s and missed", c)
+		}
+	}
 }

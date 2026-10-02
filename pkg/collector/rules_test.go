@@ -760,3 +760,49 @@ func TestRuleEncodingForBinarySearch(t *testing.T) {
 		t.Error("IPv6 sources must use the linear walk")
 	}
 }
+
+func TestPortRangeMergeEdges(t *testing.T) {
+	pr := func(a, b uint32) *apiv1.PortRange { return &apiv1.PortRange{From: a, To: b} }
+	for _, tc := range []struct {
+		name string
+		in   []*apiv1.PortRange
+		want []ebpf.RuleRange
+	}{
+		{"empty", nil, []ebpf.RuleRange{}},
+		{"one", []*apiv1.PortRange{pr(53, 53)}, []ebpf.RuleRange{{From: 53, To: 53}}},
+		{"adjacent at the top", []*apiv1.PortRange{pr(65535, 65535), pr(65534, 65534)}, []ebpf.RuleRange{{From: 65534, To: 65535}}},
+		{"contained", []*apiv1.PortRange{pr(0, 65535), pr(80, 80)}, []ebpf.RuleRange{{From: 0, To: 65535}}},
+		{"gap of one stays split", []*apiv1.PortRange{pr(10, 10), pr(12, 12)}, []ebpf.RuleRange{{From: 10, To: 10}, {From: 12, To: 12}}},
+		{"eight disjoint", []*apiv1.PortRange{pr(70, 70), pr(10, 10), pr(30, 30), pr(50, 50), pr(20, 20), pr(60, 60), pr(40, 40), pr(80, 65535)},
+			[]ebpf.RuleRange{{From: 10, To: 10}, {From: 20, To: 20}, {From: 30, To: 30}, {From: 40, To: 40}, {From: 50, To: 50}, {From: 60, To: 60}, {From: 70, To: 70}, {From: 80, To: 65535}}},
+	} {
+		var dst [ebpf.RuleMaxRanges]ebpf.RuleRange
+		n, err := portRanges(dst[:], tc.in)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if got := dst[:n]; !slices.Equal(got, tc.want) {
+			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestSourceSpanEdges(t *testing.T) {
+	for _, tc := range []struct {
+		srcs   []string
+		lo, hi uint32
+	}{
+		{[]string{"0.0.0.0/0"}, 0, math.MaxUint32},
+		{[]string{"255.255.255.255/32"}, math.MaxUint32, math.MaxUint32},
+		{[]string{"10.0.0.1/32"}, 0x0a000001, 0x0a000001},
+		{[]string{"10.0.0.0/8", "9.255.255.255/32"}, 0x09ffffff, 0x0affffff},
+	} {
+		r, err := parseRule(testRule("s", "192.0.2.0/24", 1, func(r *apiv1.Rule) { r.SrcPrefixes = tc.srcs }), ruleT0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if b := r.body; b.SrcLo != tc.lo || b.SrcHi != tc.hi {
+			t.Errorf("%v: span %08x-%08x, want %08x-%08x", tc.srcs, b.SrcLo, b.SrcHi, tc.lo, tc.hi)
+		}
+	}
+}
