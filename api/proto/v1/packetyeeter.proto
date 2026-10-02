@@ -206,6 +206,9 @@ message Command {
   
   // Source that triggered this command
   string source = 9;
+
+  // COMMAND_SET_RULES: runtime match rules for scrub collectors.
+  RuleSetDelta rules = 10;
 }
 
 enum CommandType {
@@ -216,6 +219,45 @@ enum CommandType {
   COMMAND_UNBLOCK_CIDR = 4;
   COMMAND_ALLOWLIST_IP = 5;
   COMMAND_REMOVE_ALLOWLIST_IP = 6;
+  COMMAND_SET_RULES = 7;
+}
+
+// Rule is a runtime match rule applied by scrub collectors to traffic for
+// dst_prefix. Unset fields match anything.
+message Rule {
+  string id = 1;
+  string dst_prefix = 2;                 // required, IPv4 or IPv6 CIDR
+  repeated uint32 protocols = 3;         // IP protocol numbers
+  repeated PortRange src_ports = 4;      // TCP/UDP only
+  repeated PortRange dst_ports = 5;      // TCP/UDP only
+  PortRange pkt_len = 6;                 // IP total length
+  uint32 tcp_flags_mask = 7;             // match when flags & mask == value
+  uint32 tcp_flags_value = 8;
+  optional bool fragment = 9;            // true: only fragments, false: only non-fragments
+  repeated string src_prefixes = 10;
+  RuleAction action = 11;
+  uint64 rate_pps = 12;                  // RULE_ACTION_RATE_LIMIT only
+  google.protobuf.Timestamp expires_at = 13; // required
+  uint32 priority = 14;                  // lower first, ties broken by id
+}
+
+message PortRange {
+  uint32 from = 1;
+  uint32 to = 2;
+}
+
+enum RuleAction {
+  RULE_ACTION_UNSPECIFIED = 0;
+  RULE_ACTION_DROP = 1;
+  RULE_ACTION_RATE_LIMIT = 2;
+  RULE_ACTION_PASS = 3;
+}
+
+// RuleSetDelta is applied atomically: either every change takes effect or
+// none does.
+message RuleSetDelta {
+  repeated Rule upsert = 1;
+  repeated string remove = 2;
 }
 
 // JA4H Lookup

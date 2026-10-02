@@ -7,6 +7,18 @@
   reported as incomplete handshakes.
 - An RST|ACK no longer counts as completing a handshake.
 
+## 2026-10-02 - Scrub mode runtime rules
+
+- Scrub collectors apply match rules delivered as `COMMAND_SET_RULES`
+  (`Rule`, `RuleSetDelta` and `RuleAction` added to the proto). Rules match on
+  destination prefix, protocols, ports, length, TCP flags, fragment state and
+  source prefixes, and `DROP`, `RATE_LIMIT` or `PASS` matching traffic in XDP.
+  Deltas apply all-or-nothing; rules expire on `expires_at`. See
+  `docs/operations.md#runtime-rules`.
+- New metrics `packetyeeter_scrub_rule_matches_total{action}` and
+  `packetyeeter_scrub_rules_active{family}`; new incident reason `rule_match`.
+- The analyzer does not send rules yet; `PushRules` follows separately.
+
 ## 2026-10-02 - Scrub mode handshake tracking
 
 - `xdp_scrub` tracks TCP handshakes for forwarded traffic: a SYN opens an entry

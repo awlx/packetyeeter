@@ -307,9 +307,11 @@ func (c *Collector) reportLocalAddrsSync(err error) {
 // scrubMetrics reads the kernel counters at scrape time, so the exported
 // counters are exact rather than sampled by a poll loop.
 type scrubMetrics struct {
-	stats  func() (ebpf.ScrubStats, error)
-	ready  func() error
-	logger *logrus.Logger
+	stats       func() (ebpf.ScrubStats, error)
+	ready       func() error
+	ruleMatches func() (map[uint8]uint64, error)
+	ruleCounts  func() (v4, v6 int)
+	logger      *logrus.Logger
 }
 
 func (s *scrubMetrics) Describe(ch chan<- *prometheus.Desc) {
@@ -319,6 +321,8 @@ func (s *scrubMetrics) Describe(ch chan<- *prometheus.Desc) {
 	ch <- metrics.ScrubTTLExpiredDesc
 	ch <- metrics.ScrubSlowPathLimitedDesc
 	ch <- metrics.ScrubReadyDesc
+	ch <- metrics.ScrubRuleMatchesDesc
+	ch <- metrics.ScrubRulesActiveDesc
 }
 
 func (s *scrubMetrics) Collect(ch chan<- prometheus.Metric) {
@@ -327,6 +331,21 @@ func (s *scrubMetrics) Collect(ch chan<- prometheus.Metric) {
 		ready = 1
 	}
 	ch <- prometheus.MustNewConstMetric(metrics.ScrubReadyDesc, prometheus.GaugeValue, ready)
+
+	if s.ruleCounts != nil {
+		v4, v6 := s.ruleCounts()
+		ch <- prometheus.MustNewConstMetric(metrics.ScrubRulesActiveDesc, prometheus.GaugeValue, float64(v4), "ipv4")
+		ch <- prometheus.MustNewConstMetric(metrics.ScrubRulesActiveDesc, prometheus.GaugeValue, float64(v6), "ipv6")
+	}
+	if s.ruleMatches != nil {
+		if matches, err := s.ruleMatches(); err != nil {
+			s.logger.WithError(err).Warn("Failed to read rule match counters")
+		} else {
+			for action, name := range ebpf.RuleActionNames {
+				ch <- prometheus.MustNewConstMetric(metrics.ScrubRuleMatchesDesc, prometheus.CounterValue, float64(matches[action]), name)
+			}
+		}
+	}
 
 	st, err := s.stats()
 	if err != nil {

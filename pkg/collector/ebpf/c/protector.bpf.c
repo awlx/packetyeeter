@@ -6,6 +6,7 @@
 #include <linux/ip.h>
 #include <linux/ipv6.h>
 #include <linux/tcp.h>
+#include <linux/udp.h>
 #include <linux/in.h>
 #include <linux/pkt_cls.h> 
 #include <linux/if_vlan.h>
@@ -107,6 +108,7 @@ struct bad_flags_info {
 #define INCIDENT_UDP_FRAG     5 // Fragmented UDP/IPv6 fragment extension header
 #define INCIDENT_BAD_FLAGS    6 // SYN+FIN / Xmas / NULL scan TCP flags
 #define INCIDENT_MALFORMED    7 // Unparseable/over-limit headers (fail-closed drop)
+#define INCIDENT_RULE_MATCH   8 // Scrub-mode runtime rule (DROP, or RATE_LIMIT over its rate)
 
 struct incident_event {
     __u64 timestamp;
@@ -1519,6 +1521,326 @@ static __always_inline int scrub_is_nd(struct ipv6hdr *ip6, void *data_end) {
     return *type >= 133 && *type <= 137;
 }
 
+// --- Scrub runtime rules ---
+//
+// Rules arrive from userspace already flattened: each LPM entry (destination
+// prefix) lists the slots of every rule whose dst_prefix covers it, sorted by
+// priority, so the longest-prefix match alone yields the right candidates in
+// order. The trie sits behind a one-slot map-in-map so each change swaps in
+// atomically; rule bodies are never modified in place, so a reader holding
+// the old trie still sees consistent rules. Layouts are mirrored in
+// pkg/collector/ebpf/rules.go.
+#define RULES_MAX       4096   // per family
+#define RULE_SLOTS      16384  // both families, plus slots awaiting release
+#define RULES_PER_DST   32
+#define RULE_MAX_RANGES 8
+#define RULE_MAX_SRCS   8
+
+#define RULE_ACTION_DROP       1
+#define RULE_ACTION_RATE_LIMIT 2
+#define RULE_ACTION_PASS       3
+
+#define RULE_FRAG_ANY  0
+#define RULE_FRAG_ONLY 1
+#define RULE_FRAG_NONE 2
+
+struct rule_range {
+    __u16 from;
+    __u16 to;
+};
+
+// Network byte order, address pre-masked; IPv4 uses word 0 only.
+struct rule_prefix {
+    __u32 addr[4];
+    __u32 mask[4];
+};
+
+struct scrub_rule {
+    __u64 proto_bits[4];
+    __u64 rate_window_ns;
+    __u64 rate_budget;      // packets allowed per window
+    struct rule_prefix srcs[RULE_MAX_SRCS];
+    struct rule_range sports[RULE_MAX_RANGES];
+    struct rule_range dports[RULE_MAX_RANGES];
+    __u16 len_from;
+    __u16 len_to;           // 0: any length
+    __u8  action;
+    __u8  any_proto;
+    __u8  n_srcs;
+    __u8  n_sports;
+    __u8  n_dports;
+    __u8  fragment;
+    __u8  tcp_flags_mask;
+    __u8  tcp_flags_value;
+};
+
+struct rule_list {
+    __u32 count;
+    __u16 slots[RULES_PER_DST];
+};
+
+struct rule_bucket {
+    __u64 window;
+    __u64 count;
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, RULE_SLOTS);
+    __type(key, __u32);
+    __type(value, struct scrub_rule);
+} scrub_rules SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, RULE_SLOTS);
+    __type(key, __u32);
+    __type(value, struct rule_bucket);
+} rule_buckets SEC(".maps");
+
+// Matches by RULE_ACTION_* index.
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, 4);
+    __type(key, __u32);
+    __type(value, __u64);
+} rule_matches SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY_OF_MAPS);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __array(values, struct {
+        __uint(type, BPF_MAP_TYPE_LPM_TRIE);
+        __uint(max_entries, RULES_MAX);
+        __uint(map_flags, BPF_F_NO_PREALLOC);
+        // Sizes rather than types: BTF would only carry rule_list as a
+        // forward declaration, which loaders cannot size.
+        __uint(key_size, sizeof(struct lpm_key_v4));
+        __uint(value_size, sizeof(struct rule_list));
+    });
+} rules_v4 SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY_OF_MAPS);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __array(values, struct {
+        __uint(type, BPF_MAP_TYPE_LPM_TRIE);
+        __uint(max_entries, RULES_MAX);
+        __uint(map_flags, BPF_F_NO_PREALLOC);
+        // Sizes rather than types: BTF would only carry rule_list as a
+        // forward declaration, which loaders cannot size.
+        __uint(key_size, sizeof(struct lpm_key_v6));
+        __uint(value_size, sizeof(struct rule_list));
+    });
+} rules_v6 SEC(".maps");
+
+struct rule_pkt {
+    __u32 src[4];
+    __u32 dst[4];
+    __u16 len;
+    __u16 sport;
+    __u16 dport;
+    __u8  proto;
+    __u8  has_ports;
+    __u8  has_tcp;
+    __u8  tcp_flags;
+    __u8  is_frag;
+    __u8  v6;
+};
+
+static __always_inline void rule_pkt_ports(struct rule_pkt *p, __u8 proto, void *l4, void *data_end) {
+    if (proto == IPPROTO_TCP) {
+        struct tcphdr *tcp = l4;
+        if ((void *)(tcp + 1) > data_end)
+            return;
+        p->sport = bpf_ntohs(tcp->source);
+        p->dport = bpf_ntohs(tcp->dest);
+        p->has_ports = 1;
+        p->has_tcp = 1;
+        p->tcp_flags = tcp_flags_raw(tcp);
+    } else if (proto == IPPROTO_UDP) {
+        struct udphdr *udp = l4;
+        if ((void *)(udp + 1) > data_end)
+            return;
+        p->sport = bpf_ntohs(udp->source);
+        p->dport = bpf_ntohs(udp->dest);
+        p->has_ports = 1;
+    }
+}
+
+static __always_inline void rule_pkt_v4(struct rule_pkt *p, struct iphdr *ip, void *data_end) {
+    p->src[0] = ip->saddr;
+    p->dst[0] = ip->daddr;
+    p->len = bpf_ntohs(ip->tot_len);
+    p->proto = ip->protocol;
+    p->is_frag = (ip->frag_off & bpf_htons(IP_MF | IP_OFFSET)) != 0;
+    // Later fragments carry payload where the L4 header would be.
+    if (ip->frag_off & bpf_htons(IP_OFFSET))
+        return;
+    __u32 ihl = ip->ihl;
+    if (ihl < 5 || ihl > 15)
+        return;
+    rule_pkt_ports(p, ip->protocol, (void *)ip + ihl * 4, data_end);
+}
+
+static __always_inline void rule_pkt_v6(struct rule_pkt *p, struct ipv6hdr *ip6, __u8 l4_proto,
+                                        void *l4_hdr, void *data_end) {
+    __builtin_memcpy(p->src, &ip6->saddr, 16);
+    __builtin_memcpy(p->dst, &ip6->daddr, 16);
+    p->v6 = 1;
+    p->len = bpf_ntohs(ip6->payload_len) + sizeof(struct ipv6hdr);
+    p->proto = l4_proto;
+    if (l4_proto == IP6_EXT_FRAGMENT) {
+        struct ip6_frag_hdr *fh = l4_hdr;
+        p->is_frag = 1;
+        if ((void *)(fh + 1) > data_end)
+            return;
+        p->proto = fh->nexthdr;
+        if (bpf_ntohs(fh->frag_off) & 0xFFF8)
+            return;
+        l4_proto = fh->nexthdr;
+        l4_hdr = fh + 1;
+    }
+    rule_pkt_ports(p, l4_proto, l4_hdr, data_end);
+}
+
+static __always_inline int rule_range_match(struct rule_range *ranges, __u8 n, __u16 v) {
+    if (n == 0)
+        return 1;
+    for (int i = 0; i < RULE_MAX_RANGES; i++) {
+        if (i >= n)
+            break;
+        if (v >= ranges[i].from && v <= ranges[i].to)
+            return 1;
+    }
+    return 0;
+}
+
+static __always_inline int rule_src_match(struct scrub_rule *r, struct rule_pkt *p) {
+    if (r->n_srcs == 0)
+        return 1;
+    for (int i = 0; i < RULE_MAX_SRCS; i++) {
+        if (i >= r->n_srcs)
+            break;
+        struct rule_prefix *pf = &r->srcs[i];
+        if ((p->src[0] & pf->mask[0]) == pf->addr[0] &&
+            (p->src[1] & pf->mask[1]) == pf->addr[1] &&
+            (p->src[2] & pf->mask[2]) == pf->addr[2] &&
+            (p->src[3] & pf->mask[3]) == pf->addr[3])
+            return 1;
+    }
+    return 0;
+}
+
+// Global for the same reason as scrub_match_rules: verified once rather than
+// per loop iteration.
+__attribute__((noinline)) int rule_match(struct scrub_rule *r, struct rule_pkt *p) {
+    if (!r || !p)
+        return 0;
+    if (!r->any_proto && !(r->proto_bits[(p->proto >> 6) & 3] & (1ULL << (p->proto & 63))))
+        return 0;
+    if (r->fragment == RULE_FRAG_ONLY && !p->is_frag)
+        return 0;
+    if (r->fragment == RULE_FRAG_NONE && p->is_frag)
+        return 0;
+    if (r->len_to && (p->len < r->len_from || p->len > r->len_to))
+        return 0;
+    if (r->tcp_flags_mask && (!p->has_tcp || (p->tcp_flags & r->tcp_flags_mask) != r->tcp_flags_value))
+        return 0;
+    // A port condition cannot hold for packets without ports (other
+    // protocols, later fragments).
+    if ((r->n_sports || r->n_dports) && !p->has_ports)
+        return 0;
+    if (!rule_range_match(r->sports, r->n_sports, p->sport) ||
+        !rule_range_match(r->dports, r->n_dports, p->dport))
+        return 0;
+    return rule_src_match(r, p);
+}
+
+// One bucket per rule shared by all CPUs, so a flow hashed to a single RX
+// queue still gets the full rate. Two CPUs may both reset a new window; that
+// admits at most a few extra packets. Windows only move forward, so a CPU
+// with a slightly older timestamp cannot reopen a finished window.
+static __always_inline int rule_over_rate(__u32 slot, struct scrub_rule *r, __u64 now) {
+    struct rule_bucket *b = bpf_map_lookup_elem(&rule_buckets, &slot);
+    if (!b || !r->rate_window_ns)
+        return 0;
+    __u64 window = now / r->rate_window_ns;
+    if (window > b->window) {
+        b->window = window;
+        b->count = 0;
+    }
+    return __sync_fetch_and_add(&b->count, 1) >= r->rate_budget;
+}
+
+// Returns ((slot + 1) << 2) | action for the first matching rule, or 0.
+// Deliberately a global function: the verifier checks it once on its own,
+// whereas inlined, the rule loop is re-explored for every state of xdp_scrub
+// and exceeds the instruction limit.
+__attribute__((noinline)) int scrub_match_rules(struct rule_pkt *p) {
+    if (!p)
+        return 0;
+    __u32 zero = 0;
+    struct rule_list *list = NULL;
+    if (p->v6) {
+        void *trie = bpf_map_lookup_elem(&rules_v6, &zero);
+        if (!trie)
+            return 0;
+        struct lpm_key_v6 key;
+        key.prefixlen = 128;
+        __builtin_memcpy(key.data, p->dst, 16);
+        list = bpf_map_lookup_elem(trie, &key);
+    } else {
+        void *trie = bpf_map_lookup_elem(&rules_v4, &zero);
+        if (!trie)
+            return 0;
+        struct lpm_key_v4 key = { .prefixlen = 32, .data = p->dst[0] };
+        list = bpf_map_lookup_elem(trie, &key);
+    }
+    if (!list)
+        return 0;
+
+    for (int i = 0; i < RULES_PER_DST; i++) {
+        if (i >= list->count)
+            break;
+        __u32 slot = list->slots[i];
+        struct scrub_rule *r = bpf_map_lookup_elem(&scrub_rules, &slot);
+        if (r && rule_match(r, p))
+            return ((slot + 1) << 2) | (r->action & 3);
+    }
+    return 0;
+}
+
+#define RULE_VERDICT_NONE 0 // no rule, or under a rate limit: run the per-source checks
+#define RULE_VERDICT_DROP 1
+#define RULE_VERDICT_PASS 2 // skip the per-source checks
+
+static __always_inline int scrub_eval_rules(struct xdp_md *ctx, struct rule_pkt *p, __u64 now, int is_monitor) {
+    int m = scrub_match_rules(p);
+    if (m <= 0)
+        return RULE_VERDICT_NONE;
+    __u32 action = m & 3;
+    __u32 slot = ((__u32)m >> 2) - 1;
+
+    __u64 *matches = bpf_map_lookup_elem(&rule_matches, &action);
+    if (matches)
+        (*matches)++;
+    if (action == RULE_ACTION_PASS)
+        return RULE_VERDICT_PASS;
+    if (action == RULE_ACTION_RATE_LIMIT) {
+        struct scrub_rule *r = bpf_map_lookup_elem(&scrub_rules, &slot);
+        if (!r || !rule_over_rate(slot, r, now))
+            return RULE_VERDICT_NONE;
+    }
+    if (p->v6)
+        emit_incident_v6(ctx, (struct in6_addr *)p->src, INCIDENT_RULE_MATCH, now);
+    else
+        emit_incident_v4(ctx, p->src[0], INCIDENT_RULE_MATCH, now);
+    return is_monitor ? RULE_VERDICT_NONE : RULE_VERDICT_DROP;
+}
+
 static __always_inline int scrub_ipv4(struct xdp_md *ctx, struct ethhdr *eth, void *l3, void *data_end,
                                       int tagged, int is_monitor) {
     struct iphdr *ip = l3;
@@ -1545,12 +1867,18 @@ static __always_inline int scrub_ipv4(struct xdp_md *ctx, struct ethhdr *eth, vo
     }
 
     if (!source_allowlisted_v4(saddr)) {
+        struct rule_pkt rp = {};
+        rule_pkt_v4(&rp, ip, data_end);
+        int rv = scrub_eval_rules(ctx, &rp, now, is_monitor);
+        if (rv == RULE_VERDICT_DROP)
+            return scrub_verdict(ctx, SCRUB_VERDICT_DROP, SCRUB_FAMILY_V4, XDP_DROP);
         // CHECK_STOP (TCP header not locatable) forwards, as host mode passes
         // it: dropping would break fragmented TCP whose later fragments carry
         // no header.
-        if (check_policy_v4(ctx, saddr, now, &is_monitor) == CHECK_DROP ||
-            check_blocked_v4(ctx, saddr, now, is_monitor) == CHECK_DROP ||
-            check_l4_v4(ctx, ip, data_end, saddr, now, is_monitor) == CHECK_DROP)
+        if (rv != RULE_VERDICT_PASS &&
+            (check_policy_v4(ctx, saddr, now, &is_monitor) == CHECK_DROP ||
+             check_blocked_v4(ctx, saddr, now, is_monitor) == CHECK_DROP ||
+             check_l4_v4(ctx, ip, data_end, saddr, now, is_monitor) == CHECK_DROP))
             return scrub_verdict(ctx, SCRUB_VERDICT_DROP, SCRUB_FAMILY_V4, XDP_DROP);
         scrub_hs_prepare_v4(&hs, ip, data_end, now);
         scrub_hs_close(&pending_handshakes, &hs);
@@ -1581,19 +1909,32 @@ static __always_inline int scrub_ipv6(struct xdp_md *ctx, struct ethhdr *eth, vo
 
     struct scrub_hs hs = {};
     if (!source_allowlisted_v6(&saddr)) {
-        if (check_policy_v6(ctx, &saddr, now, &is_monitor) == CHECK_DROP ||
-            check_blocked_v6(ctx, &saddr, now, is_monitor) == CHECK_DROP)
-            return scrub_verdict(ctx, SCRUB_VERDICT_DROP, SCRUB_FAMILY_V6, XDP_DROP);
-
         __u8 l4_proto = 0;
         void *l4_hdr = (void *)(ip6 + 1);
         __u8 ext_count = 0;
-        if (parse_ipv6_l4(ip6, data_end, &l4_proto, &l4_hdr, &ext_count) < 0) {
-            emit_incident_v6(ctx, &saddr, INCIDENT_MALFORMED, now);
-            return scrub_malformed(ctx, SCRUB_FAMILY_V6, is_monitor);
+        int l4_ok = parse_ipv6_l4(ip6, data_end, &l4_proto, &l4_hdr, &ext_count) == 0;
+
+        // Rules match on L4 fields, so they only see packets whose header
+        // chain parsed; a malformed chain keeps its host-mode handling below.
+        int rv = RULE_VERDICT_NONE;
+        if (l4_ok) {
+            struct rule_pkt rp = {};
+            rule_pkt_v6(&rp, ip6, l4_proto, l4_hdr, data_end);
+            rv = scrub_eval_rules(ctx, &rp, now, is_monitor);
         }
-        if (check_l4_v6(ctx, l4_proto, l4_hdr, data_end, &saddr, now, is_monitor) == CHECK_DROP)
+        if (rv == RULE_VERDICT_DROP)
             return scrub_verdict(ctx, SCRUB_VERDICT_DROP, SCRUB_FAMILY_V6, XDP_DROP);
+        if (rv != RULE_VERDICT_PASS) {
+            if (check_policy_v6(ctx, &saddr, now, &is_monitor) == CHECK_DROP ||
+                check_blocked_v6(ctx, &saddr, now, is_monitor) == CHECK_DROP)
+                return scrub_verdict(ctx, SCRUB_VERDICT_DROP, SCRUB_FAMILY_V6, XDP_DROP);
+            if (!l4_ok) {
+                emit_incident_v6(ctx, &saddr, INCIDENT_MALFORMED, now);
+                return scrub_malformed(ctx, SCRUB_FAMILY_V6, is_monitor);
+            }
+            if (check_l4_v6(ctx, l4_proto, l4_hdr, data_end, &saddr, now, is_monitor) == CHECK_DROP)
+                return scrub_verdict(ctx, SCRUB_VERDICT_DROP, SCRUB_FAMILY_V6, XDP_DROP);
+        }
         if (l4_proto == IPPROTO_TCP) {
             scrub_hs_prepare_v6(&hs, ip6, l4_hdr, data_end, now);
             scrub_hs_close(&pending_handshakes_v6, &hs);
@@ -1601,6 +1942,38 @@ static __always_inline int scrub_ipv6(struct xdp_md *ctx, struct ethhdr *eth, vo
     }
 
     return scrub_forward_v6(ctx, eth, ip6, tagged, is_monitor, &hs);
+}
+
+// Per-family entry points, global so each is verified once from a clean
+// state instead of once per Ethernet/VLAN parse path.
+__attribute__((noinline)) int scrub_ipv4_entry(struct xdp_md *ctx, __u32 l3_off, int tagged, int is_monitor) {
+    if (!ctx)
+        return XDP_ABORTED;
+    void *data = (void *)(long)ctx->data;
+    void *data_end = (void *)(long)ctx->data_end;
+    struct ethhdr *eth = data;
+    if ((void *)(eth + 1) > data_end)
+        return XDP_ABORTED;
+    // Bound the offset in asm: clang drops a C-level mask or check it can
+    // prove redundant, leaving the verifier an unbounded packet offset.
+    __u64 off = l3_off;
+    asm volatile("%0 &= 0x1f" : "+r"(off));
+    return scrub_ipv4(ctx, eth, data + off, data_end, tagged, is_monitor);
+}
+
+__attribute__((noinline)) int scrub_ipv6_entry(struct xdp_md *ctx, __u32 l3_off, int tagged, int is_monitor) {
+    if (!ctx)
+        return XDP_ABORTED;
+    void *data = (void *)(long)ctx->data;
+    void *data_end = (void *)(long)ctx->data_end;
+    struct ethhdr *eth = data;
+    if ((void *)(eth + 1) > data_end)
+        return XDP_ABORTED;
+    // Bound the offset in asm: clang drops a C-level mask or check it can
+    // prove redundant, leaving the verifier an unbounded packet offset.
+    __u64 off = l3_off;
+    asm volatile("%0 &= 0x1f" : "+r"(off));
+    return scrub_ipv6(ctx, eth, data + off, data_end, tagged, is_monitor);
 }
 
 SEC("xdp")
@@ -1616,9 +1989,9 @@ int xdp_scrub(struct xdp_md *ctx) {
     int tagged = cursor != data + sizeof(struct ethhdr);
 
     if (h_proto == bpf_htons(ETH_P_IP))
-        return scrub_ipv4(ctx, data, cursor, data_end, tagged, is_monitor);
+        return scrub_ipv4_entry(ctx, cursor - data, tagged, is_monitor);
     if (h_proto == bpf_htons(ETH_P_IPV6))
-        return scrub_ipv6(ctx, data, cursor, data_end, tagged, is_monitor);
+        return scrub_ipv6_entry(ctx, cursor - data, tagged, is_monitor);
 
     // ARP and other non-IP frames: the kernel never forwards them, and the
     // edge router cannot reach the node without ARP replies.

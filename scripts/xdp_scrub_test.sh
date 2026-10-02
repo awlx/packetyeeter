@@ -18,6 +18,7 @@ CREATED_NS=()
 COLLECTOR_PID=""; HTTP_PID=""; SINK_PID=""
 SINK_BIN="$REPO/bin/xdp_veth_sink"
 SINK_LOG="$(mktemp /tmp/yeet-scrub-sink.XXXXXX.log)"
+CMD_FIFO="$(mktemp -u /tmp/yeet-scrub-cmds.XXXXXX)"
 COLLECTOR_LOG="$(mktemp /tmp/yeet-scrub-collector.XXXXXX.log)"
 UDP_OUT="$(mktemp)"
 FAILURES=0
@@ -42,7 +43,7 @@ cleanup() {
   [[ -n "$HTTP_PID" ]] && kill "$HTTP_PID" 2>/dev/null || true
   [[ -n "$SINK_PID" ]] && kill "$SINK_PID" 2>/dev/null || true
   for ns in "${CREATED_NS[@]}"; do ip netns del "$ns" 2>/dev/null || true; done
-  rm -f "$UDP_OUT"
+  rm -f "$UDP_OUT" "$CMD_FIFO"
   log "cleaned up (collector log: $COLLECTOR_LOG, analyzer sink log: $SINK_LOG)"
 }
 trap cleanup EXIT
@@ -237,7 +238,10 @@ increased "$neigh" "$(metric packetyeeter_scrub_slow_path_total 'reason="no_neig
 
 log "handshake tracking"
 stop_collector
-ip netns exec "$NS_SCR" "$SINK_BIN" 127.0.0.1:59999 >"$SINK_LOG" 2>&1 &
+mkfifo "$CMD_FIFO"
+# Held open read-write so the sink never sees EOF between commands.
+exec 3<>"$CMD_FIFO"
+ip netns exec "$NS_SCR" "$SINK_BIN" 127.0.0.1:59999 "$CMD_FIFO" >"$SINK_LOG" 2>&1 &
 SINK_PID=$!
 sleep 0.5
 start_collector -analyzer-addr 127.0.0.1:59999 -handshake-timeout 1s
@@ -294,6 +298,121 @@ reported "$SRC4" || reported "$SRC6" && bad "completed handshake reported as inc
 reported "$TTL1_4" && bad "SYN the node did not forward was reported" || pass "SYNs left to the kernel not reported"
 reported "$SLOWACK4" && bad "handshake whose ACK took the kernel path was reported" || pass "ACKs left to the kernel still complete a handshake"
 reported "$RSTACK4" && pass "RST|ACK does not count as a completed handshake" || bad "RST|ACK closed the handshake"
+
+log "runtime rules"
+EXPIRES=$(date -u -d '+10 min' +%FT%TZ)
+send_rules() { # RuleSetDelta as protojson; the sink reads one command per line
+  local sent
+  sent=$(grep -c "^SENT type=COMMAND_SET_RULES collectors=1" "$SINK_LOG" || true)
+  printf '{"type":"COMMAND_SET_RULES","rules":%s}\n' "$(tr -d '\n' <<<"$1")" >&3
+  for _ in $(seq 30); do
+    (( $(grep -c "^SENT type=COMMAND_SET_RULES collectors=1" "$SINK_LOG" || true) > sent )) && { sleep 0.5; return 0; }
+    sleep 0.1
+  done
+  bad "rule delta not delivered to the collector"
+}
+udp_recv() { # PORT SECONDS: prints how many datagrams arrived
+  dst python3 -c '
+import socket, sys
+s = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM); s.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+s.bind(("::", int(sys.argv[1]))); s.settimeout(float(sys.argv[2]))
+n = 0
+try:
+    while True:
+        s.recv(2048); n += 1
+except socket.timeout:
+    pass
+print(n)' "$1" "$2"
+}
+udp_send() { # SRC SPORT DST DPORT COUNT PPS
+  src python3 -c '
+import socket, sys, time
+src, sport, dst, dport, count, pps = sys.argv[1], int(sys.argv[2]), sys.argv[3], int(sys.argv[4]), int(sys.argv[5]), float(sys.argv[6])
+s = socket.socket(socket.AF_INET6 if ":" in dst else socket.AF_INET, socket.SOCK_DGRAM)
+s.bind((src, sport))
+start = time.monotonic()
+for i in range(count):
+    s.sendto(b"x" * 64, (dst, dport))
+    delay = start + (i + 1) / pps - time.monotonic()
+    if delay > 0:
+        time.sleep(delay)
+print(f"{time.monotonic() - start:.3f}")' "$@"
+}
+udp_through() { # SRC SPORT DST DPORT COUNT: prints datagrams delivered
+  udp_recv "$4" 2 >"$UDP_OUT" & local r=$!
+  sleep 0.3
+  udp_send "$1" "$2" "$3" "$4" "$5" 200 >/dev/null
+  wait "$r" || true; cat "$UDP_OUT"
+}
+
+drops=$(metric packetyeeter_scrub_rule_matches_total 'action="drop"')
+incidents=$(metric packetyeeter_kernel_incidents_total 'reason="rule_match"')
+send_rules '{"upsert":[
+  {"id":"ntp-v4","dstPrefix":"'"$DST4"'/32","protocols":[17],"srcPorts":[{"from":123,"to":123}],"action":"RULE_ACTION_DROP","priority":5,"expiresAt":"'"$EXPIRES"'"},
+  {"id":"ntp-v6","dstPrefix":"'"$DST6"'/128","protocols":[17],"srcPorts":[{"from":123,"to":123}],"action":"RULE_ACTION_DROP","expiresAt":"'"$EXPIRES"'"},
+  {"id":"trusted","dstPrefix":"10.201.0.0/16","srcPrefixes":["'"$POLICY4"'/32"],"action":"RULE_ACTION_PASS","priority":1,"expiresAt":"'"$EXPIRES"'"}]}'
+[[ "$(metric packetyeeter_scrub_rules_active 'family="ipv4"')" == 2 && "$(metric packetyeeter_scrub_rules_active 'family="ipv6"')" == 1 ]] \
+  && pass "rules installed" || bad "rules_active: $(metric packetyeeter_scrub_rules_active 'family="ipv4"') v4, $(metric packetyeeter_scrub_rules_active 'family="ipv6"') v6"
+[[ "$(udp_through "$SRC4" 123 "$DST4" 5400 20)" == 0 ]] && pass "DROP rule drops UDP from port 123" || bad "UDP from port 123 got through"
+[[ "$(udp_through "$SRC4" 124 "$DST4" 5400 20)" == 20 ]] && pass "DROP rule leaves port 124 alone" || bad "UDP from port 124 was dropped"
+[[ "$(udp_through "$SRC6" 123 "$DST6" 5400 20)" == 0 ]] && pass "IPv6 DROP rule drops UDP from port 123" || bad "IPv6 UDP from port 123 got through"
+[[ "$(udp_through "$SRC6" 124 "$DST6" 5400 20)" == 20 ]] && pass "IPv6 DROP rule leaves port 124 alone" || bad "IPv6 UDP from port 124 was dropped"
+increased "$drops" "$(metric packetyeeter_scrub_rule_matches_total 'action="drop"')" \
+  && pass "rule_matches{drop} counted" || bad "rule_matches{drop} did not increase"
+increased "$incidents" "$(metric packetyeeter_kernel_incidents_total 'reason="rule_match"')" \
+  && pass "rule_match incidents counted" || bad "no rule_match incidents"
+# The /16 PASS rule outranks the more specific /32 rule and skips -policy.
+http_ok --interface "$POLICY4" "http://$DST4:8080/" && pass "PASS rule on a covering prefix skips -policy" || bad "PASS rule did not let the policy-blocked source through"
+
+send_rules '{"upsert":[{"id":"rl","dstPrefix":"'"$DST4"'/32","protocols":[17],"dstPorts":[{"from":5401,"to":5401}],"action":"RULE_ACTION_RATE_LIMIT","ratePps":"200","expiresAt":"'"$EXPIRES"'"}]}'
+udp_recv 5401 1.5 >"$UDP_OUT" & r=$!
+sleep 0.3
+secs=$(udp_send "$SRC4" 0 "$DST4" 5401 2000 1000)
+wait "$r" || true
+got=$(cat "$UDP_OUT")
+# 200 pps over however long sending took, +-10%, plus one 100ms window of
+# slack for a partly used first or last window.
+read -r lo hi want < <(awk -v s="$secs" 'BEGIN { w = 200 * s; printf "%d %d %d\n", w * 0.9 - 20, w * 1.1 + 20, w }')
+(( got >= lo && got <= hi )) && pass "RATE_LIMIT holds 200 pps ($got/$want in ${secs}s)" || bad "RATE_LIMIT let $got through in ${secs}s, want $lo-$hi"
+
+send_rules '{"upsert":[
+  {"id":"ok","dstPrefix":"'"$DST4"'/32","protocols":[17],"dstPorts":[{"from":5402,"to":5402}],"action":"RULE_ACTION_DROP","expiresAt":"'"$EXPIRES"'"},
+  {"id":"bad","dstPrefix":"'"$DST4"'/32","action":"RULE_ACTION_DROP"}]}'
+[[ "$(udp_through "$SRC4" 0 "$DST4" 5402 20)" == 20 ]] && grep -q "Rejected rule delta" "$COLLECTOR_LOG" \
+  && pass "a delta with an invalid rule is rejected whole" || bad "partial delta applied"
+
+send_rules '{"remove":["ntp-v4"]}'
+[[ "$(udp_through "$SRC4" 123 "$DST4" 5400 20)" == 20 ]] && pass "removed rule stops matching" || bad "removed rule still drops"
+
+expiry=$(date +%s.%N | awk '{ printf "%.3f", $1 + 3 }')
+SOON=$(date -u -d "@$expiry" +%FT%T.%3NZ)
+drops=$(metric packetyeeter_scrub_rule_matches_total 'action="drop"')
+send_rules '{"upsert":[{"id":"short","dstPrefix":"'"$DST4"'/32","protocols":[6],"dstPorts":[{"from":8080,"to":8080}],"action":"RULE_ACTION_DROP","expiresAt":"'"$SOON"'"}]}'
+http_ok --max-time 1 "http://$DST4:8080/" 2>/dev/null || true
+increased "$drops" "$(metric packetyeeter_scrub_rule_matches_total 'action="drop"')" \
+  && pass "short-lived DROP rule matches" || bad "short-lived DROP rule did not match"
+sleep "$(awk -v e="$expiry" -v n="$(date +%s.%N)" 'BEGIN { d = e + 2 - n; print (d > 0 ? d : 0) }')"
+http_ok "http://$DST4:8080/" && pass "expired rule stops matching within 2s" || bad "expired rule still drops 2s after expiry"
+
+log "4096 rules"
+send_rules '{"remove":["ntp-v6","trusted","rl","short"]}'
+# 31 rules on a covering /16 plus 4065 /32s: every /32 entry lists 32 rules,
+# the per-destination maximum.
+many=$(python3 -c '
+import json, sys
+rules = [{"id": f"c{i}", "dstPrefix": "10.210.0.0/16", "protocols": [17], "dstPorts": [{"from": 9000 + i, "to": 9000 + i}],
+          "action": "RULE_ACTION_DROP", "priority": i, "expiresAt": sys.argv[1]} for i in range(31)]
+rules += [{"id": f"r{i}", "dstPrefix": f"10.210.{i >> 8}.{i & 255}/32", "protocols": [17],
+           "action": "RULE_ACTION_DROP", "priority": 100, "expiresAt": sys.argv[1]} for i in range(4065)]
+print(json.dumps({"upsert": rules}))' "$EXPIRES")
+t0=$(date +%s.%N)
+send_rules "$many"
+for _ in $(seq 40); do [[ "$(metric packetyeeter_scrub_rules_active 'family="ipv4"')" == 4096 ]] && break; sleep 0.25; done
+t1=$(date +%s.%N)
+[[ "$(metric packetyeeter_scrub_rules_active 'family="ipv4"')" == 4096 ]] \
+  && pass "4096 IPv4 rules installed in $(awk -v a="$t0" -v b="$t1" 'BEGIN{printf "%.1f", b-a}')s" || bad "rules_active=$(metric packetyeeter_scrub_rules_active 'family="ipv4"') after loading 4096"
+http_ok "http://$DST4:8080/" && pass "forwarding unaffected with 4096 rules" || bad "forwarding broken with 4096 rules"
+send_rules "$(python3 -c 'import json; print(json.dumps({"remove": [f"c{i}" for i in range(31)] + [f"r{i}" for i in range(4065)]}))')"
 
 log "IPv6 transit with forwarding disabled is visible"
 nf=$(metric packetyeeter_scrub_slow_path_total 'reason="not_fwded"')

@@ -239,6 +239,35 @@ Labs on veth pairs: the veth receiving redirected frames needs GRO enabled
 needs tx checksum offload disabled on the sender. `make e2e-scrub-test` sets
 this up.
 
+### Runtime rules
+
+Scrub collectors apply match rules received on the analyzer stream as
+`COMMAND_SET_RULES` (a `RuleSetDelta`: rules to upsert by `id`, ids to
+remove). The analyzer API that sends them is not available yet. A rule matches
+traffic for its `dst_prefix` on any combination of protocols, source and
+destination port ranges, IP total length, TCP flags (`flags & mask ==
+value`), fragment state and up to 8 source prefixes, and then:
+
+- `DROP` drops the packet (logged as incident `rule_match`);
+- `RATE_LIMIT` drops what exceeds `rate_pps` (one budget per rule shared by
+  all CPUs; 100ms windows, 1s below 100 pps);
+- `PASS` forwards it without the per-source checks (blocked IPs, `-policy`,
+  rate limits, bad TCP flags).
+
+Rules run after the allowlist and before the per-source checks; the first
+matching rule by `priority` (lower first, ties by `id`) decides, whatever the
+prefix lengths. `-dry-run` counts and logs rule drops but forwards. A
+per-source `-policy` `monitor` entry does not exempt a source from rules; the
+allowlist does. Traffic to the node's own, multicast and link-local addresses
+is never matched against rules.
+
+Limits: 4096 rules per address family, 8 port ranges per direction, 8 source
+prefixes, and 32 rules covering any one destination. A delta that breaks a
+limit, or contains any invalid rule, is rejected whole and logged; the
+previous rules stay active. `expires_at` is required; expired rules are removed
+within a second. Rules live in memory only: after a collector restart they are
+back once the analyzer resends them.
+
 ## Modern DDoS runbook
 
 Use this workflow when campaign metrics or logs indicate a possible L3/L4 DDoS.

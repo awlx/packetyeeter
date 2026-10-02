@@ -147,6 +147,7 @@ type Collector struct {
 	managementListener net.Listener
 
 	draining        atomic.Bool
+	rules           *ruleEngine // scrub mode only
 	readinessChecks []readinessCheck
 	// lastLocalAddrsErr is only touched by pollMaps.
 	lastLocalAddrsErr string
@@ -332,6 +333,7 @@ func (c *Collector) Start(ctx context.Context) error {
 	}
 	if scrub {
 		c.readinessChecks = c.scrubReadinessChecks()
+		c.rules = newRuleEngine(c.Maps)
 		c.Logger.WithFields(logrus.Fields{
 			"outside": c.Config.Interface,
 			"inside":  c.Config.InsideInterface,
@@ -401,6 +403,11 @@ func (c *Collector) Start(ctx context.Context) error {
 	// Start block GC (cleanup expired blocks)
 	c.wg.Add(1)
 	go c.runBlockGC()
+
+	if c.rules != nil {
+		c.wg.Add(1)
+		go c.runRuleExpiry()
+	}
 
 	// Start metrics endpoint (SPOE metrics only)
 	c.metricsServer = c.startCollectorMetricsServer()
@@ -679,6 +686,9 @@ func (c *Collector) executeCommand(cmd *apiv1.Command) {
 			logger.WithError(err).Warn("Failed to add IP to kernel-space allowlist")
 		}
 		logger.WithField("cidr", ipNet.String()).Info("Added IP to allowlist by analyzer command")
+
+	case apiv1.CommandType_COMMAND_SET_RULES:
+		c.applyRules(cmd.GetRules())
 
 	case apiv1.CommandType_COMMAND_REMOVE_ALLOWLIST_IP:
 		// Remove IP from allowlist
@@ -1929,7 +1939,13 @@ func (c *Collector) startCollectorMetricsServer() *http.Server {
 
 	mux := http.NewServeMux()
 	if c.Config.Mode == ebpf.ModeScrub {
-		registry.MustRegister(&scrubMetrics{stats: c.Maps.ReadScrubStats, ready: c.scrubReady, logger: c.Logger})
+		registry.MustRegister(&scrubMetrics{
+			stats:       c.Maps.ReadScrubStats,
+			ready:       c.scrubReady,
+			ruleMatches: c.Maps.RuleMatches,
+			ruleCounts:  c.rules.Counts,
+			logger:      c.Logger,
+		})
 		mux.Handle("/readyz", readyzHandler(c.scrubReady))
 	}
 	mux.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
