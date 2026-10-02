@@ -7,8 +7,9 @@
   `pending_handshakes(_v6)` with host mode. A random-source SYN flood no longer
   contends on one LRU lock across CPUs. Host mode is unchanged, and each mode
   only creates its own pair of maps.
-- The 500k-entry capacity is now split evenly across CPUs for eviction, so
-  under a flood hitting few RX queues old entries are evicted earlier.
+- The 500k-entry capacity is now split evenly across the kernel's possible
+  CPUs for eviction, so under a flood hitting few RX queues, or on a host with
+  far fewer online than possible CPUs, old entries are evicted earlier.
 
 ## 2026-10-02 - Scrub mode handshake tracking fixes
 
