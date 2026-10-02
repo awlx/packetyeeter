@@ -160,12 +160,15 @@ dst tc filter add dev dst0 ingress pref 2 protocol ip flower ip_proto tcp action
 mkfifo "$CMD_FIFO"
 # Held open read-write so the sink never sees EOF between commands.
 exec 3<>"$CMD_FIFO"
-scr "$SINK_BIN" 127.0.0.1:59999 "$CMD_FIFO" >"$SINK_LOG" 2>&1 &
+# Started with ip netns exec directly, not through scr(): backgrounding a
+# shell function makes $! a subshell, and cleanup would leave the process
+# (and its preallocated maps) running.
+ip netns exec "$NS_SCR" "$SINK_BIN" 127.0.0.1:59999 "$CMD_FIFO" >"$SINK_LOG" 2>&1 &
 SINK_PID=$!
 sleep 0.5
 
 METRICS=127.0.0.1:2112
-scr "$COLLECTOR_BIN" -mode scrub -i out0 -inside-if in0 -metrics-addr "$METRICS" \
+ip netns exec "$NS_SCR" "$COLLECTOR_BIN" -mode scrub -i out0 -inside-if in0 -metrics-addr "$METRICS" \
   -socket "" -analyzer-addr 127.0.0.1:59999 >>"$COLLECTOR_LOG" 2>&1 &
 COLLECTOR_PID=$!
 for _ in $(seq 50); do
