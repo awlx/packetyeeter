@@ -417,14 +417,18 @@ scr ip rule add iif in0 to 10.201.4.0/24 lookup 104
 scr ip route add 10.201.4.0/24 via "$SRC4" dev out0 table 104
 src ip route add 10.201.4.0/24 via "$OUT4"
 # The edge sees its own echo requests come back; accept_local lets it forward them.
+# New namespaces inherit these from the host, so restore rather than zero them.
+src_saved=$(src sysctl -n net.ipv4.ip_forward net.ipv4.conf.all.accept_local net.ipv4.conf.src0.accept_local | tr '\n' ' ')
+dst_fwd=$(dst sysctl -n net.ipv4.ip_forward)
 src sysctl -qw net.ipv4.ip_forward=1 net.ipv4.conf.all.accept_local=1 net.ipv4.conf.src0.accept_local=1
 dst sysctl -qw net.ipv4.ip_forward=1
 ttl=$(metric packetyeeter_scrub_ttl_expired_total)
 for t in 61 62 63 64; do src ping -c1 -W1 -t "$t" 10.201.4.9 >/dev/null 2>&1 || true; done
 increased "$ttl" "$(metric packetyeeter_scrub_ttl_expired_total)" \
   && pass "routing loop shows up in ttl_expired" || bad "ttl_expired did not increase on a routing loop"
-dst sysctl -qw net.ipv4.ip_forward=0
-src sysctl -qw net.ipv4.ip_forward=0 net.ipv4.conf.all.accept_local=0 net.ipv4.conf.src0.accept_local=0
+dst sysctl -qw net.ipv4.ip_forward="$dst_fwd"
+read -r fwd al al0 <<<"$src_saved"
+src sysctl -qw net.ipv4.ip_forward="$fwd" net.ipv4.conf.all.accept_local="$al" net.ipv4.conf.src0.accept_local="$al0"
 src ip route del 10.201.4.0/24
 scr ip route del 10.201.4.0/24 table 104
 scr ip rule del iif in0 to 10.201.4.0/24 lookup 104
