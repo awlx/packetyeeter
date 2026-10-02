@@ -88,6 +88,9 @@ cleanup() {
 trap cleanup EXIT
 
 [[ $EUID -eq 0 ]] || die "must run as root: sudo $0"
+for s in $SCENARIOS; do
+  [[ " a b b2 b3 b4 c0 c1 c2 " == *" $s "* ]] || die "unknown scenario $s in SCENARIOS"
+done
 for t in clang go curl python3 ethtool bpftool ip tc trafgen; do
   command -v "$t" >/dev/null || die "missing $t (Debian/Ubuntu: apt install clang llvm libbpf-dev linux-tools-generic curl python3 ethtool netsniff-ng)"
 done
@@ -348,7 +351,8 @@ want c2 && { log "c2: clean UDP + random-source SYN flood (1:3), $SYN_CPUS CPUs"
 
 # ---- report ------------------------------------------------------------------
 delta() { awk -v a="$1" -v b="$2" 'BEGIN { if (a > 0) printf "%+.1f%%", (b - a) * 100 / a; else print "n/a" }'; }
-col() { cut -d' ' -f"$2" <<<"${RES[$1]}"; }
+# A reference scenario left out of SCENARIOS has no result; delta prints n/a.
+col() { cut -d' ' -f"$2" <<<"${RES[$1]:-}"; }
 echo
 echo "Kernel $(uname -r), $(nproc) CPUs ($(lscpu 2>/dev/null | awk -F': *' '/^Vendor ID/ {v = $2} /^Model name/ {m = $2} END {print (m != "" && m != "-") ? m : v}'))," \
   "load $(cut -d' ' -f1-3 /proc/loadavg); veth, native XDP, median of ${REPS}x ${DURATION}s"
