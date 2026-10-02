@@ -155,10 +155,14 @@ sudo packetyeeter-collector -mode scrub -i eth0 -inside-if eth1 -dry-run
 Requirements, checked at start-up (the collector refuses to start otherwise):
 
 - Linux 5.15 or newer, and native XDP on both ports (`-allow-generic` for labs).
-- `net.ipv4.ip_forward=1`, and `net.ipv6.conf.all.forwarding=1` when the node
-  has a global IPv6 address. The kernel forwards whatever XDP cannot (no
-  neighbour entry yet, TTL expiry, MTU, VLAN-tagged frames) and keeps forwarding
-  if the collector stops.
+- `net.ipv4.ip_forward=1` and `net.ipv4.conf.<outside>.forwarding=1`, plus
+  `net.ipv6.conf.all.forwarding=1` and `net.ipv6.conf.<outside>.forwarding=1`
+  when the node has a global IPv6 address on either port or any IPv6 route
+  (other than link-local/multicast) out of the inside port, e.g. a route via a
+  link-local next hop. The kernel forwards whatever XDP cannot (no neighbour
+  entry yet, TTL expiry, MTU, VLAN-tagged frames) and keeps forwarding if the
+  collector stops. `bpf_fib_lookup` checks the outside port's own setting, so
+  the per-port sysctls matter even with the global one set.
 - `rp_filter` 0 or 2 on the outside port: attack sources are spoofed, and strict
   mode drops them in the kernel path.
 
@@ -168,8 +172,16 @@ Routing:
 - The inside network must not learn the redirect route, or forwarded traffic
   loops back to the edge; `packetyeeter_scrub_ttl_expired_total` rising is the
   symptom.
-- Traffic to the node's own addresses, multicast and link-local destinations is
-  passed to the local stack, never scrubbed or forwarded.
+- Multicast and link-local destinations, ARP and IPv6 neighbour discovery
+  always reach the local stack unchecked, so routing protocols and neighbour
+  resolution keep working.
+- Unicast traffic to the node's own addresses (BGP and management addresses,
+  VIPs on `lo`, port addresses) is checked against `blocked_ips` and `-policy`
+  (honouring the allowlist and monitor mode) and otherwise passed to the local
+  stack. The bad-flags, fragment and ICMP/UDP rate-limit checks are not
+  applied: they are sized for forwarded traffic and would throttle the node's
+  control plane. Up to 4096 addresses per family are tracked; start-up fails if
+  the node has more, and later overflows are logged once until they clear.
 
 Readiness and failure:
 
@@ -178,9 +190,26 @@ Readiness and failure:
   enabled; otherwise 503 with the reason. Use it to decide whether the node may
   be a next hop.
 - On SIGTERM the node reports 503 for `-readyz-drain` before detaching, so
-  traffic can move away first.
+  traffic can move away first. The control plane (analyzer block commands,
+  block expiry, `local_addrs` sync, incident reporting) keeps running during the
+  drain; `xdp_scrub` is detached before `xdp_pass_inside` so in-flight
+  redirects are not dropped.
 - If the collector crashes, the kernel detaches XDP and keeps forwarding
   unscrubbed traffic: the node fails open, never blackholes.
+
+Slow-path limit: packets that need the kernel (TTL <= 1, oversize with DF,
+destinations without a neighbour entry, routes out of other ports, forwarding
+disabled) are capped at `-scrub-slow-path-pps` (default 100000, 0 = unlimited)
+across all CPUs, so floods aimed at the slow path cannot exhaust the kernel or
+its neighbour table (a random-destination flood into a connected IPv6 /64).
+The budget is split evenly over CPUs, so traffic concentrated on one RX queue
+hits its share sooner. The tradeoff: while the cap is reached, legitimate
+slow-path packets are dropped too, which delays neighbour resolution for new
+destinations and suppresses ICMP errors (time exceeded, packet too big) until
+the next second. VLAN-tagged traffic, which always takes the slow path, is not
+counted. Watch `packetyeeter_scrub_slow_path_limited_total`; in `-dry-run`
+over-limit packets are passed and only counted. Size the cap above the normal
+slow-path rate (`rate(packetyeeter_scrub_packets_total{verdict="slow_path"})`).
 
 Rollout: start with `-dry-run` (drops are logged as incidents and forwarded),
 compare `packetyeeter_kernel_incidents_total` with expected attack traffic,
