@@ -113,7 +113,10 @@ behavior) alongside `Tau` and `AnomalyMultiplier`.
   `packetyeeter_tcp_syn_flood_blocks_total`,
   `packetyeeter_tcp_bad_flags_blocks_total`.
 - **Rate limiting**: `packetyeeter_rate_limit_*`,
-  `packetyeeter_rate_limit_currently_blocked_*`.
+  `packetyeeter_rate_limit_currently_blocked_*`. The `currently_blocked`
+  gauges count distinct IPs/ASNs rate-limited in the last 60 s (expiry is
+  swept once per second, so they can lag by up to 1 s) and saturate at
+  100,000 each: a flood beyond that many sources reads as 100,000.
 - **HTTP**: `packetyeeter_http_requests_per_second_by_*`,
   `packetyeeter_http_path_signals_total`,
   `packetyeeter_http_path_entropy_by_ip`.

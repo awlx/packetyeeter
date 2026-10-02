@@ -802,12 +802,12 @@ var (
 
 	RateLimitCurrentlyBlockedIPs = promauto.NewGauge(prometheus.GaugeOpts{
 		Name: "packetyeeter_rate_limit_currently_blocked_ips",
-		Help: "Number of IPs blocked in the last time window",
+		Help: "Number of IPs rate-limited in the last 60s (saturates at 100000)",
 	})
 
 	RateLimitCurrentlyBlockedASNs = promauto.NewGauge(prometheus.GaugeOpts{
 		Name: "packetyeeter_rate_limit_currently_blocked_asns",
-		Help: "Number of ASNs blocked in the last time window",
+		Help: "Number of ASNs rate-limited in the last 60s (saturates at 100000)",
 	})
 
 	// Pattern Tracking Metrics

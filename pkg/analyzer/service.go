@@ -221,8 +221,9 @@ type Analyzer struct {
 	enforcement enforcementState
 
 	// Recent block dedup
-	recentBlocks   map[string]time.Time
-	recentBlocksMu sync.Mutex
+	recentBlocks      map[string]time.Time
+	recentBlocksSwept time.Time
+	recentBlocksMu    sync.Mutex
 
 	// Path entropy tracking
 	pathWindows map[string]*pathWindow
@@ -247,6 +248,7 @@ type Analyzer struct {
 	// Shutdown
 	ctx       context.Context
 	cancel    context.CancelFunc
+	closeOnce sync.Once
 	wg        sync.WaitGroup
 	startTime time.Time
 }
@@ -737,11 +739,15 @@ func (a *Analyzer) StreamSignals(stream apiv1.AnalyzerService_StreamSignalsServe
 
 		signalCounts[sig.Type.String()]++
 
-		logrus.WithFields(logrus.Fields{
-			"collector":   collectorID,
-			"signal_type": sig.Type.String(),
-			"ip":          net.IP(sig.Ip).String(),
-		}).Debug("Signal received by analyzer")
+		// Guarded: building the fields allocates on every signal even when
+		// Debug is off.
+		if logrus.IsLevelEnabled(logrus.DebugLevel) {
+			logrus.WithFields(logrus.Fields{
+				"collector":   collectorID,
+				"signal_type": sig.Type.String(),
+				"ip":          net.IP(sig.Ip).String(),
+			}).Debug("Signal received by analyzer")
+		}
 
 		a.processSignal(sig, cs)
 	}
@@ -794,35 +800,45 @@ func (a *Analyzer) processSignal(sig *apiv1.Signal, cs *collectorStream) {
 	case apiv1.SignalType_SIGNAL_SYN_FLOOD:
 		metrics.SynFloods.Inc()
 		metrics.TCPDetections.Inc()
-		logrus.WithField("ip", ip.String()).Debug("Tracked SYN flood signal")
+		if logrus.IsLevelEnabled(logrus.DebugLevel) {
+			logrus.WithField("ip", ip.String()).Debug("Tracked SYN flood signal")
+		}
 	case apiv1.SignalType_SIGNAL_ICMP_FLOOD:
 		metrics.ICMPDetections.Inc()
 		// Track highest ICMP rate (just set the weight value)
 		if sig.Weight > 0 {
 			metrics.HighestICMPRate.Set(sig.Weight)
-			logrus.WithFields(logrus.Fields{"ip": ip.String(), "rate": sig.Weight}).Debug("Tracked ICMP flood signal")
+			if logrus.IsLevelEnabled(logrus.DebugLevel) {
+				logrus.WithFields(logrus.Fields{"ip": ip.String(), "rate": sig.Weight}).Debug("Tracked ICMP flood signal")
+			}
 		}
 	case apiv1.SignalType_SIGNAL_UDP_FLOOD:
 		metrics.UDPDetections.Inc()
 		// Track highest UDP rate (just set the weight value)
 		if sig.Weight > 0 {
 			metrics.HighestUDPRate.Set(sig.Weight)
-			logrus.WithFields(logrus.Fields{"ip": ip.String(), "rate": sig.Weight}).Debug("Tracked UDP flood signal")
+			if logrus.IsLevelEnabled(logrus.DebugLevel) {
+				logrus.WithFields(logrus.Fields{"ip": ip.String(), "rate": sig.Weight}).Debug("Tracked UDP flood signal")
+			}
 		}
 	case apiv1.SignalType_SIGNAL_BAD_FLAGS:
 		metrics.FlagBlocks.Inc()
 		metrics.TCPDetections.Inc()
-		logrus.WithField("ip", ip.String()).Debug("Tracked bad flags signal")
+		if logrus.IsLevelEnabled(logrus.DebugLevel) {
+			logrus.WithField("ip", ip.String()).Debug("Tracked bad flags signal")
+		}
 	case apiv1.SignalType_SIGNAL_INCOMPLETE_HANDSHAKE:
 		metrics.TCPDetections.Inc()
 	}
 
 	// Rate limiting check
 	if a.checkRateLimit(ip, asn) {
-		logrus.WithFields(logrus.Fields{
-			"ip":  ip.String(),
-			"asn": asn,
-		}).Debug("Rate limit exceeded")
+		if logrus.IsLevelEnabled(logrus.DebugLevel) {
+			logrus.WithFields(logrus.Fields{
+				"ip":  ip.String(),
+				"asn": asn,
+			}).Debug("Rate limit exceeded")
+		}
 
 		if !a.Config.DryRun {
 			a.ReputationHelper.PenalizeIP(ip, 10.0, "Rate limit exceeded")
@@ -1042,7 +1058,9 @@ func (a *Analyzer) isDuplicateBlockCommand(cmd *apiv1.Command) bool {
 	}
 	ip := net.IP(cmd.Ip)
 	if a.wasRecentlyBlocked(ip) {
-		logrus.WithFields(logrus.Fields{"ip": ip.String()}).Debug("Block command skipped (recently blocked)")
+		if logrus.IsLevelEnabled(logrus.DebugLevel) {
+			logrus.WithFields(logrus.Fields{"ip": ip.String()}).Debug("Block command skipped (recently blocked)")
+		}
 		return true
 	}
 	a.markBlocked(ip)
@@ -1058,17 +1076,29 @@ func (a *Analyzer) sendToStream(cs *collectorStream, cmd *apiv1.Command) {
 	}
 }
 
+const (
+	recentBlockTTL = 60 * time.Second
+	// Sweeping on every mark made each block O(len(recentBlocks)) under
+	// recentBlocksMu; wasRecentlyBlocked checks the TTL itself, so a lagging
+	// sweep never extends dedup.
+	recentBlocksSweepInterval = time.Second
+)
+
 func (a *Analyzer) markBlocked(ip net.IP) {
 	if ip == nil {
 		return
 	}
-	const ttl = 60 * time.Second
+	key := ip.String()
+	now := time.Now()
 	a.recentBlocksMu.Lock()
 	defer a.recentBlocksMu.Unlock()
-	a.recentBlocks[ip.String()] = time.Now()
-	// Cleanup stale entries opportunistically
+	a.recentBlocks[key] = now
+	if now.Sub(a.recentBlocksSwept) < recentBlocksSweepInterval {
+		return
+	}
+	a.recentBlocksSwept = now
 	for k, ts := range a.recentBlocks {
-		if time.Since(ts) > ttl*2 {
+		if now.Sub(ts) > recentBlockTTL*2 {
 			delete(a.recentBlocks, k)
 		}
 	}
@@ -1078,11 +1108,11 @@ func (a *Analyzer) wasRecentlyBlocked(ip net.IP) bool {
 	if ip == nil {
 		return false
 	}
-	const ttl = 60 * time.Second
+	key := ip.String()
 	a.recentBlocksMu.Lock()
 	defer a.recentBlocksMu.Unlock()
-	if ts, ok := a.recentBlocks[ip.String()]; ok {
-		return time.Since(ts) < ttl
+	if ts, ok := a.recentBlocks[key]; ok {
+		return time.Since(ts) < recentBlockTTL
 	}
 	return false
 }
@@ -1287,26 +1317,30 @@ func (a *Analyzer) HandleDetection(event aidetection.DetectionEvent) {
 	// For non-DDoS: only confidence matters
 	if !isDDoS && event.Confidence < threshold {
 		metrics.AIDetectionsByAction.WithLabelValues("below_threshold").Inc()
-		logrus.WithFields(logrus.Fields{
-			"ip":         event.IP,
-			"ja4h":       event.JA4H,
-			"confidence": event.Confidence,
-			"threshold":  threshold,
-			"score":      event.Score,
-		}).Debug("Detection below confidence threshold (non-DDoS), not blocking")
+		if logrus.IsLevelEnabled(logrus.DebugLevel) {
+			logrus.WithFields(logrus.Fields{
+				"ip":         event.IP,
+				"ja4h":       event.JA4H,
+				"confidence": event.Confidence,
+				"threshold":  threshold,
+				"score":      event.Score,
+			}).Debug("Detection below confidence threshold (non-DDoS), not blocking")
+		}
 		return
 	}
 
 	// For DDoS: check confidence OR score
 	if isDDoS && event.Score < scoreBlock && event.Confidence < threshold {
 		metrics.AIDetectionsByAction.WithLabelValues("below_threshold").Inc()
-		logrus.WithFields(logrus.Fields{
-			"ip":         event.IP,
-			"ja4h":       event.JA4H,
-			"confidence": event.Confidence,
-			"threshold":  threshold,
-			"score":      event.Score,
-		}).Debug("DDoS detection below both thresholds, not blocking")
+		if logrus.IsLevelEnabled(logrus.DebugLevel) {
+			logrus.WithFields(logrus.Fields{
+				"ip":         event.IP,
+				"ja4h":       event.JA4H,
+				"confidence": event.Confidence,
+				"threshold":  threshold,
+				"score":      event.Score,
+			}).Debug("DDoS detection below both thresholds, not blocking")
+		}
 		return
 	}
 
@@ -1870,7 +1904,13 @@ func (a *Analyzer) cleanupTrackingMaps() {
 	}).Info("Cleaned up tracking maps")
 }
 
+// Close is idempotent: Start's error path and deferred shutdown can both call
+// it, and a second run would double-close owned resources.
 func (a *Analyzer) Close() {
+	a.closeOnce.Do(a.close)
+}
+
+func (a *Analyzer) close() {
 	a.cancel()
 
 	if a.AIEngine != nil {
