@@ -36,6 +36,10 @@ service AnalyzerService {
   
   // Health check
   rpc Health(google.protobuf.Empty) returns (HealthResponse);
+
+  // Stream of what the analyzer decides and sees, for a controller: every
+  // command sent to collectors, campaign observations and scrub fingerprints.
+  rpc WatchDecisions(WatchRequest) returns (stream Decision);
 }
 
 // Signal represents a detection signal from the collector
@@ -72,6 +76,9 @@ message Signal {
 
   // Egress volume context (from the eBPF TC egress byte counters)
   EgressContext egress_context = 16;
+
+  // SIGNAL_SCRUB_FINGERPRINT: traffic seen by a scrub collector, per bucket.
+  ScrubFingerprint fingerprint = 17;
 }
 
 enum SignalType {
@@ -117,6 +124,9 @@ enum SignalType {
   SIGNAL_CLOCK_SKEW_ANOMALY = 50;
   SIGNAL_ENTROPY_ANOMALY = 51;
   SIGNAL_BASELINE_ANOMALY = 52;
+
+  // Scrub-mode signals
+  SIGNAL_SCRUB_FINGERPRINT = 60; // per-destination traffic buckets, not scored
 }
 
 enum SignalSource {
@@ -384,4 +394,41 @@ message HealthResponse {
   string version = 2;
   google.protobuf.Timestamp uptime_since = 3;
   map<string, string> components = 4;  // Component name -> status
+}
+
+// ScrubFingerprint counts the packets a scrub collector saw for one
+// destination and traffic shape over one interval.
+message ScrubFingerprint {
+  string collector_id = 1;
+  bytes dst_ip = 2;
+  uint32 protocol = 3;
+  uint32 dst_port = 4;          // 0 when not TCP/UDP
+  uint32 size_bucket = 5;       // IP total length: 0 <128, 1 <256, 2 <512, 3 <1024, 4 >=1024
+  uint32 ttl_bucket = 6;        // TTL / 32 (0-7)
+  bytes src_net = 7;            // source /24 or /48 network address
+  bool dropped = 8;
+  uint64 packets = 9;
+  uint32 interval_seconds = 10;
+  uint64 bytes = 11;
+}
+
+message WatchRequest {
+  string subscriber = 1; // name for logs and metrics
+}
+
+message Decision {
+  oneof kind {
+    Command command = 1;
+    CampaignObservation campaign = 2;
+    ScrubFingerprint fingerprint = 3;
+  }
+}
+
+message CampaignObservation {
+  string vector = 1;
+  uint32 protocol = 2;
+  string dst_port_bucket = 3;
+  string dst_prefix = 4;
+  double rate_pps = 5;
+  google.protobuf.Timestamp observed_at = 6;
 }
