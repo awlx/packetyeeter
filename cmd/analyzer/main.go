@@ -47,6 +47,9 @@ func main() {
 		maxCollectors  = flag.Int("max-collectors", 1024, "Maximum concurrent collector streams (bounds fan-out/goroutines on the unauthenticated signal plane)")
 		mlModelPath    = flag.String("ml-model", "", "Path to ONNX ML model file (optional, enables ML-based confidence adjustment)")
 		dryRun         = flag.Bool("dry-run", false, "Monitor mode - log detections but don't send BLOCK commands")
+		enableWatch    = flag.Bool("enable-watch-api", false, "Serve the WatchDecisions stream (commands, campaign observations, scrub fingerprints) on the gRPC listener. The listener is unauthenticated: restrict it to trusted networks")
+		watchMaxSubs   = flag.Int("watch-max-subscribers", 16, "Maximum concurrent WatchDecisions subscribers")
+		watchBuffer    = flag.Int("watch-buffer-size", 10000, "Per-subscriber WatchDecisions buffer; the oldest decision is dropped when full")
 
 		sustainedDefaults = sustained.DefaultConfig()
 
@@ -116,6 +119,9 @@ func main() {
 		MLModelPath:                  *mlModelPath,
 		MaxCollectors:                *maxCollectors,
 		DryRun:                       *dryRun,
+		EnableWatchAPI:               *enableWatch,
+		WatchMaxSubscribers:          *watchMaxSubs,
+		WatchBufferSize:              *watchBuffer,
 		Sustained: sustained.Config{
 			Enabled:                           *sustainedEnabled,
 			Enforce:                           *sustainedEnforce,

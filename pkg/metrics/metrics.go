@@ -119,6 +119,24 @@ var (
 		Help: "Block commands not issued because the runtime enforcement kill switch is pulled",
 	})
 
+	// WatchDecisions stream (controller subscribers).
+	WatchSubscribers = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "packetyeeter_watch_subscribers",
+		Help: "Connected WatchDecisions subscribers",
+	})
+	WatchDroppedTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "packetyeeter_watch_dropped_total",
+		Help: "Decisions dropped (oldest first) because a WatchDecisions subscriber's buffer was full",
+	})
+	WatchPublishedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "packetyeeter_watch_published_total",
+		Help: "Decisions published to the WatchDecisions stream, by kind (command, campaign, fingerprint)",
+	}, []string{"kind"})
+	WatchInvalidFingerprintsTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "packetyeeter_watch_invalid_fingerprints_total",
+		Help: "SIGNAL_SCRUB_FINGERPRINT signals dropped by the analyzer as malformed",
+	})
+
 	HTTPFloodBlocks = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "packetyeeter_http_flood_blocks_total",
 		Help: "Total HTTP flood blocks",

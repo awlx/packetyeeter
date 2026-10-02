@@ -163,6 +163,22 @@ blocking without enabling high-cardinality IP metrics.
   enforcement is being withheld; relieving commands (unblock, allowlist) are not
   counted here because they are never suppressed.
 
+### Decision stream (`WatchDecisions`)
+
+All but the invalid-fingerprint counter stay at zero unless the analyzer runs
+with `-enable-watch-api`.
+
+- `packetyeeter_watch_subscribers` (gauge): connected subscribers.
+- `packetyeeter_watch_published_total{kind}` (counter): decisions published,
+  once per decision whether or not anyone is subscribed. `kind` is `command`,
+  `campaign` or `fingerprint`.
+- `packetyeeter_watch_dropped_total` (counter): decisions dropped, oldest
+  first, because a subscriber's buffer was full. Any increase means a
+  controller is missing decisions; it is summed over subscribers.
+- `packetyeeter_watch_invalid_fingerprints_total` (counter): malformed
+  `SIGNAL_SCRUB_FINGERPRINT` signals dropped. Non-zero points to a collector
+  version mismatch or a misbehaving peer on the signal plane.
+
 ### Sustained-download metrics
 
 Detection inputs, kept separate from the detection outcome so "the counters are

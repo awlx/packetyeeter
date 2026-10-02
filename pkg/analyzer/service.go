@@ -89,6 +89,9 @@ type Config struct {
 	MaxCollectors                int      // Max concurrent collector streams (default 1024)
 	InspectorTrustedHosts        []string // Extra Host/Origin hostnames the inspector trusts for mutating requests (in addition to loopback), e.g. a reverse-proxy hostname
 	DryRun                       bool     // Monitor mode - log detections but don't block
+	EnableWatchAPI               bool     // Serve WatchDecisions (off by default)
+	WatchMaxSubscribers          int      // Max concurrent WatchDecisions subscribers (default 16)
+	WatchBufferSize              int      // Per-subscriber decision buffer, drop-oldest (default 10000)
 	Sustained                    sustained.Config
 }
 
@@ -232,6 +235,9 @@ type Analyzer struct {
 	httpErrorWindows map[string]*httpErrorWindow
 	httpErrorMu      sync.Mutex
 
+	// WatchDecisions subscribers; nil when the API is disabled.
+	watch *watchHub
+
 	// Connected collectors
 	collectors   map[string]*collectorStream
 	collectorsMu sync.RWMutex
@@ -323,6 +329,11 @@ func New(cfg Config) (*Analyzer, error) {
 		ctx:                    ctx,
 		cancel:                 cancel,
 		startTime:              time.Now(),
+	}
+	if cfg.EnableWatchAPI {
+		a.watch = newWatchHub(cfg.WatchMaxSubscribers, cfg.WatchBufferSize)
+		a.Config.WatchMaxSubscribers = a.watch.maxSubscribers
+		a.Config.WatchBufferSize = a.watch.bufferSize
 	}
 	a.ReputationHelper = NewReputationHelper(nil) // Will be set during Start()
 	return a, nil
@@ -421,6 +432,9 @@ func (a *Analyzer) Start() error {
 	aiCfg.DDoSTotalThreshold = a.Config.DDoSTotalThreshold
 	aiCfg.DDoSRequireHighFreq = a.Config.DDoSRequireHighFreq
 	aiCfg.EnableDDoSCategory = !a.Config.DisableDDoSCategory
+	if a.watch != nil {
+		aiCfg.OnCampaign = a.publishCampaign
+	}
 	stateDir := a.Config.StateDir
 	if stateDir == "" {
 		stateDir = "/var/cache/packetyeeter"
@@ -545,6 +559,13 @@ func (a *Analyzer) Start() error {
 
 	a.grpcServer = grpc.NewServer(opts...)
 	apiv1.RegisterAnalyzerServiceServer(a.grpcServer, a)
+	if a.watch != nil {
+		logrus.WithFields(logrus.Fields{
+			"addr":            a.Config.ListenAddr,
+			"max_subscribers": a.watch.maxSubscribers,
+			"buffer":          a.watch.bufferSize,
+		}).Warn("WatchDecisions enabled on the gRPC listener, which is unauthenticated: restrict it to trusted networks")
+	}
 
 	// Start background tasks
 	a.wg.Add(1)
@@ -736,6 +757,11 @@ func (a *Analyzer) StreamSignals(stream apiv1.AnalyzerService_StreamSignalsServe
 		}
 
 		signalCounts[sig.Type.String()]++
+
+		if sig.GetType() == apiv1.SignalType_SIGNAL_SCRUB_FINGERPRINT {
+			a.handleFingerprintSignal(collectorID, sig)
+			continue
+		}
 
 		logrus.WithFields(logrus.Fields{
 			"collector":   collectorID,
@@ -1029,6 +1055,7 @@ func (a *Analyzer) sendCommand(cs *collectorStream, cmd *apiv1.Command) {
 		return
 	}
 
+	a.publishCommand(cmd)
 	a.sendToStream(cs, cmd)
 }
 
@@ -1119,6 +1146,7 @@ func (a *Analyzer) Broadcast(cmd *apiv1.Command) {
 		return
 	}
 
+	a.publishCommand(cmd)
 	// Fan-out is bounded by Config.MaxCollectors (see registerCollector).
 	for _, cs := range recipients {
 		go a.sendToStream(cs, cmd)
