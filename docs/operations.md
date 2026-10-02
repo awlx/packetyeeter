@@ -215,6 +215,22 @@ Rollout: start with `-dry-run` (drops are logged as incidents and forwarded),
 compare `packetyeeter_kernel_incidents_total` with expected attack traffic,
 then remove `-dry-run`. Scrub nodes do not run SPOE, JA4H or egress accounting.
 
+Incomplete-handshake signals work on scrub nodes too, tracked in XDP: replies
+bypass the node, so a handshake counts as complete when the client's first ACK
+arrives rather than after the server's SYN-ACK. Only SYNs the node actually
+forwarded in XDP are tracked. Signals reach the analyzer after
+`-handshake-timeout` (default `3s`) and use the same `-ddos-min-incomplete`
+threshold as host mode. Handshake RTT (JA4L) needs the SYN-ACK and is not
+available in scrub mode.
+
+A connection's SYN and first ACK must cross the same scrub node. With several
+nodes, keep ECMP hashing on the 5-tuple, and expect a short burst of
+incomplete-handshake signals whenever flows move: a node draining or joining,
+or the redirect being withdrawn. A SYN lost between the node and the victim is
+retransmitted after about 1s and again after 3s, so on a congested victim link
+some legitimate clients exceed the default timeout; raise
+`-handshake-timeout` if that shows up as false positives.
+
 Labs on veth pairs: the veth receiving redirected frames needs GRO enabled
 (`ethtool -K <peer> gro on`) on its peer, and locally generated test traffic
 needs tx checksum offload disabled on the sender. `make e2e-scrub-test` sets

@@ -1346,14 +1346,87 @@ static __always_inline int scrub_fib_slow_path(struct xdp_md *ctx, int rc, __u32
     }
 }
 
+// Replies bypass scrub nodes, so the SYN-ACK is never seen: a handshake counts
+// as complete once the client's first ACK for the 4-tuple passes. Userspace
+// reports entries left open past -handshake-timeout, as in host mode.
+// The update is applied only once the packet is redirected, so a SYN the node
+// itself dropped or left to the kernel is never blamed on the client.
+#define SCRUB_HS_NONE  0
+#define SCRUB_HS_OPEN  1
+#define SCRUB_HS_CLOSE 2
+
+struct scrub_hs {
+    __u32 op;
+    __u64 now;
+    union {
+        struct tcp_session_key v4;
+        struct tcp_session_key_v6 v6;
+    } key;
+};
+
+static __always_inline __u32 scrub_hs_op(struct tcphdr *tcp) {
+    if (tcp->syn && !tcp->ack)
+        return SCRUB_HS_OPEN;
+    if (tcp->ack && !tcp->syn)
+        return SCRUB_HS_CLOSE;
+    return SCRUB_HS_NONE;
+}
+
+static __always_inline void scrub_hs_prepare_v4(struct scrub_hs *hs, struct iphdr *ip, void *data_end, __u64 now) {
+    // Later fragments carry payload where the TCP header would be.
+    if (ip->protocol != IPPROTO_TCP || (ip->frag_off & bpf_htons(IP_OFFSET)))
+        return;
+    struct tcphdr *tcp = ipv4_tcp_header(ip, data_end);
+    if (!tcp)
+        return;
+    hs->op = scrub_hs_op(tcp);
+    hs->now = now;
+    hs->key.v4.saddr = ip->saddr;
+    hs->key.v4.daddr = ip->daddr;
+    hs->key.v4.sport = tcp->source;
+    hs->key.v4.dport = tcp->dest;
+}
+
+static __always_inline void scrub_hs_prepare_v6(struct scrub_hs *hs, struct ipv6hdr *ip6, void *l4_hdr,
+                                                void *data_end, __u64 now) {
+    struct tcphdr *tcp = l4_hdr;
+    if ((void *)(tcp + 1) > data_end)
+        return;
+    hs->op = scrub_hs_op(tcp);
+    hs->now = now;
+    hs->key.v6.saddr = ip6->saddr;
+    hs->key.v6.daddr = ip6->daddr;
+    hs->key.v6.sport = tcp->source;
+    hs->key.v6.dport = tcp->dest;
+}
+
+static __always_inline void scrub_hs_commit(void *map, struct scrub_hs *hs) {
+    if (hs->op == SCRUB_HS_OPEN) {
+        if (!bpf_map_lookup_elem(map, &hs->key)) {
+            struct handshake_status status = {};
+            status.begin_time = hs->now;
+            bpf_map_update_elem(map, &hs->key, &status, BPF_NOEXIST);
+        }
+    } else if (hs->op == SCRUB_HS_CLOSE) {
+        // Lookup first: the lockless lookup misses for almost every ACK,
+        // while an LRU delete takes a bucket lock on each call.
+        if (bpf_map_lookup_elem(map, &hs->key))
+            bpf_map_delete_elem(map, &hs->key);
+    }
+}
+
 static __always_inline int scrub_redirect(struct xdp_md *ctx, struct ethhdr *eth,
-                                          struct bpf_fib_lookup *fib, __u32 family) {
+                                          struct bpf_fib_lookup *fib, __u32 family, struct scrub_hs *hs) {
     __builtin_memcpy(eth->h_dest, fib->dmac, ETH_ALEN);
     __builtin_memcpy(eth->h_source, fib->smac, ETH_ALEN);
     int action = bpf_redirect_map(&tx_ports, fib->ifindex, 0);
-    if (action == XDP_REDIRECT)
-        return scrub_verdict(ctx, SCRUB_VERDICT_FORWARD, family, action);
-    return scrub_verdict(ctx, SCRUB_VERDICT_DROP, family, action);
+    if (action != XDP_REDIRECT)
+        return scrub_verdict(ctx, SCRUB_VERDICT_DROP, family, action);
+    if (family == SCRUB_FAMILY_V4)
+        scrub_hs_commit(&pending_handshakes, hs);
+    else
+        scrub_hs_commit(&pending_handshakes_v6, hs);
+    return scrub_verdict(ctx, SCRUB_VERDICT_FORWARD, family, action);
 }
 
 static __always_inline void ip_decrease_ttl(struct iphdr *ip) {
@@ -1364,7 +1437,7 @@ static __always_inline void ip_decrease_ttl(struct iphdr *ip) {
 }
 
 static __always_inline int scrub_forward_v4(struct xdp_md *ctx, struct ethhdr *eth, struct iphdr *ip,
-                                            int tagged, int is_monitor) {
+                                            int tagged, int is_monitor, struct scrub_hs *hs) {
     // Forwarding a tagged frame would carry the outside VLAN onto the inside;
     // the kernel's VLAN sub-interfaces handle it correctly.
     if (tagged)
@@ -1388,11 +1461,11 @@ static __always_inline int scrub_forward_v4(struct xdp_md *ctx, struct ethhdr *e
         return scrub_slow_path(ctx, SCRUB_SLOW_EGRESS_OTHER, SCRUB_FAMILY_V4, is_monitor);
 
     ip_decrease_ttl(ip);
-    return scrub_redirect(ctx, eth, &fib, SCRUB_FAMILY_V4);
+    return scrub_redirect(ctx, eth, &fib, SCRUB_FAMILY_V4, hs);
 }
 
 static __always_inline int scrub_forward_v6(struct xdp_md *ctx, struct ethhdr *eth, struct ipv6hdr *ip6,
-                                            int tagged, int is_monitor) {
+                                            int tagged, int is_monitor, struct scrub_hs *hs) {
     if (tagged)
         return scrub_slow_path(ctx, SCRUB_SLOW_VLAN, SCRUB_FAMILY_V6, is_monitor);
     if (ip6->hop_limit <= 1)
@@ -1414,7 +1487,7 @@ static __always_inline int scrub_forward_v6(struct xdp_md *ctx, struct ethhdr *e
         return scrub_slow_path(ctx, SCRUB_SLOW_EGRESS_OTHER, SCRUB_FAMILY_V6, is_monitor);
 
     ip6->hop_limit--;
-    return scrub_redirect(ctx, eth, &fib, SCRUB_FAMILY_V6);
+    return scrub_redirect(ctx, eth, &fib, SCRUB_FAMILY_V6, hs);
 }
 
 // Link-scoped and multicast traffic (routing protocols, neighbour discovery)
@@ -1452,6 +1525,8 @@ static __always_inline int scrub_ipv4(struct xdp_md *ctx, struct ethhdr *eth, vo
 
     __u64 now = bpf_ktime_get_ns();
     __u32 saddr = ip->saddr;
+    // Allowlisted sources are not tracked; userspace would never report them.
+    struct scrub_hs hs = {};
     // The node's own addresses (BGP, SSH, VIPs) get the operator's block
     // decisions but not the rate limits, which are sized for forwarded
     // traffic and would throttle the control plane.
@@ -1471,9 +1546,10 @@ static __always_inline int scrub_ipv4(struct xdp_md *ctx, struct ethhdr *eth, vo
             check_blocked_v4(ctx, saddr, now, is_monitor) == CHECK_DROP ||
             check_l4_v4(ctx, ip, data_end, saddr, now, is_monitor) == CHECK_DROP)
             return scrub_verdict(ctx, SCRUB_VERDICT_DROP, SCRUB_FAMILY_V4, XDP_DROP);
+        scrub_hs_prepare_v4(&hs, ip, data_end, now);
     }
 
-    return scrub_forward_v4(ctx, eth, ip, tagged, is_monitor);
+    return scrub_forward_v4(ctx, eth, ip, tagged, is_monitor, &hs);
 }
 
 static __always_inline int scrub_ipv6(struct xdp_md *ctx, struct ethhdr *eth, void *l3, void *data_end,
@@ -1496,6 +1572,7 @@ static __always_inline int scrub_ipv6(struct xdp_md *ctx, struct ethhdr *eth, vo
         return scrub_verdict(ctx, SCRUB_VERDICT_LOCAL, SCRUB_FAMILY_V6, XDP_PASS);
     }
 
+    struct scrub_hs hs = {};
     if (!source_allowlisted_v6(&saddr)) {
         if (check_policy_v6(ctx, &saddr, now, &is_monitor) == CHECK_DROP ||
             check_blocked_v6(ctx, &saddr, now, is_monitor) == CHECK_DROP)
@@ -1510,9 +1587,11 @@ static __always_inline int scrub_ipv6(struct xdp_md *ctx, struct ethhdr *eth, vo
         }
         if (check_l4_v6(ctx, l4_proto, l4_hdr, data_end, &saddr, now, is_monitor) == CHECK_DROP)
             return scrub_verdict(ctx, SCRUB_VERDICT_DROP, SCRUB_FAMILY_V6, XDP_DROP);
+        if (l4_proto == IPPROTO_TCP)
+            scrub_hs_prepare_v6(&hs, ip6, l4_hdr, data_end, now);
     }
 
-    return scrub_forward_v6(ctx, eth, ip6, tagged, is_monitor);
+    return scrub_forward_v6(ctx, eth, ip6, tagged, is_monitor, &hs);
 }
 
 SEC("xdp")
