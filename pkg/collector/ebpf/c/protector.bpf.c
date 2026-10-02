@@ -1351,8 +1351,6 @@ static __always_inline int scrub_fib_slow_path(struct xdp_md *ctx, int rc, __u32
 // Replies bypass scrub nodes, so the SYN-ACK is never seen: a handshake counts
 // as complete once the client's first ACK for the 4-tuple passes. Userspace
 // reports entries left open past -handshake-timeout, as in host mode.
-// The update is applied only once the packet is redirected, so a SYN the node
-// itself dropped or left to the kernel is never blamed on the client.
 #define SCRUB_HS_NONE  0
 #define SCRUB_HS_OPEN  1
 #define SCRUB_HS_CLOSE 2

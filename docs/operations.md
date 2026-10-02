@@ -218,10 +218,11 @@ then remove `-dry-run`. Scrub nodes do not run SPOE, JA4H or egress accounting.
 Incomplete-handshake signals work on scrub nodes too, tracked in XDP: replies
 bypass the node, so a handshake counts as complete when the client's first ACK
 arrives rather than after the server's SYN-ACK. Only SYNs the node actually
-forwarded in XDP are tracked; any plain ACK on the same 4-tuple closes the
-entry (an RST|ACK does not). The node cannot check that ACK against the
-server's sequence number, so a sender that follows each SYN with a blind ACK
-avoids these signals; the per-source rate limits and blocks still apply. Signals reach the analyzer after
+forwarded in XDP are tracked; any ACK without SYN or RST on the same 4-tuple
+closes the entry, even one the kernel forwards. The node cannot check that ACK
+against the server's sequence number, so a sender that follows each SYN with a
+blind ACK avoids these signals; the per-source rate limits and blocks still
+apply. Signals reach the analyzer after
 `-handshake-timeout` (default `3s`) and use the same `-ddos-min-incomplete`
 threshold as host mode. Handshake RTT (JA4L) needs the SYN-ACK and is not
 available in scrub mode.
