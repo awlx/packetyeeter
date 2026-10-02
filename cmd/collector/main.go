@@ -15,6 +15,7 @@ import (
 	"PacketYeeter/pkg/buildinfo"
 	"PacketYeeter/pkg/collector"
 	"PacketYeeter/pkg/collector/ebpf"
+	"PacketYeeter/pkg/grpctls"
 )
 
 func main() {
@@ -28,6 +29,10 @@ func main() {
 		hsTimeout       = flag.Duration("handshake-timeout", collector.DefaultHandshakeTimeout, "How long a SYN may go without the client's ACK before it is reported as an incomplete handshake")
 		slowPathPPS     = flag.Uint("scrub-slow-path-pps", collector.DefaultScrubSlowPathPPS, "Scrub mode: max packets/s handed to the kernel slow path across all CPUs, excess dropped (0 = unlimited)")
 		analyzerAddr    = flag.String("analyzer-addr", "127.0.0.1:9090", "Analyzer gRPC address")
+		analyzerTLSCA   = flag.String("analyzer-tls-ca", "", "PEM CA bundle that verifies the analyzer's certificate; enables TLS. Re-read on change")
+		analyzerTLSCert = flag.String("analyzer-tls-cert", "", "PEM client certificate for mTLS to the analyzer (requires -analyzer-tls-key and -analyzer-tls-ca). Re-read on change")
+		analyzerTLSKey  = flag.String("analyzer-tls-key", "", "PEM private key for -analyzer-tls-cert. Re-read on change")
+		analyzerTLSName = flag.String("analyzer-tls-server-name", "", "Name to verify in the analyzer's certificate (default: host part of -analyzer-addr)")
 		metricsAddr     = flag.String("metrics-addr", ":2112", "Prometheus metrics HTTP listen address")
 		spoePort        = flag.Int("spoe-port", 9876, "SPOE agent port")
 		socketPath      = flag.String("socket", "/var/run/packetyeeter-collector.sock", "Unix socket for CLI")
@@ -70,8 +75,14 @@ func main() {
 	}
 
 	cfg := collector.Config{
-		Interface:       *iface,
-		AnalyzerAddr:    *analyzerAddr,
+		Interface:    *iface,
+		AnalyzerAddr: *analyzerAddr,
+		AnalyzerTLS: grpctls.ClientConfig{
+			CAFile:     *analyzerTLSCA,
+			CertFile:   *analyzerTLSCert,
+			KeyFile:    *analyzerTLSKey,
+			ServerName: *analyzerTLSName,
+		},
 		MetricsAddr:     *metricsAddr,
 		SPOEAddr:        fmt.Sprintf(":%d", *spoePort),
 		SocketPath:      *socketPath,

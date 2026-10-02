@@ -79,7 +79,7 @@ test: proto
 
 # Run portable tests that do not require Linux eBPF support.
 portable-test: proto
-	$(GO) test -v ./pkg/analyzer/... ./pkg/ml/... ./pkg/integration_test ./pkg/collector ./cmd/yeetctl
+	$(GO) test -v ./pkg/analyzer/... ./pkg/ml/... ./pkg/integration_test ./pkg/collector ./pkg/grpctls/... ./cmd/yeetctl
 
 # Run end-to-end tests that spawn a real haproxy binary to validate the
 # collector's SPOE agent against actual haproxy wire behavior. Requires

@@ -69,6 +69,11 @@ func TestAnalyzerStreamSignalsAcceptsCollectorSignals(t *testing.T) {
 
 func startTestAnalyzer(t *testing.T) *analyzer.Analyzer {
 	t.Helper()
+	return startTestAnalyzerWith(t, nil)
+}
+
+func startTestAnalyzerWith(t *testing.T, configure func(*analyzer.Config)) *analyzer.Analyzer {
+	t.Helper()
 
 	cfg := analyzer.Config{
 		ListenAddr:                 reserveTCPAddr(t),
@@ -87,6 +92,9 @@ func startTestAnalyzer(t *testing.T) *analyzer.Analyzer {
 		DDoSTotalThreshold:         1,
 		DDoSRequireHighFreq:        false,
 		DryRun:                     true,
+	}
+	if configure != nil {
+		configure(&cfg)
 	}
 
 	a, err := analyzer.New(cfg)

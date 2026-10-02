@@ -1,5 +1,21 @@
 # PacketYeeter Changelog
 
+## 2026-10-02 - Optional TLS and mTLS for the analyzer gRPC API (SCR-20)
+
+- Analyzer `-tls-cert`/`-tls-key` enable TLS on the gRPC listener;
+  `-tls-client-ca` additionally requires client certificates signed by that CA.
+- Collector `-analyzer-tls-ca` enables TLS and verifies the analyzer;
+  `-analyzer-tls-cert`/`-analyzer-tls-key` present a client certificate;
+  `-analyzer-tls-server-name` overrides the verified name.
+- Analyzer `-control-client-names` limits `PushRules` and `WatchDecisions` to
+  the named client certificates (`PermissionDenied` otherwise).
+- Certificates, keys and CA bundles are reloaded on change without a restart;
+  a bad file keeps the previous material and is logged.
+- All off by default: plaintext deployments are unchanged. Inconsistent flag
+  combinations and unreadable files fail at startup. The analyzer now logs a
+  warning at startup when the listener is plaintext. See
+  `docs/operations.md#tls-and-mtls`.
+
 ## 2026-10-02 - Scrub mode runtime rules
 
 - Scrub collectors apply match rules delivered as `COMMAND_SET_RULES`

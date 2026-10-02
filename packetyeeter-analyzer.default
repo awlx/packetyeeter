@@ -34,6 +34,12 @@ GEOIP_ASN_PATH=/var/lib/GeoIP/GeoLite2-ASN.mmdb
 # above -reputation-threshold while bounding runaway penalty accumulation.
 # EXTRA_ARGS=-reputation-threshold 75 -reputation-ip-score-cap 200 -reputation-ja4-score-cap 200 -reputation-asn-score-cap 500
 
+# TLS / mTLS on the gRPC listener (off by default = plaintext). -tls-client-ca
+# requires client certificates; -control-client-names limits PushRules and
+# WatchDecisions to those certificate names. Files are re-read when they change.
+# See docs/operations.md#tls-and-mtls.
+# EXTRA_ARGS=-tls-cert /etc/packetyeeter/tls/analyzer.crt -tls-key /etc/packetyeeter/tls/analyzer.key -tls-client-ca /etc/packetyeeter/tls/ca.crt -control-client-names controller.example.net
+
 # Enable verbose logging
 # EXTRA_ARGS=-v
 

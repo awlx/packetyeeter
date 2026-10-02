@@ -36,6 +36,13 @@ BLOCK_DURATION=300s
 # Additional collector flags, e.g. -poll-interval 1s or -signal-queue-size 20000
 # EXTRA_ARGS=-poll-interval 1s
 #
+# TLS / mTLS to the analyzer (off by default = plaintext). -analyzer-tls-ca
+# enables TLS; add the client certificate when the analyzer has -tls-client-ca.
+# -analyzer-tls-server-name overrides the name checked in the analyzer's
+# certificate (default: host of ANALYZER_ADDR). Files are re-read when they
+# change. See docs/operations.md#tls-and-mtls.
+# EXTRA_ARGS=-analyzer-tls-ca /etc/packetyeeter/tls/ca.crt -analyzer-tls-cert /etc/packetyeeter/tls/collector.crt -analyzer-tls-key /etc/packetyeeter/tls/collector.key
+#
 # Egress byte accounting. Off by default: it adds two per-client eBPF maps and
 # a counter update on every egress packet, and it is only useful if the
 # analyzer runs sustained-download detection. Required for that feature's

@@ -17,13 +17,134 @@ Default listeners are convenient for labs but should be deliberately bound in pr
 
 | Component | Listener | Default | Guidance |
 | :--- | :--- | :--- | :--- |
-| Analyzer gRPC | `-listen-addr` | `0.0.0.0:9090` | Expose only to collectors over trusted networks or firewall rules. |
+| Analyzer gRPC | `-listen-addr` | `0.0.0.0:9090` | Plaintext and unauthenticated by default: anyone who can reach it can stream signals and, once the rule API exists, push rules. Turn on [mTLS](#tls-and-mtls) and restrict it with firewall rules to collectors and controllers. |
 | Analyzer metrics | `-metrics-addr` | `:9091` | Bind to loopback/management networks or restrict with firewall/VPN. |
 | Analyzer inspector | `-inspect-addr` | `127.0.0.1:9092` | Keep loopback unless placed behind trusted access controls. State-mutating routes are protected by a same-origin/DNS-rebinding guard; behind a reverse proxy, add the proxy hostname to `-inspect-trusted-hosts` so mutating requests are accepted. Read-only GETs are never gated. |
 | Analyzer pprof | `-pprof-addr` | `:6060` when enabled | Enable only temporarily for diagnostics and bind securely. |
 | Collector metrics | `-metrics-addr` | `:2112` | Scrape from Prometheus over a trusted network. |
 | Collector management | `-socket` | `/var/run/packetyeeter-collector.sock` | Created with mode `0600` (owner-only); run `yeetctl` as the same user or relax with a group and chmod after start. |
 | HAProxy SPOE | `-spoe-port` | `9876` | Expose only to the local HAProxy instance. |
+
+## TLS and mTLS
+
+The analyzer gRPC listener and the collector's connection to it are plaintext
+by default, so existing deployments keep working. Plaintext is acceptable only
+on a trusted, isolated network: without TLS, signals and block commands can be
+read and forged by anyone on the path, and anyone who can reach the listener
+can act as a collector.
+
+| Mode | Analyzer | Collector |
+| :--- | :--- | :--- |
+| Plaintext (default) | no TLS flags | no TLS flags |
+| TLS: collectors verify the analyzer | `-tls-cert`, `-tls-key` | `-analyzer-tls-ca` |
+| mTLS: both sides verify each other | add `-tls-client-ca` | add `-analyzer-tls-cert`, `-analyzer-tls-key` |
+
+Use mTLS in production. TLS alone encrypts traffic and authenticates the
+analyzer, but still lets any client connect. TLS 1.2 is the minimum; Go's
+default cipher suites are used and TLS 1.3 is preferred when both sides support
+it. Inconsistent flags (a certificate without its key, `-tls-client-ca`
+without `-tls-cert`, client flags without `-analyzer-tls-ca`, unreadable or
+unparsable files) stop the process at startup.
+
+### Creating a CA and certificates
+
+A private CA dedicated to PacketYeeter keeps the trust decision narrow: any
+certificate it signs can connect. Keep its key offline.
+
+```bash
+# CA (keep ca.key offline)
+openssl req -x509 -new -nodes -newkey ec -pkeyopt ec_paramgen_curve:P-256 \
+  -keyout ca.key -out ca.crt -days 3650 -subj "/CN=PacketYeeter CA"
+
+# Analyzer: the SAN must match what collectors dial (-analyzer-addr host) or
+# -analyzer-tls-server-name. IP literals need an IP SAN.
+openssl req -new -nodes -newkey ec -pkeyopt ec_paramgen_curve:P-256 \
+  -keyout analyzer.key -out analyzer.csr -subj "/CN=analyzer.example.net"
+openssl x509 -req -in analyzer.csr -CA ca.crt -CAkey ca.key -CAcreateserial \
+  -out analyzer.crt -days 365 \
+  -extfile <(printf 'subjectAltName=DNS:analyzer.example.net,IP:10.0.0.5\nextendedKeyUsage=serverAuth')
+
+# One client certificate per collector, and one per controller.
+for name in collector-web01 controller.example.net; do
+  openssl req -new -nodes -newkey ec -pkeyopt ec_paramgen_curve:P-256 \
+    -keyout "$name.key" -out "$name.csr" -subj "/CN=$name"
+  openssl x509 -req -in "$name.csr" -CA ca.crt -CAkey ca.key -CAcreateserial \
+    -out "$name.crt" -days 365 \
+    -extfile <(printf 'subjectAltName=DNS:%s\nextendedKeyUsage=clientAuth' "$name")
+done
+```
+
+Certificate requirements:
+
+- The analyzer certificate needs a SAN for every name or IP collectors dial;
+  the CommonName is ignored for server verification. Use
+  `-analyzer-tls-server-name` when collectors dial an address that is not in
+  the SAN list (for example an IP behind a load balancer).
+- Server certificates need `extendedKeyUsage=serverAuth`, client certificates
+  `clientAuth`.
+- Client certificates are identified by DNS SAN or CommonName for
+  `-control-client-names`; give each controller a distinct name.
+
+```bash
+# Analyzer
+packetyeeter-analyzer -tls-cert /etc/packetyeeter/tls/analyzer.crt \
+  -tls-key /etc/packetyeeter/tls/analyzer.key \
+  -tls-client-ca /etc/packetyeeter/tls/ca.crt \
+  -control-client-names controller.example.net
+
+# Collector
+packetyeeter-collector -analyzer-addr analyzer.example.net:9090 \
+  -analyzer-tls-ca /etc/packetyeeter/tls/ca.crt \
+  -analyzer-tls-cert /etc/packetyeeter/tls/collector-web01.crt \
+  -analyzer-tls-key /etc/packetyeeter/tls/collector-web01.key
+```
+
+Keys must be readable by the service user only (`chmod 0600`, owned by the
+service user). The analyzer unit's `ProtectSystem=strict` still allows reading
+`/etc`.
+
+### Rollout
+
+1. Issue certificates and enable `-tls-cert`/`-tls-key` on the analyzer.
+   Plaintext collectors cannot connect from this point, so move collectors in
+   the same change window, or run a second analyzer on another port.
+2. Add `-analyzer-tls-ca` to collectors; check the collector log line
+   `Connecting to analyzer...` shows `tls=true` and the stream stays up.
+3. Add client certificates to every collector, then `-tls-client-ca` on the
+   analyzer. Clients without a valid certificate fail the TLS handshake.
+4. Optionally add `-control-client-names`.
+
+### Rotation
+
+Certificates, keys and CA bundles are re-read without a restart: before each
+new TLS handshake the file's modification time and size are checked, and the
+file is parsed again when they changed. Existing connections keep the
+certificate they were established with; collectors pick up a new analyzer
+certificate when they reconnect.
+
+- Replace files atomically (write to a temporary file in the same directory,
+  then `mv`). A certificate and key that do not match yet, or a file that does
+  not parse, is logged once per change as `Cannot reload ...` and the
+  previously loaded material stays in use. Nothing crashes, so watch for that
+  log line after rotating.
+- To rotate the CA, first append the new CA to every CA bundle
+  (`-tls-client-ca`, `-analyzer-tls-ca`), then issue new certificates, then
+  remove the old CA.
+- The analyzer does not check revocation lists. To cut off a compromised
+  client certificate, rotate to a new CA or remove its name from
+  `-control-client-names`.
+
+### Control-plane authorization
+
+With `-control-client-names` set, only clients whose verified certificate has
+a matching DNS SAN (case-insensitive) or CommonName (exact) may call
+`PushRules` and `WatchDecisions`; others get `PermissionDenied` and the
+analyzer logs `Denied control-plane RPC`. `StreamSignals` and the lookup RPCs
+stay available to every client with a valid certificate, so collectors need no
+special names. Without it, any client trusted by `-tls-client-ca` can use the
+control-plane RPCs. Because a collector certificate can then push rules for
+the whole fleet, set `-control-client-names` whenever collectors run on hosts
+you trust less than your controller.
 
 ## systemd hardening notes
 
@@ -240,7 +361,9 @@ this up.
 
 Scrub collectors apply match rules received on the analyzer stream as
 `COMMAND_SET_RULES` (a `RuleSetDelta`: rules to upsert by `id`, ids to
-remove). The analyzer API that sends them is not available yet. A rule matches
+remove). The analyzer API that sends them is not available yet. Anyone who
+can reach a plaintext analyzer listener will be able to use that API; run the
+analyzer with mTLS and `-control-client-names` (see [TLS and mTLS](#tls-and-mtls)). A rule matches
 traffic for its `dst_prefix` on any combination of protocols, source and
 destination port ranges, IP total length, TCP flags (`flags & mask ==
 value`), fragment state and up to 8 source prefixes, and then:

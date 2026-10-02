@@ -14,6 +14,7 @@ import (
 	"PacketYeeter/pkg/analyzer"
 	"PacketYeeter/pkg/analyzer/sustained"
 	"PacketYeeter/pkg/buildinfo"
+	"PacketYeeter/pkg/grpctls"
 )
 
 func main() {
@@ -47,6 +48,10 @@ func main() {
 		maxCollectors  = flag.Int("max-collectors", 1024, "Maximum concurrent collector streams (bounds fan-out/goroutines on the unauthenticated signal plane)")
 		mlModelPath    = flag.String("ml-model", "", "Path to ONNX ML model file (optional, enables ML-based confidence adjustment)")
 		dryRun         = flag.Bool("dry-run", false, "Monitor mode - log detections but don't send BLOCK commands")
+		tlsCert        = flag.String("tls-cert", "", "PEM certificate for the gRPC listener; enables TLS (requires -tls-key). Re-read on change")
+		tlsKey         = flag.String("tls-key", "", "PEM private key for -tls-cert. Re-read on change")
+		tlsClientCA    = flag.String("tls-client-ca", "", "PEM CA bundle; require and verify client certificates signed by it (mTLS). Re-read on change")
+		controlClients = flag.String("control-client-names", "", "Comma-separated client certificate DNS SANs/CommonNames allowed to call PushRules and WatchDecisions (requires -tls-client-ca; empty = any authenticated client)")
 
 		sustainedDefaults = sustained.DefaultConfig()
 
@@ -116,6 +121,12 @@ func main() {
 		MLModelPath:                  *mlModelPath,
 		MaxCollectors:                *maxCollectors,
 		DryRun:                       *dryRun,
+		TLS: grpctls.ServerConfig{
+			CertFile:     *tlsCert,
+			KeyFile:      *tlsKey,
+			ClientCAFile: *tlsClientCA,
+		},
+		ControlClientNames: grpctls.ParseNames(*controlClients),
 		Sustained: sustained.Config{
 			Enabled:                           *sustainedEnabled,
 			Enforce:                           *sustainedEnforce,

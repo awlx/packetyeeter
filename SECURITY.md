@@ -28,4 +28,5 @@ Maintainers should acknowledge private reports, validate impact, prepare a fix, 
 - Treat the collector as privileged software: it loads eBPF programs, attaches XDP/TC hooks, and manages kernel maps.
 - Keep the collector management socket local and permission-restricted.
 - Bind metrics, inspector, pprof, and analyzer gRPC listeners only to trusted interfaces or protect them with network controls.
+- The analyzer gRPC listener is plaintext and unauthenticated unless TLS is configured. Enable mTLS (`-tls-cert`, `-tls-key`, `-tls-client-ca` on the analyzer; `-analyzer-tls-*` on collectors) and restrict control-plane RPCs with `-control-client-names`. See `docs/operations.md#tls-and-mtls`.
 - Start new deployments in analyzer `-dry-run` mode and tune thresholds before enabling enforcement.

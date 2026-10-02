@@ -306,6 +306,10 @@ sudo ./packetyeeter-collector -i eth0 -analyzer-addr 127.0.0.1:9090
 | `-handshake-timeout` | `3s` | How long a SYN may go without the client's ACK before it is reported to the analyzer as an incomplete handshake. Applies in both modes. |
 | `-scrub-slow-path-pps` | `100000` | Scrub mode: max packets/s handed to the kernel slow path across all CPUs; excess is dropped (counted in monitor mode). `0` = unlimited. |
 | `-analyzer-addr` | `127.0.0.1:9090` | Analyzer gRPC address to connect to. |
+| `-analyzer-tls-ca` | `""` | PEM CA bundle that verifies the analyzer's certificate. Enables TLS to the analyzer; unset = plaintext. See [TLS and mTLS](docs/operations.md#tls-and-mtls). |
+| `-analyzer-tls-cert` | `""` | PEM client certificate for mTLS. Requires `-analyzer-tls-key` and `-analyzer-tls-ca`. |
+| `-analyzer-tls-key` | `""` | PEM private key for `-analyzer-tls-cert`. |
+| `-analyzer-tls-server-name` | `""` | Name to verify in the analyzer's certificate. Default: the host part of `-analyzer-addr`. Requires `-analyzer-tls-ca`. |
 | `-metrics-addr` | `:2112` | Prometheus metrics HTTP listen address. |
 | `-spoe-port` | `9876` | HAProxy SPOE agent port. |
 | `-socket` | `/var/run/packetyeeter-collector.sock` | UNIX socket for `yeetctl`. |
@@ -326,6 +330,10 @@ sudo ./packetyeeter-collector -i eth0 -analyzer-addr 127.0.0.1:9090
 | Flag | Default | Description |
 | :--- | :--- | :--- |
 | `-listen-addr` | `0.0.0.0:9090` | gRPC listen address for collectors. |
+| `-tls-cert` | `""` | PEM certificate for the gRPC listener. Enables TLS; requires `-tls-key`. Unset = plaintext. See [TLS and mTLS](docs/operations.md#tls-and-mtls). |
+| `-tls-key` | `""` | PEM private key for `-tls-cert`. |
+| `-tls-client-ca` | `""` | PEM CA bundle. When set, every gRPC client must present a certificate signed by it (mTLS). Requires `-tls-cert`. |
+| `-control-client-names` | `""` | Comma-separated client certificate DNS SANs or CommonNames allowed to call the control-plane RPCs (`PushRules`, `WatchDecisions`). Requires `-tls-client-ca`. Empty = any authenticated client. |
 | `-metrics-addr` | `:9091` | Prometheus metrics HTTP listen address. |
 | `-inspect-addr` | `127.0.0.1:9092` | Read-only HTTP inspector UI address. |
 | `-inspect-trusted-hosts` | `""` | Comma-separated extra Host/Origin hostnames the inspector trusts for state-mutating requests, in addition to loopback (e.g. a reverse-proxy hostname). Read-only GETs are never gated. |
@@ -341,7 +349,7 @@ sudo ./packetyeeter-collector -i eth0 -analyzer-addr 127.0.0.1:9090
 | `-ai-confidence-threshold` | `0.7` | Minimum AI confidence in `(0,1]` to flag a bot/scraper. Also the bar the ML model must clear to confirm a reputation-threshold block when `-ml-model` is set. |
 | `-ai-workers` | `16` | AI detection worker pool size. |
 | `-ai-queue-size` | `10000` | AI detection queue size. |
-| `-max-collectors` | `1024` | Maximum concurrent collector streams. Bounds fan-out and goroutines on the unauthenticated signal plane. |
+| `-max-collectors` | `1024` | Maximum concurrent collector streams. Bounds fan-out and goroutines on the signal plane, which is unauthenticated unless `-tls-client-ca` is set. |
 | `-ml-model` | `""` | Optional path to an ONNX ML model. When set, reputation-threshold blocks must additionally be confirmed by the model at `-ai-confidence-threshold`. When unset, no ML gate is applied to blocking. |
 | `-ddos-min-incomplete` | `400` | Min incomplete handshakes for a DDoS categorization. |
 | `-ddos-min-pattern` | `800` | Min pattern matches for a DDoS categorization. |
