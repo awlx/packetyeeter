@@ -24,7 +24,7 @@ LDFLAGS := -s -w \
 	-X PacketYeeter/pkg/buildinfo.Commit=$(COMMIT) \
 	-X PacketYeeter/pkg/buildinfo.BuildDate=$(BUILD_DATE)
 
-.PHONY: all proto bpf collector analyzer yeetctl clean install-buf install-nfpm deps lint test portable-test e2e-test linux install-services run-collector run-analyzer dist-binaries packages
+.PHONY: all proto bpf collector analyzer yeetctl clean install-buf install-nfpm deps lint test portable-test e2e-test e2e-ebpf-test e2e-scrub-test linux install-services run-collector run-analyzer dist-binaries packages
 
 # Default target
 all: proto collector analyzer
@@ -95,6 +95,11 @@ e2e-test: proto
 # for exactly what this does and does not verify.
 e2e-ebpf-test: proto bpf
 	sudo -E $(GO) test -tags e2e_ebpf -run TestKernelBlockEnforcement -v ./pkg/collector/...
+
+# Run the scrub-mode end-to-end test across three network namespaces. Requires
+# root, Linux 5.15+, curl, python3, ethtool and bpftool.
+e2e-scrub-test: proto bpf
+	sudo -E ./scripts/xdp_scrub_test.sh
 
 # Run linter
 lint:
