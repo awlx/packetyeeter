@@ -3,6 +3,7 @@ package collector
 import (
 	"errors"
 	"io"
+	"net"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -47,23 +48,27 @@ func fakeSysctls(values map[string]string) sysctlReader {
 
 func TestCheckScrubSysctls(t *testing.T) {
 	base := map[string]string{
-		"net/ipv4/ip_forward":              "1",
-		"net/ipv6/conf/all/forwarding":     "1",
-		"net/ipv4/conf/all/rp_filter":      "0",
-		"net/ipv4/conf/eth0/100/rp_filter": "2",
+		"net/ipv4/ip_forward":               "1",
+		"net/ipv4/conf/eth0/100/forwarding": "1",
+		"net/ipv6/conf/all/forwarding":      "1",
+		"net/ipv6/conf/eth0/100/forwarding": "1",
+		"net/ipv4/conf/all/rp_filter":       "0",
+		"net/ipv4/conf/eth0/100/rp_filter":  "2",
 	}
 	for name, tc := range map[string]struct {
 		set  map[string]string
 		ipv6 bool
 		ok   bool
 	}{
-		"ok":                     {nil, true, true},
-		"ipv4 forwarding off":    {map[string]string{"net/ipv4/ip_forward": "0"}, false, false},
-		"ipv6 forwarding off":    {map[string]string{"net/ipv6/conf/all/forwarding": "0"}, true, false},
-		"ipv6 unused":            {map[string]string{"net/ipv6/conf/all/forwarding": "0"}, false, true},
-		"strict all":             {map[string]string{"net/ipv4/conf/all/rp_filter": "1", "net/ipv4/conf/eth0/100/rp_filter": "0"}, true, false},
-		"strict port":            {map[string]string{"net/ipv4/conf/eth0/100/rp_filter": "1"}, true, false},
-		"loose all, strict port": {map[string]string{"net/ipv4/conf/all/rp_filter": "2", "net/ipv4/conf/eth0/100/rp_filter": "1"}, true, true},
+		"ok":                       {nil, true, true},
+		"ipv4 forwarding off":      {map[string]string{"net/ipv4/ip_forward": "0"}, false, false},
+		"ipv4 port forwarding off": {map[string]string{"net/ipv4/conf/eth0/100/forwarding": "0"}, false, false},
+		"ipv6 forwarding off":      {map[string]string{"net/ipv6/conf/all/forwarding": "0"}, true, false},
+		"ipv6 port forwarding off": {map[string]string{"net/ipv6/conf/eth0/100/forwarding": "0"}, true, false},
+		"ipv6 unused":              {map[string]string{"net/ipv6/conf/all/forwarding": "0"}, false, true},
+		"strict all":               {map[string]string{"net/ipv4/conf/all/rp_filter": "1", "net/ipv4/conf/eth0/100/rp_filter": "0"}, true, false},
+		"strict port":              {map[string]string{"net/ipv4/conf/eth0/100/rp_filter": "1"}, true, false},
+		"loose all, strict port":   {map[string]string{"net/ipv4/conf/all/rp_filter": "2", "net/ipv4/conf/eth0/100/rp_filter": "1"}, true, true},
 	} {
 		values := map[string]string{}
 		for k, v := range base {
@@ -75,6 +80,56 @@ func TestCheckScrubSysctls(t *testing.T) {
 		if err := checkScrubSysctls(fakeSysctls(values), "eth0.100", tc.ipv6); (err == nil) != tc.ok {
 			t.Errorf("%s: err = %v, want ok=%v", name, err, tc.ok)
 		}
+	}
+}
+
+func TestNeedIPv6Forwarding(t *testing.T) {
+	cidr := func(s string) *net.IPNet {
+		_, n, err := net.ParseCIDR(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	linkLocalOnly := map[string][]net.IP{
+		"eth0": {net.ParseIP("192.0.2.1"), net.ParseIP("fe80::1")},
+		"eth1": {net.ParseIP("10.0.0.1"), net.ParseIP("fe80::2")},
+	}
+	kernelRoutes := []*net.IPNet{cidr("fe80::/64"), cidr("ff00::/8")}
+	for name, tc := range map[string]struct {
+		addrs  map[string][]net.IP
+		routes []*net.IPNet
+		want   bool
+	}{
+		"ipv4 only":                 {linkLocalOnly, kernelRoutes, false},
+		"no routes":                 {linkLocalOnly, nil, false},
+		"global on outside":         {map[string][]net.IP{"eth0": {net.ParseIP("2001:db8::1")}, "eth1": nil}, nil, true},
+		"global on inside":          {map[string][]net.IP{"eth0": nil, "eth1": {net.ParseIP("2001:db8:1::1")}}, nil, true},
+		"link-local next hop route": {linkLocalOnly, append(kernelRoutes, cidr("2001:db8:100::/48")), true},
+		"default route (nil dst)":   {linkLocalOnly, append(kernelRoutes, nil), true},
+		"default route (::/0)":      {linkLocalOnly, append(kernelRoutes, cidr("::/0")), true},
+	} {
+		env := ipv6Env{
+			addrs: func(iface string) ([]net.IP, error) { return tc.addrs[iface], nil },
+			routeDsts: func(iface string) ([]*net.IPNet, error) {
+				if iface != "eth1" {
+					t.Errorf("%s: routes looked up on %s, want the inside port", name, iface)
+				}
+				return tc.routes, nil
+			},
+		}
+		got, err := needIPv6Forwarding(env, "eth0", "eth1")
+		if err != nil || got != tc.want {
+			t.Errorf("%s: got %v, %v; want %v", name, got, err, tc.want)
+		}
+	}
+
+	failing := ipv6Env{
+		addrs:     func(string) ([]net.IP, error) { return nil, nil },
+		routeDsts: func(string) ([]*net.IPNet, error) { return nil, errors.New("netlink down") },
+	}
+	if _, err := needIPv6Forwarding(failing, "eth0", "eth1"); err == nil {
+		t.Error("route lookup failure was not reported")
 	}
 }
 

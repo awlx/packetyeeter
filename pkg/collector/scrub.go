@@ -49,13 +49,21 @@ func readSysctlInt(read sysctlReader, name string) (int, error) {
 	return strconv.Atoi(v)
 }
 
+// sysctlIfName translates an interface name for a /proc/sys path, where a
+// VLAN interface's "." becomes "/".
+func sysctlIfName(name string) string {
+	return strings.ReplaceAll(name, ".", "/")
+}
+
 // checkForwarding requires kernel forwarding because the slow path and the
 // fail-open behaviour (collector stopped or crashed) both rely on the kernel
-// forwarding redirected traffic.
-func checkForwarding(read sysctlReader, ipv6 bool) error {
-	names := []string{"net/ipv4/ip_forward"}
+// forwarding redirected traffic. bpf_fib_lookup checks the ingress (outside)
+// port's setting, the kernel's IPv6 forwarding path the global one.
+func checkForwarding(read sysctlReader, outside string, ipv6 bool) error {
+	port := sysctlIfName(outside)
+	names := []string{"net/ipv4/ip_forward", "net/ipv4/conf/" + port + "/forwarding"}
 	if ipv6 {
-		names = append(names, "net/ipv6/conf/all/forwarding")
+		names = append(names, "net/ipv6/conf/all/forwarding", "net/ipv6/conf/"+port+"/forwarding")
 	}
 	for _, name := range names {
 		v, err := readSysctlInt(read, name)
@@ -72,15 +80,14 @@ func checkForwarding(read sysctlReader, ipv6 bool) error {
 // checkScrubSysctls also rejects strict reverse-path filtering on the outside
 // port: attack sources are spoofed, so it would drop slow-path packets.
 func checkScrubSysctls(read sysctlReader, outside string, ipv6 bool) error {
-	if err := checkForwarding(read, ipv6); err != nil {
+	if err := checkForwarding(read, outside, ipv6); err != nil {
 		return err
 	}
 	all, err := readSysctlInt(read, "net/ipv4/conf/all/rp_filter")
 	if err != nil {
 		return fmt.Errorf("read rp_filter: %w", err)
 	}
-	ifName := strings.ReplaceAll(outside, ".", "/")
-	port, err := readSysctlInt(read, "net/ipv4/conf/"+ifName+"/rp_filter")
+	port, err := readSysctlInt(read, "net/ipv4/conf/"+sysctlIfName(outside)+"/rp_filter")
 	if err != nil {
 		return fmt.Errorf("read rp_filter for %s: %w", outside, err)
 	}
@@ -91,25 +98,79 @@ func checkScrubSysctls(read sysctlReader, outside string, ipv6 bool) error {
 	return nil
 }
 
-// hasGlobalIPv6 decides whether IPv6 forwarding is required. Turning it on
-// unconditionally would stop SLAAC on management interfaces of IPv4-only nodes.
-func hasGlobalIPv6(ifaces ...string) bool {
-	for _, name := range ifaces {
-		iface, err := net.InterfaceByName(name)
-		if err != nil {
-			continue
+// ipv6Env abstracts the interface and route lookups needIPv6Forwarding uses.
+type ipv6Env struct {
+	addrs func(iface string) ([]net.IP, error)
+	// routeDsts lists the destinations of the IPv6 routes leaving through
+	// iface; nil stands for a default route.
+	routeDsts func(iface string) ([]*net.IPNet, error)
+}
+
+var systemIPv6Env = ipv6Env{addrs: interfaceIPs, routeDsts: ipv6RouteDsts}
+
+func interfaceIPs(name string) ([]net.IP, error) {
+	iface, err := net.InterfaceByName(name)
+	if err != nil {
+		return nil, err
+	}
+	addrs, err := iface.Addrs()
+	if err != nil {
+		return nil, err
+	}
+	ips := make([]net.IP, 0, len(addrs))
+	for _, a := range addrs {
+		if ipn, ok := a.(*net.IPNet); ok {
+			ips = append(ips, ipn.IP)
 		}
-		addrs, err := iface.Addrs()
+	}
+	return ips, nil
+}
+
+// needIPv6Forwarding decides whether IPv6 forwarding is required: whenever the
+// node can route IPv6 out of the inside port (link-local next hops leave no
+// global address on either port) or has a global IPv6 address on either port.
+// Without forwarding, bpf_fib_lookup returns NOT_FWDED and the kernel drops
+// the transit traffic. Turning it on unconditionally would stop SLAAC on
+// management interfaces of IPv4-only nodes.
+func needIPv6Forwarding(env ipv6Env, outside, inside string) (bool, error) {
+	for _, name := range []string{outside, inside} {
+		ips, err := env.addrs(name)
 		if err != nil {
-			continue
+			return false, fmt.Errorf("list addresses of %s: %w", name, err)
 		}
-		for _, a := range addrs {
-			if ipn, ok := a.(*net.IPNet); ok && ipn.IP.To4() == nil && ipn.IP.IsGlobalUnicast() {
-				return true
+		for _, ip := range ips {
+			if ip.To4() == nil && ip.IsGlobalUnicast() {
+				return true, nil
 			}
 		}
 	}
-	return false
+	dsts, err := env.routeDsts(inside)
+	if err != nil {
+		return false, fmt.Errorf("list IPv6 routes via %s: %w", inside, err)
+	}
+	for _, dst := range dsts {
+		if dst == nil || dst.IP.IsUnspecified() {
+			return true, nil
+		}
+		if !dst.IP.IsLinkLocalUnicast() && !dst.IP.IsMulticast() {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// checkForwardingSysctls only works out whether IPv6 forwarding is needed when
+// it is off: /readyz and every scrape run this, and the route dump can be a
+// full BGP table.
+func (c *Collector) checkForwardingSysctls(check func(ipv6 bool) error) error {
+	if check(true) == nil {
+		return nil
+	}
+	ipv6, err := needIPv6Forwarding(systemIPv6Env, c.Config.Interface, c.Config.InsideInterface)
+	if err != nil {
+		return err
+	}
+	return check(ipv6)
 }
 
 func (c *Collector) preflightScrub() error {
@@ -120,8 +181,9 @@ func (c *Collector) preflightScrub() error {
 	if err := ebpf.CheckKernelRelease(unix.ByteSliceToString(uts.Release[:]), ebpf.ScrubMinKernel); err != nil {
 		return err
 	}
-	ipv6 := hasGlobalIPv6(c.Config.Interface, c.Config.InsideInterface)
-	return checkScrubSysctls(procSysctl, c.Config.Interface, ipv6)
+	return c.checkForwardingSysctls(func(ipv6 bool) error {
+		return checkScrubSysctls(procSysctl, c.Config.Interface, ipv6)
+	})
 }
 
 func checkInsidePort(name string, inTxPorts func(ifindex int) (bool, error)) error {
@@ -155,7 +217,9 @@ func (c *Collector) scrubReadinessChecks() []readinessCheck {
 		{"xdp_scrub", c.Loader.ScrubAttached},
 		{"inside port", func() error { return checkInsidePort(c.Config.InsideInterface, c.Maps.HasTxPort) }},
 		{"forwarding", func() error {
-			return checkForwarding(procSysctl, hasGlobalIPv6(c.Config.Interface, c.Config.InsideInterface))
+			return c.checkForwardingSysctls(func(ipv6 bool) error {
+				return checkForwarding(procSysctl, c.Config.Interface, ipv6)
+			})
 		}},
 	}
 }
