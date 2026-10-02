@@ -1,5 +1,21 @@
 # PacketYeeter Changelog
 
+## 2026-10-02 - XDP hot-path performance
+
+- Fix: dropping a packet from an IPv4 `blocked_ips` source no longer adds 1 to
+  the entry's value. That value is the block's start time, so every drop
+  pushed expiry back by 1 ns (about 1 ms per million drops) and `yeetctl`
+  showed a TTL that grew under attack. IPv4 blocks now expire on time, as IPv6
+  blocks already did; dropping blocked IPv4 sources from several CPUs is also
+  much cheaper.
+- Bad TCP flag scans refresh the existing `bad_flags`/`bad_flags_v6` entry in
+  place instead of re-inserting it per packet. Contents and alerting are
+  unchanged.
+- `tc_ingress_syn_monitor` checks the per-CPU event budget before building a
+  JA4T event, so SYNs past the budget skip the event work. Handshake tracking
+  still runs for every SYN.
+- No verdict changes; enforcement and telemetry are unaffected.
+
 ## 2026-10-02 - Scrub mode runtime rules
 
 - Scrub collectors apply match rules delivered as `COMMAND_SET_RULES`

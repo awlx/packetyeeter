@@ -948,11 +948,11 @@ static __always_inline int check_policy_v6(struct xdp_md *ctx, struct in6_addr *
     return CHECK_CONTINUE;
 }
 
+// The value is the block's start time, which block GC expires on: read only.
 static __always_inline int check_blocked_v4(struct xdp_md *ctx, __u32 saddr, __u64 now, int is_monitor) {
     __u64 *val = bpf_map_lookup_elem(&blocked_ips, &saddr);
     if (!val)
         return CHECK_CONTINUE;
-    __sync_fetch_and_add(val, 1);
     emit_incident_v4(ctx, saddr, INCIDENT_BLOCKED_IP, now);
     if (!is_monitor) return CHECK_DROP;
     return CHECK_CONTINUE;
@@ -1007,11 +1007,20 @@ static __always_inline int check_l4_v4(struct xdp_md *ctx, struct iphdr *ip, voi
         if (!tcp) return CHECK_STOP;
         int scan_type = check_tcp_flags(tcp);
         if (scan_type != BAD_FLAGS_NONE) {
-            struct bad_flags_info info = {};
-            info.last_seen = now;
-            info.scan_type = scan_type;
-            info.flags_raw = tcp_flags_raw(tcp);
-            bpf_map_update_elem(&bad_flags, &saddr, &info, BPF_ANY);
+            // An update of an existing LRU key still takes a fresh node and
+            // the LRU lock; a repeat scanner only needs its fields refreshed.
+            struct bad_flags_info *cur = bpf_map_lookup_elem(&bad_flags, &saddr);
+            if (cur) {
+                cur->last_seen = now;
+                cur->scan_type = scan_type;
+                cur->flags_raw = tcp_flags_raw(tcp);
+            } else {
+                struct bad_flags_info info = {};
+                info.last_seen = now;
+                info.scan_type = scan_type;
+                info.flags_raw = tcp_flags_raw(tcp);
+                bpf_map_update_elem(&bad_flags, &saddr, &info, BPF_ANY);
+            }
             emit_incident_v4(ctx, saddr, INCIDENT_BAD_FLAGS, now);
             if (!is_monitor) return CHECK_DROP;
         }
@@ -1074,11 +1083,19 @@ static __always_inline int check_l4_v6(struct xdp_md *ctx, __u8 l4_proto, void *
         if ((void *)(tcp + 1) > data_end) return CHECK_STOP;
         int scan_type = check_tcp_flags(tcp);
         if (scan_type != BAD_FLAGS_NONE) {
-            struct bad_flags_info info = {};
-            info.last_seen = now;
-            info.scan_type = scan_type;
-            info.flags_raw = tcp_flags_raw(tcp);
-            bpf_map_update_elem(&bad_flags_v6, saddr, &info, BPF_ANY);
+            // In place for a repeat scanner, as for IPv4.
+            struct bad_flags_info *cur = bpf_map_lookup_elem(&bad_flags_v6, saddr);
+            if (cur) {
+                cur->last_seen = now;
+                cur->scan_type = scan_type;
+                cur->flags_raw = tcp_flags_raw(tcp);
+            } else {
+                struct bad_flags_info info = {};
+                info.last_seen = now;
+                info.scan_type = scan_type;
+                info.flags_raw = tcp_flags_raw(tcp);
+                bpf_map_update_elem(&bad_flags_v6, saddr, &info, BPF_ANY);
+            }
             emit_incident_v6(ctx, saddr, INCIDENT_BAD_FLAGS, now);
             if (!is_monitor) return CHECK_DROP;
         }
@@ -2022,63 +2039,64 @@ int tc_ingress_syn_monitor(struct __sk_buff *skb) {
             key.sport = tcp->source;
             key.dport = tcp->dest;
 
-            // Submit for JA4T Analysis
-            __u16 pkt_len = (__u16)(data_end - data);
-            
-            // Limit capture size to avoid overhead (e.g. 128 bytes usually enough for TCP options)
-            __u16 capture_len = pkt_len; 
-            if (capture_len > 128) capture_len = 128; 
-
-            __u64 flags = BPF_F_CURRENT_CPU | ((__u64)capture_len << 32);
-
-            // Limited metadata
-            struct event_metadata meta = {};
-            meta.saddr_v4 = ip->saddr;
-            meta.is_v6 = 0;
-            meta.sport = tcp->source;
-            meta.dport = tcp->dest;
-            meta.protocol = IPPROTO_TCP;
-            meta.type = 1; // JA4T
-            meta.window = bpf_ntohs(tcp->window);
-            meta.len = pkt_len; 
-            meta.rtt_us = 0;
-            meta.ttl = ip->ttl;
-            meta.seq = bpf_ntohl(tcp->seq);
-            meta.tcp_flags = (tcp->fin) | (tcp->syn << 1) | (tcp->rst << 2) | 
-                            (tcp->psh << 3) | (tcp->ack << 4) | (tcp->urg << 5);
-            
-            // MSS parsing disabled for now (eBPF verifier complexity)
-            meta.mss = 0;
-            
-            // TCP timestamp parsing - ENABLED for clock skew detection.
-            // Uses the IHL-correct header; the option walk in
-            // parse_tcp_timestamp is bounded (TCP_TS_MAX_OPTIONS) so the
-            // variable IHL base does not blow the verifier's instruction budget.
-            __u32 ts_val = 0, ts_ecr = 0;
-            if (parse_tcp_timestamp(tcp, data_end, &ts_val, &ts_ecr)) {
-                meta.has_timestamp = 1;
-                meta.ts_val = ts_val;
-                meta.ts_ecr = ts_ecr;
-            } else {
-                meta.has_timestamp = 0;
-                meta.ts_val = 0;
-                meta.ts_ecr = 0;
-            }
-
-            // IPv6 extension headers (always 0 for IPv4)
-            meta.ipv6_ext_headers = 0;
-
+            __u64 now = bpf_ktime_get_ns();
             // Sample per-SYN JA4T emits to the per-CPU budget so a SYN flood
-            // cannot saturate the perf ring; the handshake tracking below still
-            // runs for every SYN.
-            if (emit_allowed(&event_budget, bpf_ktime_get_ns()))
-                bpf_perf_event_output(skb, &events, flags, &meta, sizeof(meta));
+            // cannot saturate the perf ring. Checked first so a flood skips
+            // building the event; handshake tracking below runs for every SYN.
+            if (emit_allowed(&event_budget, now)) {
+                // Submit for JA4T Analysis
+                __u16 pkt_len = (__u16)(data_end - data);
 
+                // Limit capture size to avoid overhead (e.g. 128 bytes usually enough for TCP options)
+                __u16 capture_len = pkt_len;
+                if (capture_len > 128) capture_len = 128;
+
+                __u64 flags = BPF_F_CURRENT_CPU | ((__u64)capture_len << 32);
+
+                // Limited metadata
+                struct event_metadata meta = {};
+                meta.saddr_v4 = ip->saddr;
+                meta.is_v6 = 0;
+                meta.sport = tcp->source;
+                meta.dport = tcp->dest;
+                meta.protocol = IPPROTO_TCP;
+                meta.type = 1; // JA4T
+                meta.window = bpf_ntohs(tcp->window);
+                meta.len = pkt_len;
+                meta.rtt_us = 0;
+                meta.ttl = ip->ttl;
+                meta.seq = bpf_ntohl(tcp->seq);
+                meta.tcp_flags = (tcp->fin) | (tcp->syn << 1) | (tcp->rst << 2) |
+                                (tcp->psh << 3) | (tcp->ack << 4) | (tcp->urg << 5);
+
+                // MSS parsing disabled for now (eBPF verifier complexity)
+                meta.mss = 0;
+
+                // TCP timestamp parsing - ENABLED for clock skew detection.
+                // Uses the IHL-correct header; the option walk in
+                // parse_tcp_timestamp is bounded (TCP_TS_MAX_OPTIONS) so the
+                // variable IHL base does not blow the verifier's instruction budget.
+                __u32 ts_val = 0, ts_ecr = 0;
+                if (parse_tcp_timestamp(tcp, data_end, &ts_val, &ts_ecr)) {
+                    meta.has_timestamp = 1;
+                    meta.ts_val = ts_val;
+                    meta.ts_ecr = ts_ecr;
+                } else {
+                    meta.has_timestamp = 0;
+                    meta.ts_val = 0;
+                    meta.ts_ecr = 0;
+                }
+
+                // IPv6 extension headers (always 0 for IPv4)
+                meta.ipv6_ext_headers = 0;
+
+                bpf_perf_event_output(skb, &events, flags, &meta, sizeof(meta));
+            }
 
             struct handshake_status *existing = bpf_map_lookup_elem(&pending_handshakes, &key);
             if (!existing) {
                 struct handshake_status status = {};
-                status.begin_time = bpf_ktime_get_ns();
+                status.begin_time = now;
                 status.synack_sent = 0;
                 bpf_map_update_elem(&pending_handshakes, &key, &status, BPF_ANY);
             }
@@ -2129,60 +2147,60 @@ int tc_ingress_syn_monitor(struct __sk_buff *skb) {
             key.sport = tcp->source;
             key.dport = tcp->dest;
             
-            // JA4T V6
-            __u16 pkt_len = (__u16)(data_end - data);
-            __u16 capture_len = pkt_len; 
-            if (capture_len > 128) capture_len = 128;
-            
-            __u64 flags = BPF_F_CURRENT_CPU | ((__u64)capture_len << 32);
+            __u64 now = bpf_ktime_get_ns();
+            // Budget first, as for IPv4.
+            if (emit_allowed(&event_budget, now)) {
+                // JA4T V6
+                __u16 pkt_len = (__u16)(data_end - data);
+                __u16 capture_len = pkt_len;
+                if (capture_len > 128) capture_len = 128;
 
-            struct event_metadata meta = {};
-            // We can't fit v6 saddr in u32 saddr field easily without changing struct. 
-            // Reuse saddr as "0" to indicate v6 and let userspace parse from payload? 
-            // Or use perf_event's raw data which includes IP header.
-            meta.type = 1;
-            meta.protocol = IPPROTO_TCP;
-            meta.window = bpf_ntohs(tcp->window);
-            meta.len = pkt_len;
-            meta.rtt_us = 0;
-            
-            // V6 Handling
-            __builtin_memcpy(meta.saddr_v6, &ip6->saddr, 16);
-            meta.is_v6 = 1;
-            meta.saddr_v4 = 0;
-            meta.ttl = ip6->hop_limit;
-            meta.seq = bpf_ntohl(tcp->seq);
-            meta.tcp_flags = (tcp->fin) | (tcp->syn << 1) | (tcp->rst << 2) | 
-                            (tcp->psh << 3) | (tcp->ack << 4) | (tcp->urg << 5);
-            
-            // MSS parsing disabled for now (eBPF verifier complexity)
-            meta.mss = 0;
-            
-            // TCP timestamp parsing - ENABLED for clock skew detection
-            __u32 ts_val = 0, ts_ecr = 0;
-            if (parse_tcp_timestamp(tcp, data_end, &ts_val, &ts_ecr)) {
-                meta.has_timestamp = 1;
-                meta.ts_val = ts_val;
-                meta.ts_ecr = ts_ecr;
-            } else {
-                meta.has_timestamp = 0;
-                meta.ts_val = 0;
-                meta.ts_ecr = 0;
-            }
-            
-            // IPv6 extension header counting disabled (eBPF verifier complexity)
-            meta.ipv6_ext_headers = 0;
+                __u64 flags = BPF_F_CURRENT_CPU | ((__u64)capture_len << 32);
 
-            // Sample per-SYN JA4T emits to the per-CPU budget so a SYN flood
-            // cannot saturate the perf ring; the handshake tracking below still
-            // runs for every SYN.
-            if (emit_allowed(&event_budget, bpf_ktime_get_ns()))
+                struct event_metadata meta = {};
+                // We can't fit v6 saddr in u32 saddr field easily without changing struct.
+                // Reuse saddr as "0" to indicate v6 and let userspace parse from payload?
+                // Or use perf_event's raw data which includes IP header.
+                meta.type = 1;
+                meta.protocol = IPPROTO_TCP;
+                meta.window = bpf_ntohs(tcp->window);
+                meta.len = pkt_len;
+                meta.rtt_us = 0;
+
+                // V6 Handling
+                __builtin_memcpy(meta.saddr_v6, &ip6->saddr, 16);
+                meta.is_v6 = 1;
+                meta.saddr_v4 = 0;
+                meta.ttl = ip6->hop_limit;
+                meta.seq = bpf_ntohl(tcp->seq);
+                meta.tcp_flags = (tcp->fin) | (tcp->syn << 1) | (tcp->rst << 2) |
+                                (tcp->psh << 3) | (tcp->ack << 4) | (tcp->urg << 5);
+
+                // MSS parsing disabled for now (eBPF verifier complexity)
+                meta.mss = 0;
+
+                // TCP timestamp parsing - ENABLED for clock skew detection
+                __u32 ts_val = 0, ts_ecr = 0;
+                if (parse_tcp_timestamp(tcp, data_end, &ts_val, &ts_ecr)) {
+                    meta.has_timestamp = 1;
+                    meta.ts_val = ts_val;
+                    meta.ts_ecr = ts_ecr;
+                } else {
+                    meta.has_timestamp = 0;
+                    meta.ts_val = 0;
+                    meta.ts_ecr = 0;
+                }
+
+                // IPv6 extension header counting disabled (eBPF verifier complexity)
+                meta.ipv6_ext_headers = 0;
+
                 bpf_perf_event_output(skb, &events, flags, &meta, sizeof(meta));
+            }
 
             struct handshake_status *existing = bpf_map_lookup_elem(&pending_handshakes_v6, &key);
             if (!existing) {
                 struct handshake_status status = {};
-                status.begin_time = bpf_ktime_get_ns();
+                status.begin_time = now;
                 status.synack_sent = 0;
                 bpf_map_update_elem(&pending_handshakes_v6, &key, &status, BPF_ANY);
             }
