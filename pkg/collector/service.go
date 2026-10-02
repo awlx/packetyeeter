@@ -162,8 +162,12 @@ func max(a, b int) int {
 }
 
 func New(cfg Config, logger *logrus.Logger) (*Collector, error) {
-	if err := validateModeConfig(cfg); err != nil {
+	warnings, err := validateModeConfig(cfg)
+	if err != nil {
 		return nil, err
+	}
+	for _, w := range warnings {
+		logger.Warn(w)
 	}
 	c := &Collector{
 		Config:             cfg,

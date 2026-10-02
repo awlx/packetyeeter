@@ -18,16 +18,34 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// Defaults of the scrub-only flags.
+// Defaults of the scrub-only flags, so host mode can warn when they are set.
 const (
 	DefaultReadyzDrain      = 5 * time.Second
 	DefaultScrubSlowPathPPS = 100000
 )
 
-func validateModeConfig(cfg Config) error {
+// validateModeConfig rejects flag combinations that would otherwise be
+// silently ignored. Settings that are harmless but unused yield warnings.
+func validateModeConfig(cfg Config) (warnings []string, err error) {
 	if cfg.Mode != ebpf.ModeScrub {
-		return nil
+		switch {
+		case cfg.InsideInterface != "":
+			return nil, errors.New("-inside-if is only valid with -mode scrub")
+		case cfg.AllowGeneric:
+			return nil, errors.New("-allow-generic is only valid with -mode scrub")
+		}
+		if cfg.ReadyzDrain != 0 && cfg.ReadyzDrain != DefaultReadyzDrain {
+			warnings = append(warnings, "-readyz-drain has no effect in host mode")
+		}
+		if cfg.ScrubSlowPathPPS != 0 && cfg.ScrubSlowPathPPS != DefaultScrubSlowPathPPS {
+			warnings = append(warnings, "-scrub-slow-path-pps has no effect in host mode")
+		}
+		return warnings, nil
 	}
+	return nil, validateScrubConfig(cfg)
+}
+
+func validateScrubConfig(cfg Config) error {
 	switch {
 	case cfg.InsideInterface == "":
 		return errors.New("scrub mode requires -inside-if")

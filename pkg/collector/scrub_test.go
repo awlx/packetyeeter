@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"PacketYeeter/pkg/collector/ebpf"
 
@@ -17,22 +18,37 @@ import (
 
 func TestValidateModeConfig(t *testing.T) {
 	scrub := Config{Mode: ebpf.ModeScrub, Interface: "eth0", InsideInterface: "eth1", XDPMode: ebpf.XDPModeAuto}
+	host := func(c *Config) { c.Mode = ebpf.ModeHost; c.InsideInterface = "" }
 	for name, tc := range map[string]struct {
-		mutate func(*Config)
-		ok     bool
+		mutate   func(*Config)
+		ok       bool
+		warnings int
 	}{
-		"host ignores scrub flags": {func(c *Config) { c.Mode = ebpf.ModeHost; c.InsideInterface = "" }, true},
-		"scrub":                    {func(*Config) {}, true},
-		"missing inside":           {func(c *Config) { c.InsideInterface = "" }, false},
-		"inside equals outside":    {func(c *Config) { c.InsideInterface = "eth0" }, false},
-		"generic not allowed":      {func(c *Config) { c.XDPMode = ebpf.XDPModeGeneric }, false},
-		"generic allowed":          {func(c *Config) { c.XDPMode = ebpf.XDPModeGeneric; c.AllowGeneric = true }, true},
-		"egress accounting":        {func(c *Config) { c.EgressAccounting = true }, false},
+		"host": {host, true, 0},
+		"host with default drain": {func(c *Config) {
+			host(c)
+			c.ReadyzDrain = DefaultReadyzDrain
+			c.ScrubSlowPathPPS = DefaultScrubSlowPathPPS
+		}, true, 0},
+		"host with custom drain":    {func(c *Config) { host(c); c.ReadyzDrain = time.Second }, true, 1},
+		"host with custom slow pps": {func(c *Config) { host(c); c.ScrubSlowPathPPS = 5 }, true, 1},
+		"host with inside-if":       {func(c *Config) { host(c); c.InsideInterface = "eth1" }, false, 0},
+		"host with allow-generic":   {func(c *Config) { host(c); c.AllowGeneric = true }, false, 0},
+		"scrub":                     {func(*Config) {}, true, 0},
+		"missing inside":            {func(c *Config) { c.InsideInterface = "" }, false, 0},
+		"inside equals outside":     {func(c *Config) { c.InsideInterface = "eth0" }, false, 0},
+		"generic not allowed":       {func(c *Config) { c.XDPMode = ebpf.XDPModeGeneric }, false, 0},
+		"generic allowed":           {func(c *Config) { c.XDPMode = ebpf.XDPModeGeneric; c.AllowGeneric = true }, true, 0},
+		"egress accounting":         {func(c *Config) { c.EgressAccounting = true }, false, 0},
 	} {
 		cfg := scrub
 		tc.mutate(&cfg)
-		if err := validateModeConfig(cfg); (err == nil) != tc.ok {
+		warnings, err := validateModeConfig(cfg)
+		if (err == nil) != tc.ok {
 			t.Errorf("%s: err = %v, want ok=%v", name, err, tc.ok)
+		}
+		if len(warnings) != tc.warnings {
+			t.Errorf("%s: warnings = %q, want %d", name, warnings, tc.warnings)
 		}
 	}
 }
