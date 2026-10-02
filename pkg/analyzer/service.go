@@ -89,6 +89,7 @@ type Config struct {
 	MaxCollectors                int      // Max concurrent collector streams (default 1024)
 	InspectorTrustedHosts        []string // Extra Host/Origin hostnames the inspector trusts for mutating requests (in addition to loopback), e.g. a reverse-proxy hostname
 	DryRun                       bool     // Monitor mode - log detections but don't block
+	EnableRuleAPI                bool     // Accept PushRules; off because the gRPC listener is unauthenticated
 	Sustained                    sustained.Config
 }
 
@@ -232,6 +233,9 @@ type Analyzer struct {
 	httpErrorWindows map[string]*httpErrorWindow
 	httpErrorMu      sync.Mutex
 
+	// Desired scrub-mode runtime rules, by scope
+	rules ruleStore
+
 	// Connected collectors
 	collectors   map[string]*collectorStream
 	collectorsMu sync.RWMutex
@@ -254,6 +258,19 @@ type Analyzer struct {
 type collectorStream struct {
 	stream apiv1.AnalyzerService_StreamSignalsServer
 	sendMu sync.Mutex
+
+	role atomic.Value // string, from the collector's role signal
+
+	rulesMu     sync.Mutex
+	sentRules   map[string]*apiv1.Rule // what this stream was last sent
+	rulesSynced bool
+}
+
+func (cs *collectorStream) setRole(role string) { cs.role.Store(role) }
+
+func (cs *collectorStream) isScrub() bool {
+	role, _ := cs.role.Load().(string)
+	return role == "scrub"
 }
 
 func mapProtoSignalType(t apiv1.SignalType) aidetection.SignalType {
@@ -310,6 +327,7 @@ func New(cfg Config) (*Analyzer, error) {
 	a := &Analyzer{
 		Config:                 cfg,
 		collectors:             make(map[string]*collectorStream),
+		rules:                  ruleStore{scopes: map[string]map[string]*apiv1.Rule{}},
 		ipRateLimiters:         make(map[string]*ratelimit.TokenBucket),
 		asnRateLimiters:        make(map[string]*ratelimit.TokenBucket),
 		RateLimiter:            ratelimit.NewLimiter(ratelimit.DefaultConfig()),
@@ -743,6 +761,10 @@ func (a *Analyzer) StreamSignals(stream apiv1.AnalyzerService_StreamSignalsServe
 			"ip":          net.IP(sig.Ip).String(),
 		}).Debug("Signal received by analyzer")
 
+		if isRoleSignal(sig) {
+			a.handleRoleSignal(collectorID, cs, sig)
+			continue
+		}
 		a.processSignal(sig, cs)
 	}
 }

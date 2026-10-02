@@ -1,5 +1,20 @@
 # PacketYeeter Changelog
 
+## 2026-10-02 - Analyzer PushRules for scrub collectors
+
+- New `PushRules(RuleSet)` RPC: a controller sets the complete rule set of its
+  scope, and the analyzer sends each scrub collector only the changes, in
+  order; a (re)connecting collector gets everything as a replacement
+  (`RuleSetDelta.replace`). Off unless the analyzer runs with
+  `-enable-rule-api`, since the gRPC listener is unauthenticated.
+- Collectors announce `role=host|scrub` (and their hostname) when they connect;
+  the analyzer no longer scores that announcement. Upgrade analyzers before
+  collectors.
+- With `-dry-run` or the kill switch pulled, only `PASS` rules are sent;
+  pulling the kill switch withdraws existing `DROP`/`RATE_LIMIT` rules.
+- New analyzer metrics `packetyeeter_rules_desired{scope}` and
+  `packetyeeter_rule_deltas_sent_total`.
+
 ## 2026-10-02 - Scrub mode runtime rules
 
 - Scrub collectors apply match rules delivered as `COMMAND_SET_RULES`

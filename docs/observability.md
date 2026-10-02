@@ -151,6 +151,16 @@ blocking without enabling high-cardinality IP metrics.
 - **ASN baseline**: `packetyeeter_latency_ewma_by_asn_ms`,
   `packetyeeter_asn_*`.
 
+### Runtime rule distribution
+
+Analyzer-side, for `PushRules`:
+
+- `packetyeeter_rules_desired{scope}` (gauge): rules currently pushed by each
+  scope (expired rules drop out).
+- `packetyeeter_rule_deltas_sent_total` (counter): rule changes sent to scrub
+  collectors. Compare with the collectors'
+  `packetyeeter_scrub_rules_active` to confirm they converged.
+
 ### Runtime enforcement kill switch
 
 - `packetyeeter_enforcement_stopped` (gauge): `1` after `POST
