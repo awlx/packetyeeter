@@ -266,7 +266,11 @@ type collectorStream struct {
 	rulesSynced bool
 }
 
-func (cs *collectorStream) setRole(role string) { cs.role.Store(role) }
+// setRole stores role and returns the previous one.
+func (cs *collectorStream) setRole(role string) string {
+	prev, _ := cs.role.Swap(role).(string)
+	return prev
+}
 
 func (cs *collectorStream) isScrub() bool {
 	role, _ := cs.role.Load().(string)

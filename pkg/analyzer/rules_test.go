@@ -6,7 +6,9 @@ import (
 	"io"
 	"maps"
 	"net"
+	"runtime"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -310,7 +312,7 @@ func TestRuleStoreDesiredDropsExpiredRules(t *testing.T) {
 	now := time.Now()
 	short := dropRule("short")
 	short.Id = "ctl/short"
-	short.ExpiresAt = timestamppb.New(now.Add(time.Second))
+	short.ExpiresAt = timestamppb.New(now.Add(ruleExpiryMargin + time.Second))
 	long := dropRule("long")
 	long.Id = "ctl/long"
 
@@ -324,7 +326,9 @@ func TestRuleStoreDesiredDropsExpiredRules(t *testing.T) {
 		want []string
 	}{
 		{now, []string{"ctl/long", "ctl/short"}},
-		{now.Add(time.Second), []string{"ctl/long"}},
+		{now.Add(time.Second + time.Millisecond), []string{"ctl/long"}}, // within the margin: withheld
+		{now, []string{"ctl/long", "ctl/short"}},
+		{now.Add(ruleExpiryMargin + time.Second), []string{"ctl/long"}}, // expired: deleted
 		{now, []string{"ctl/long"}},
 		{now.Add(2 * time.Hour), nil},
 	}
@@ -342,7 +346,7 @@ func TestExpiredRuleRemovedInNextDelta(t *testing.T) {
 	fake, _ := addCollector(t, a, "scrub")
 
 	short := dropRule("short")
-	short.ExpiresAt = timestamppb.New(time.Now().Add(300 * time.Millisecond))
+	short.ExpiresAt = timestamppb.New(time.Now().Add(ruleExpiryMargin + 300*time.Millisecond))
 	push(t, a, "a", short)
 	assertIDs(t, "upsert", upsertIDs(rulesDelta(t, fake.waitForCommand(t))), []string{"a/short"})
 
@@ -423,4 +427,96 @@ func TestStreamSignalsDoesNotScoreRoleSignals(t *testing.T) {
 	if p := a.PatternTracker.GetPattern(roleIP); p != nil {
 		t.Fatalf("role signal reached processSignal: %+v", p)
 	}
+}
+
+func TestPushRulesRejectsSetTooLargeToSend(t *testing.T) {
+	a := newRuleAnalyzer(t)
+	fake, _ := addCollector(t, a, "scrub")
+
+	big := func(id string) *apiv1.Rule {
+		r := dropRule(id)
+		r.Id = id + strings.Repeat("x", maxRuleSetBytes/2)
+		return r
+	}
+	push(t, a, "a", big("r"))
+	fake.waitForCommand(t)
+
+	_, err := a.PushRules(context.Background(), &apiv1.RuleSet{Scope: "b", Rules: []*apiv1.Rule{big("r")}})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("err = %v, want InvalidArgument for a union too large for one replace delta", err)
+	}
+	if _, ok := a.rules.scopes["b"]; ok {
+		t.Fatal("oversized scope was stored")
+	}
+	fake.expectNoCommand(t)
+}
+
+func TestDesiredWithholdsRulesNearExpiry(t *testing.T) {
+	now := time.Now()
+	soon := dropRule("soon")
+	soon.Id = "ctl/soon"
+	soon.ExpiresAt = timestamppb.New(now.Add(ruleExpiryMargin / 2))
+	s := ruleStore{scopes: map[string]map[string]*apiv1.Rule{"ctl": {soon.Id: soon}}}
+	if got := s.desired(now, true); len(got) != 0 {
+		t.Fatalf("desired = %v, want a rule about to expire withheld", slices.Collect(maps.Keys(got)))
+	}
+}
+
+// blockingCollectorStream never completes a Send, like a collector that
+// stopped reading.
+type blockingCollectorStream struct {
+	apiv1.AnalyzerService_StreamSignalsServer
+	release chan struct{}
+}
+
+func (b *blockingCollectorStream) Send(*apiv1.Command) error {
+	<-b.release
+	return nil
+}
+
+func addBlockedScrubCollector(t *testing.T, a *Analyzer) *collectorStream {
+	t.Helper()
+	b := &blockingCollectorStream{release: make(chan struct{})}
+	t.Cleanup(func() { close(b.release) })
+	cs := &collectorStream{stream: b}
+	cs.setRole("scrub")
+	a.registerCollector(context.Background(), cs)
+	return cs
+}
+
+func TestPushRulesDoesNotHangOnBlockedCollector(t *testing.T) {
+	a := newRuleAnalyzer(t)
+	prev := ruleSyncTimeout
+	ruleSyncTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { ruleSyncTimeout = prev })
+	addBlockedScrubCollector(t, a)
+	fake, _ := addCollector(t, a, "scrub")
+
+	done := make(chan *apiv1.PushRulesAck, 1)
+	go func() { done <- push(t, a, "ctl", dropRule("r1")) }()
+	select {
+	case ack := <-done:
+		if ack.GetCollectors() != 1 {
+			t.Fatalf("collectors = %d, want 1 (the responsive one)", ack.GetCollectors())
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("PushRules hung on a collector that does not read")
+	}
+	assertIDs(t, "upsert", upsertIDs(rulesDelta(t, fake.waitForCommand(t))), []string{"ctl/r1"})
+}
+
+func TestRepeatedRoleAnnouncementsStartOneSync(t *testing.T) {
+	a := newRuleAnalyzer(t)
+	b := &blockingCollectorStream{release: make(chan struct{})}
+	cs := &collectorStream{stream: b}
+	id := a.registerCollector(context.Background(), cs)
+
+	before := runtime.NumGoroutine()
+	for range 200 {
+		a.handleRoleSignal(id, cs, roleSignal("scrub"))
+	}
+	if n := runtime.NumGoroutine() - before; n > 50 {
+		t.Fatalf("%d goroutines started by repeated role announcements, want 1", n)
+	}
+	close(b.release)
 }

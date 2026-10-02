@@ -1,6 +1,7 @@
 package analyzer
 
 import (
+	"context"
 	"sync/atomic"
 
 	apiv1 "PacketYeeter/api/proto/v1"
@@ -62,7 +63,7 @@ func (a *Analyzer) StopEnforcement(reason string) {
 	logrus.WithField("reason", reason).
 		Warn("Enforcement stopped at runtime; all BLOCK commands suppressed. Detection continues. Re-enabling requires a restart.")
 	// Withdraw DROP and RATE_LIMIT rules already on scrub collectors.
-	go a.syncScrubCollectors()
+	go a.syncScrubCollectors(context.Background())
 }
 
 // Enforcing reports whether the analyzer currently issues enforcing commands.

@@ -23,6 +23,21 @@ import (
 // same id without overwriting each other on a collector.
 const ruleScopeSep = "/"
 
+const (
+	// A collector rejects a whole delta holding a rule that has expired by
+	// its clock, and the analyzer cannot tell, so rules this close to expiry
+	// are withdrawn instead of sent.
+	ruleExpiryMargin = 5 * time.Second
+
+	// Stays under the collectors' default 4 MiB gRPC receive limit, which a
+	// replace delta carrying every scope's rules must fit.
+	maxRuleSetBytes = 3 << 20
+)
+
+// ruleSyncTimeout bounds how long PushRules waits for collector sends; a
+// collector that stops reading must not hang the controller. Var for tests.
+var ruleSyncTimeout = 10 * time.Second
+
 // ruleStore holds the desired runtime rules per scope.
 type ruleStore struct {
 	mu     sync.Mutex
@@ -36,6 +51,7 @@ func (s *ruleStore) replace(scope string, rules map[string]*apiv1.Rule, now time
 	defer s.mu.Unlock()
 
 	parsed := map[string]*scrubrules.Rule{}
+	size := 0
 	for sc, set := range s.scopes {
 		if sc == scope {
 			continue
@@ -43,6 +59,7 @@ func (s *ruleStore) replace(scope string, rules map[string]*apiv1.Rule, now time
 		for id, r := range set {
 			if p, err := scrubrules.Parse(r, now); err == nil {
 				parsed[id] = p
+				size += proto.Size(r)
 			}
 		}
 	}
@@ -52,9 +69,13 @@ func (s *ruleStore) replace(scope string, rules map[string]*apiv1.Rule, now time
 			return err
 		}
 		parsed[id] = p
+		size += proto.Size(r)
 	}
 	if err := scrubrules.CheckCapacity(parsed); err != nil {
 		return fmt.Errorf("rule set does not fit alongside the other scopes: %w", err)
+	}
+	if size > maxRuleSetBytes {
+		return fmt.Errorf("rule set does not fit alongside the other scopes: %d bytes encoded, at most %d", size, maxRuleSetBytes)
 	}
 
 	if len(rules) == 0 {
@@ -78,8 +99,12 @@ func (s *ruleStore) desired(now time.Time, enforcing bool) map[string]*apiv1.Rul
 	out := map[string]*apiv1.Rule{}
 	for scope, set := range s.scopes {
 		for id, r := range set {
-			if !now.Before(r.GetExpiresAt().AsTime()) {
+			expires := r.GetExpiresAt().AsTime()
+			if !now.Before(expires) {
 				delete(set, id)
+				continue
+			}
+			if !now.Add(ruleExpiryMargin).Before(expires) {
 				continue
 			}
 			if enforcing || r.GetAction() == apiv1.RuleAction_RULE_ACTION_PASS {
@@ -125,7 +150,7 @@ func (a *Analyzer) PushRules(ctx context.Context, rs *apiv1.RuleSet) (*apiv1.Pus
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
-	n := a.syncScrubCollectors()
+	n := a.syncScrubCollectors(ctx)
 	logrus.WithFields(logrus.Fields{
 		"scope":      scope,
 		"rules":      len(wire),
@@ -136,8 +161,8 @@ func (a *Analyzer) PushRules(ctx context.Context, rs *apiv1.RuleSet) (*apiv1.Pus
 }
 
 // syncScrubCollectors brings every scrub collector up to date and returns how
-// many are.
-func (a *Analyzer) syncScrubCollectors() int {
+// many were, waiting at most ruleSyncTimeout or until ctx ends.
+func (a *Analyzer) syncScrubCollectors(ctx context.Context) int {
 	a.collectorsMu.RLock()
 	var scrub []*collectorStream
 	for _, cs := range a.collectors {
@@ -147,23 +172,32 @@ func (a *Analyzer) syncScrubCollectors() int {
 	}
 	a.collectorsMu.RUnlock()
 
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-	synced := 0
+	results := make(chan bool, len(scrub))
 	for _, cs := range scrub {
-		wg.Add(1)
 		go func() {
-			defer wg.Done()
-			if err := a.syncRules(cs); err != nil {
+			err := a.syncRules(cs)
+			if err != nil {
 				logrus.WithError(err).Warn("Failed to send rules to scrub collector")
-				return
 			}
-			mu.Lock()
-			synced++
-			mu.Unlock()
+			results <- err == nil
 		}()
 	}
-	wg.Wait()
+	timeout := time.NewTimer(ruleSyncTimeout)
+	defer timeout.Stop()
+	synced := 0
+	for range scrub {
+		select {
+		case ok := <-results:
+			if ok {
+				synced++
+			}
+		case <-timeout.C:
+			logrus.Warn("Timed out sending rules to scrub collectors; the rest are still being sent")
+			return synced
+		case <-ctx.Done():
+			return synced
+		}
+	}
 	return synced
 }
 
@@ -218,13 +252,15 @@ func (a *Analyzer) syncRules(cs *collectorStream) error {
 // it says what the collector is, not what it saw.
 func (a *Analyzer) handleRoleSignal(collectorID string, cs *collectorStream, sig *apiv1.Signal) {
 	role := sig.GetMetadata()["role"]
-	cs.setRole(role)
+	prev := cs.setRole(role)
 	logrus.WithFields(logrus.Fields{
 		"collector": collectorID,
 		"role":      role,
 		"node":      sig.GetMetadata()["node"],
 	}).Info("Collector announced its role")
-	if role == "scrub" {
+	// Only on becoming scrub: repeated announcements must not pile up
+	// goroutines behind a send that blocks.
+	if role == "scrub" && prev != "scrub" {
 		go func() {
 			if err := a.syncRules(cs); err != nil {
 				logrus.WithError(err).WithField("collector", collectorID).Warn("Failed to send rules to scrub collector")
