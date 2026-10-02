@@ -70,6 +70,7 @@ const (
 	IncidentUDPFrag     = 5
 	IncidentBadFlags    = 6
 	IncidentMalformed   = 7
+	IncidentRuleMatch   = 8
 )
 
 // IncidentReasonName returns a human-readable name for an incident reason
@@ -90,6 +91,8 @@ func IncidentReasonName(reason uint8) string {
 		return "bad_flags"
 	case IncidentMalformed:
 		return "malformed"
+	case IncidentRuleMatch:
+		return "rule_match"
 	default:
 		return "unknown"
 	}

@@ -31,7 +31,7 @@ PacketYeeter is a high-performance, eBPF-based DDoS protection and traffic filte
 3.6. **Structured Incident Logging**
     *   Every kernel-space drop decision (policy block, blocked-IP enforcement, ICMP/UDP rate-limit drop, IPv6 fragment drop, bad-flags drop) emits a compact structured record — source address, kernel timestamp, and a reason code — over a dedicated eBPF perf event array, in addition to whatever counters/signals that detection already produces.
     *   The collector decodes these records and logs a single structured `logrus` entry per incident (fields: `ip`, `reason`, `kernel_timestamp`), giving operators a unified, per-packet-drop audit trail instead of having to correlate several counters.
-    *   Each incident also increments `packetyeeter_kernel_incidents_total{reason=...}`, a low-cardinality Prometheus counter (six known reason values) for dashboards/alerting.
+    *   Each incident also increments `packetyeeter_kernel_incidents_total{reason=...}`, a low-cardinality Prometheus counter for dashboards/alerting (`reason` is one of `blocked_ip`, `policy_block`, `icmp_rate`, `udp_rate`, `udp_frag`, `bad_flags`, `malformed`, `rule_match`).
     *   This is purely an observability feature — it does not change enforcement behavior or generate new analyzer signals for reasons that already have one (bad flags, ICMP/UDP floods already stream `SIGNAL_*` events to the analyzer).
 
 4.  **Volumetric Rate Limiting (ICMP & UDP)**

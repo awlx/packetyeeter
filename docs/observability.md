@@ -292,6 +292,13 @@ time:
   hop limit <= 1; an alias of `packetyeeter_scrub_slow_path_total{reason="ttl"}`,
   kept for dashboards. A rising rate indicates a routing loop.
 - `packetyeeter_scrub_ready` (gauge): 1 while `/readyz` returns 200.
+- `packetyeeter_scrub_rule_matches_total{action}` (counter): packets matching a
+  runtime rule, by its action (`drop`, `rate_limit`, `pass`). Rate-limited
+  packets count whether or not they were over the rate. Rule drops (and, in
+  monitor mode, would-be drops) are also logged as incidents with reason
+  `rule_match`, sampled like all incidents.
+- `packetyeeter_scrub_rules_active{family}` (gauge): rules installed, `ipv4`
+  or `ipv6`.
 
 ## Collector perf-ring health
 

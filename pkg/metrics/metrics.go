@@ -311,6 +311,12 @@ var (
 	ScrubSlowPathLimitedDesc = prometheus.NewDesc("packetyeeter_scrub_slow_path_limited_total",
 		"Slow-path packets over -scrub-slow-path-pps, dropped (or passed in monitor mode)",
 		nil, nil)
+	ScrubRuleMatchesDesc = prometheus.NewDesc("packetyeeter_scrub_rule_matches_total",
+		"Packets that matched a runtime rule, by the rule's action (drop, rate_limit, pass)",
+		[]string{"action"}, nil)
+	ScrubRulesActiveDesc = prometheus.NewDesc("packetyeeter_scrub_rules_active",
+		"Runtime rules currently installed, by family",
+		[]string{"family"}, nil)
 	ScrubReadyDesc = prometheus.NewDesc("packetyeeter_scrub_ready",
 		"1 when /readyz reports the scrub node ready, else 0",
 		nil, nil)
