@@ -133,12 +133,13 @@ if [ "$INSTALL_DEPS" = true ]; then
         sudo apt-get -o DPkg::Lock::Timeout=60 update && \
         sudo apt-get -o DPkg::Lock::Timeout=60 install -y bpfcc-tools libbpfcc libbpfcc-dev clang llvm libbpf-dev linux-headers-\$(uname -r) wget
 
-        echo 'Installing/Ensuring Go 1.26.4...'
-        if ! /usr/local/go/bin/go version 2>/dev/null | grep -q 'go1.26.4'; then
-            echo 'Downloading Go 1.26.4...'
-            wget -q https://go.dev/dl/go1.26.4.linux-amd64.tar.gz
-            sudo rm -rf /usr/local/go && sudo tar -C /usr/local -xzf go1.26.4.linux-amd64.tar.gz
-            rm go1.26.4.linux-amd64.tar.gz
+        echo 'Installing/Ensuring Go 1.27.1...'
+        if ! /usr/local/go/bin/go version 2>/dev/null | grep -q 'go1.27.1'; then
+            echo 'Downloading Go 1.27.1...'
+            wget -q https://go.dev/dl/go1.27.1.linux-amd64.tar.gz && \
+            echo '63d339f0da5ab53635a56f2490a7984dfe12dfcff22ad749f63edaf590168445  go1.27.1.linux-amd64.tar.gz' | sha256sum -c - && \
+            sudo rm -rf /usr/local/go && sudo tar -C /usr/local -xzf go1.27.1.linux-amd64.tar.gz
+            rm -f go1.27.1.linux-amd64.tar.gz
         fi
     "
 fi
