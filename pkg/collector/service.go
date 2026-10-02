@@ -128,6 +128,8 @@ type Collector struct {
 	rateClock uint64
 
 	mapWalker ebpf.MapWalker
+	// Per-message rate limit for map walk failures; pollMaps goroutine only.
+	walkErrLogged map[string]walkErrLog
 
 	// Last-alerted timestamps for bad TCP flag scans, so repeated polls
 	// don't re-emit a signal for the same kernel-observed event.
@@ -1110,7 +1112,7 @@ func (c *Collector) sendPendingHandshakes() {
 		return true
 	})
 	if err != nil {
-		c.Logger.WithError(err).Warn("Failed to iterate IPv4 pending handshakes")
+		c.warnMapWalk("Failed to iterate IPv4 pending handshakes", err)
 	}
 
 	// Only entries this poll actually deleted are counted: a key that vanished
@@ -1126,7 +1128,7 @@ func (c *Collector) sendPendingHandshakes() {
 		addPending(stats, expiredVals[i], expiredKeys[i].Dport)
 	})
 	if err != nil {
-		c.Logger.WithError(err).Warn("Failed to consume expired IPv4 pending handshakes")
+		c.warnMapWalk("Failed to consume expired IPv4 pending handshakes", err)
 	}
 	if missing > 0 {
 		c.Logger.WithField("count", missing).Debug("Expired IPv4 pending handshakes already gone before consume")
@@ -1212,7 +1214,7 @@ func (c *Collector) sendPendingHandshakes() {
 		return true
 	})
 	if err != nil {
-		c.Logger.WithError(err).Warn("Failed to iterate IPv6 pending handshakes")
+		c.warnMapWalk("Failed to iterate IPv6 pending handshakes", err)
 	}
 
 	missing, err = ebpf.DeleteKeys(&c.mapWalker, c.Maps.PendingHandshakesV6, expiredKeys6, func(i int) {
@@ -1225,7 +1227,7 @@ func (c *Collector) sendPendingHandshakes() {
 		addPending(stats, expiredVals6[i], expiredKeys6[i].Dport)
 	})
 	if err != nil {
-		c.Logger.WithError(err).Warn("Failed to consume expired IPv6 pending handshakes")
+		c.warnMapWalk("Failed to consume expired IPv6 pending handshakes", err)
 	}
 	if missing > 0 {
 		c.Logger.WithField("count", missing).Debug("Expired IPv6 pending handshakes already gone before consume")
@@ -1310,7 +1312,7 @@ func (c *Collector) sendICMPRates() {
 			return true
 		})
 		if err != nil {
-			c.Logger.WithError(err).Warn("Failed to walk IPv4 ICMP rate map")
+			c.warnMapWalk("Failed to walk IPv4 ICMP rate map", err)
 		}
 	}
 
@@ -1340,7 +1342,7 @@ func (c *Collector) sendICMPRates() {
 			return true
 		})
 		if err != nil {
-			c.Logger.WithError(err).Warn("Failed to walk IPv6 ICMP rate map")
+			c.warnMapWalk("Failed to walk IPv6 ICMP rate map", err)
 		}
 	}
 
@@ -1382,7 +1384,7 @@ func (c *Collector) sendUDPRates() {
 			return true
 		})
 		if err != nil {
-			c.Logger.WithError(err).Warn("Failed to walk IPv4 UDP rate map")
+			c.warnMapWalk("Failed to walk IPv4 UDP rate map", err)
 		}
 	}
 
@@ -1412,7 +1414,7 @@ func (c *Collector) sendUDPRates() {
 			return true
 		})
 		if err != nil {
-			c.Logger.WithError(err).Warn("Failed to walk IPv6 UDP rate map")
+			c.warnMapWalk("Failed to walk IPv6 UDP rate map", err)
 		}
 	}
 
@@ -1479,7 +1481,7 @@ func (c *Collector) sendBadFlagsAlerts() {
 			return true
 		})
 		if err != nil {
-			c.Logger.WithError(err).Warn("Failed to walk IPv4 bad flags map")
+			c.warnMapWalk("Failed to walk IPv4 bad flags map", err)
 		}
 	}
 
@@ -1525,7 +1527,7 @@ func (c *Collector) sendBadFlagsAlerts() {
 			return true
 		})
 		if err != nil {
-			c.Logger.WithError(err).Warn("Failed to walk IPv6 bad flags map")
+			c.warnMapWalk("Failed to walk IPv6 bad flags map", err)
 		}
 	}
 
@@ -1565,6 +1567,34 @@ func storePrevRate[K comparable](prev map[K]prevRate, ip K, rate ebpf.ICMPRate) 
 	} else {
 		delete(prev, ip)
 	}
+}
+
+type walkErrLog struct {
+	at         time.Time
+	suppressed int
+}
+
+const walkErrLogInterval = time.Minute
+
+// warnMapWalk rate-limits per message: on pre-5.6 kernels the per-key
+// fallback can abort on every poll while a flood churns the LRU maps.
+func (c *Collector) warnMapWalk(msg string, err error) {
+	now := time.Now()
+	if c.walkErrLogged == nil {
+		c.walkErrLogged = make(map[string]walkErrLog)
+	}
+	l, seen := c.walkErrLogged[msg]
+	if seen && now.Sub(l.at) < walkErrLogInterval {
+		l.suppressed++
+		c.walkErrLogged[msg] = l
+		return
+	}
+	entry := c.Logger.WithError(err)
+	if l.suppressed > 0 {
+		entry = entry.WithField("suppressed", l.suppressed)
+	}
+	entry.Warn(msg)
+	c.walkErrLogged[msg] = walkErrLog{at: now}
 }
 
 func (c *Collector) observeRateClock(t uint64) {

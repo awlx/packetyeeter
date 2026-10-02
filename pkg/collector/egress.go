@@ -87,7 +87,7 @@ func (c *Collector) sendEgressVolume() {
 			return true
 		})
 		if err != nil {
-			c.Logger.WithError(err).Warn("Failed to walk IPv4 egress map")
+			c.warnMapWalk("Failed to walk IPv4 egress map", err)
 		}
 	}
 
@@ -110,7 +110,7 @@ func (c *Collector) sendEgressVolume() {
 			return true
 		})
 		if err != nil {
-			c.Logger.WithError(err).Warn("Failed to walk IPv6 egress map")
+			c.warnMapWalk("Failed to walk IPv6 egress map", err)
 		}
 	}
 

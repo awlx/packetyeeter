@@ -1,8 +1,11 @@
 package collector
 
 import (
+	"bytes"
+	"errors"
 	"math/rand/v2"
 	"net"
+	"strings"
 	"testing"
 
 	"github.com/sirupsen/logrus"
@@ -171,5 +174,28 @@ func TestEmitFloodSignalSubThresholdAllocFree(t *testing.T) {
 	})
 	if allocs != 0 {
 		t.Fatalf("sub-threshold emitFloodSignal allocated %v times", allocs)
+	}
+}
+
+func TestWarnMapWalkRateLimited(t *testing.T) {
+	var buf bytes.Buffer
+	l := logrus.New()
+	l.SetOutput(&buf)
+	c := &Collector{Logger: l}
+	err := errors.New("iteration aborted")
+	for i := 0; i < 5; i++ {
+		c.warnMapWalk("Failed to walk IPv4 ICMP rate map", err)
+		c.warnMapWalk("Failed to walk IPv4 UDP rate map", err)
+	}
+	if n := strings.Count(buf.String(), "level=warning"); n != 2 {
+		t.Fatalf("logged %d warnings for 10 failures over 2 maps, want 2:\n%s", n, buf.String())
+	}
+	l0 := c.walkErrLogged["Failed to walk IPv4 ICMP rate map"]
+	l0.at = l0.at.Add(-walkErrLogInterval)
+	c.walkErrLogged["Failed to walk IPv4 ICMP rate map"] = l0
+	buf.Reset()
+	c.warnMapWalk("Failed to walk IPv4 ICMP rate map", err)
+	if !strings.Contains(buf.String(), "suppressed=4") {
+		t.Fatalf("want suppressed count after interval, got:\n%s", buf.String())
 	}
 }
