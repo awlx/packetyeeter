@@ -1,9 +1,9 @@
 module PacketYeeter
 
-go 1.26.5
+go 1.26.6
 
 require (
-	github.com/cilium/ebpf v0.20.0
+	github.com/cilium/ebpf v0.22.0
 	github.com/dropmorepackets/haproxy-go v0.0.7
 	github.com/gdamore/tcell/v2 v2.13.7
 	github.com/negasus/haproxy-spoe-go v1.0.7
@@ -13,9 +13,9 @@ require (
 	github.com/sirupsen/logrus v1.9.4
 	github.com/vishvananda/netlink v1.3.1
 	github.com/yalue/onnxruntime_go v1.25.0
-	golang.org/x/sync v0.20.0
-	golang.org/x/sys v0.43.0
-	google.golang.org/grpc v1.82.1
+	golang.org/x/sync v0.23.0
+	golang.org/x/sys v0.48.0
+	google.golang.org/grpc v1.83.2
 	google.golang.org/protobuf v1.36.11
 )
 
@@ -32,11 +32,10 @@ require (
 	github.com/prometheus/common v0.66.1 // indirect
 	github.com/prometheus/procfs v0.16.1 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
-	github.com/rogpeppe/go-internal v1.14.1 // indirect
 	github.com/vishvananda/netns v0.0.5 // indirect
 	go.yaml.in/yaml/v2 v2.4.2 // indirect
-	golang.org/x/net v0.53.0 // indirect
-	golang.org/x/term v0.42.0 // indirect
-	golang.org/x/text v0.36.0 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20260414002931-afd174a4e478 // indirect
+	golang.org/x/net v0.59.0 // indirect
+	golang.org/x/term v0.46.0 // indirect
+	golang.org/x/text v0.42.0 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260706201446-f0a921348800 // indirect
 )
