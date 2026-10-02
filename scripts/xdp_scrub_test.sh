@@ -237,7 +237,12 @@ ip netns exec "$NS_SCR" "$SINK_BIN" 127.0.0.1:59999 >"$SINK_LOG" 2>&1 &
 SINK_PID=$!
 sleep 0.5
 start_collector -analyzer-addr 127.0.0.1:59999 -handshake-timeout 1s
-http_ok "http://$DST4:8080/" && http_ok -6 "http://[$DST6]:8080/" || bad "completed handshakes failed"
+# Resolve the inside neighbours first: a SYN that takes the kernel path is not
+# tracked, which would make the check below vacuous. Bind the sources, since
+# Linux would otherwise pick the newest address (HS6).
+src ping -c1 -W1 "$DST4" >/dev/null; src ping -c1 -W1 "$DST6" >/dev/null
+http_ok --interface "$SRC4" "http://$DST4:8080/" && http_ok -6 --interface "$SRC6" "http://[$DST6]:8080/" \
+  || bad "completed handshakes failed"
 syn_only() { # SOURCE DEST [TTL]: a connect() that never completes
   src python3 -c '
 import socket, sys
@@ -256,6 +261,7 @@ syn_only "$TTL1_4" "$DST4" 1 & synttl=$!
 wait "$syn4" "$syn6" "$synttl"
 reported() { grep -q "type=SIGNAL_INCOMPLETE_HANDSHAKE .*ip=$1\$" "$SINK_LOG"; }
 for _ in $(seq 30); do reported "$HS4" && reported "$HS6" && break; sleep 0.2; done
+sleep 2 # two more polls, so an expired entry for a completed handshake would have surfaced
 reported "$HS4" && pass "unanswered IPv4 SYN reported as incomplete handshake" || bad "no incomplete handshake signal for $HS4"
 reported "$HS6" && pass "unanswered IPv6 SYN reported as incomplete handshake" || bad "no incomplete handshake signal for $HS6"
 reported "$SRC4" || reported "$SRC6" && bad "completed handshake reported as incomplete" || pass "completed handshakes not reported"
