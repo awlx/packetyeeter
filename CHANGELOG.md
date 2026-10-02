@@ -3,9 +3,10 @@
 ## 2026-10-02 - Analyzer PushRules for scrub collectors
 
 - New `PushRules(RuleSet)` RPC: a controller sets the complete rule set of its
-  scope, and the analyzer sends each scrub collector only the changes, in
-  order; a (re)connecting collector gets everything as a replacement
-  (`RuleSetDelta.replace`). Off unless the analyzer runs with
+  scope, and the analyzer sends every scrub collector the complete set of all
+  scopes as a replacement (`RuleSetDelta.replace`) on each push, on
+  (re)connect and once a minute, so collectors converge without
+  acknowledgements. Off unless the analyzer runs with
   `-enable-rule-api`, since the gRPC listener is unauthenticated.
 - Collectors announce `role=host|scrub` (and their hostname) when they connect;
   the analyzer does not score that announcement, and older analyzers drop it

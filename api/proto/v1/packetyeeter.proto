@@ -275,8 +275,8 @@ message RuleSetDelta {
   repeated Rule upsert = 1;
   repeated string remove = 2;
   // replace: upsert is the complete rule set; every other rule is removed.
-  // Sent first on each stream, so rules a restarted analyzer no longer knows
-  // do not linger on the collector.
+  // The analyzer always sends replacements: collectors do not acknowledge
+  // rules, so resending the whole set is how a missed or rejected one heals.
   bool replace = 3;
 }
 

@@ -243,16 +243,18 @@ is refused unless the analyzer runs with `-enable-rule-api`. Each `RuleSet`
 is the complete set for one `scope` (a controller identity); pushing an empty
 set removes the scope's rules, and scopes never overwrite each other (rule
 ids are sent as `<scope>/<id>`). The analyzer validates the set, checks that
-all scopes together still fit the limits below, and sends each scrub
-collector only the changes (`COMMAND_SET_RULES` with a `RuleSetDelta`). A
-collector (re)connecting gets the full set as a replacement, so rules a
-restarted analyzer no longer knows are removed. `PushRulesAck.collectors`
-says how many scrub collectors were sent the changes within 10 seconds; it
-does not confirm they applied them, so compare
+all scopes together still fit the limits below, and sends every scrub
+collector the complete set of all scopes as a replacement
+(`COMMAND_SET_RULES` with `RuleSetDelta.replace`). It does this on every push,
+when a collector (re)connects and once a minute, because collectors do not
+acknowledge rules: a collector that rejected or missed a set converges within
+a minute, and rules a restarted analyzer no longer knows are removed.
+`PushRulesAck.collectors` says how many scrub collectors were sent the set
+within 10 seconds; it does not confirm they applied it, so compare
 `packetyeeter_scrub_rules_active` on the collectors. All scopes together must
 also encode to at most 3 MiB. A rule is withdrawn from collectors 5 seconds
 before its `expires_at`, so a collector whose clock runs slightly ahead does
-not reject the whole change.
+not reject the whole set.
 
 While the analyzer is not enforcing (`-dry-run`, or the runtime kill switch),
 only `PASS` rules are sent, and pulling the kill switch withdraws the `DROP`

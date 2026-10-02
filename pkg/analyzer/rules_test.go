@@ -208,23 +208,23 @@ func TestPushRulesScopesWireIDs(t *testing.T) {
 	push(t, a, "a", dropRule("x"))
 	assertIDs(t, "upsert", upsertIDs(rulesDelta(t, fake.waitForCommand(t))), []string{"a/x"})
 	push(t, a, "b", dropRule("x"))
-	assertIDs(t, "upsert", upsertIDs(rulesDelta(t, fake.waitForCommand(t))), []string{"b/x"})
+	assertIDs(t, "upsert", upsertIDs(rulesDelta(t, fake.waitForCommand(t))), []string{"a/x", "b/x"})
 
 	want := a.rules.desired(time.Now(), true)
 	assertIDs(t, "desired", slices.Collect(maps.Keys(want)), []string{"a/x", "b/x"})
 
 	push(t, a, "a")
 	d := rulesDelta(t, fake.waitForCommand(t))
-	if d.GetReplace() || len(d.GetUpsert()) != 0 {
-		t.Fatalf("clearing scope a sent replace=%v upsert=%v, want only removes", d.GetReplace(), upsertIDs(d))
+	if !d.GetReplace() {
+		t.Fatal("clearing scope a must send the full set as a replacement")
 	}
-	assertIDs(t, "remove", d.GetRemove(), []string{"a/x"})
+	assertIDs(t, "upsert", upsertIDs(d), []string{"b/x"})
 	if _, ok := a.rules.scopes["b"]["b/x"]; !ok {
 		t.Fatal("clearing scope a removed scope b's rule")
 	}
 }
 
-func TestSyncRulesSendsReplaceThenDifferences(t *testing.T) {
+func TestSyncRulesAlwaysSendsFullSet(t *testing.T) {
 	a := newRuleAnalyzer(t)
 	fake, first := addCollector(t, a, "scrub")
 	if !first.GetReplace() || len(first.GetUpsert()) != 0 || len(first.GetRemove()) != 0 {
@@ -233,8 +233,8 @@ func TestSyncRulesSendsReplaceThenDifferences(t *testing.T) {
 
 	push(t, a, "ctl", dropRule("r1"), dropRule("r2"), dropRule("r3"))
 	d := rulesDelta(t, fake.waitForCommand(t))
-	if d.GetReplace() {
-		t.Fatal("second delta on a stream must not replace")
+	if !d.GetReplace() || len(d.GetRemove()) != 0 {
+		t.Fatalf("delta replace=%v remove=%v, want a replacement", d.GetReplace(), d.GetRemove())
 	}
 	assertIDs(t, "upsert", upsertIDs(d), []string{"ctl/r1", "ctl/r2", "ctl/r3"})
 
@@ -242,14 +242,28 @@ func TestSyncRulesSendsReplaceThenDifferences(t *testing.T) {
 	changed.Priority = 7
 	push(t, a, "ctl", dropRule("r1"), changed, dropRule("r4"))
 	d = rulesDelta(t, fake.waitForCommand(t))
-	if d.GetReplace() {
-		t.Fatal("incremental delta must not replace")
-	}
-	assertIDs(t, "upsert", upsertIDs(d), []string{"ctl/r2", "ctl/r4"})
-	assertIDs(t, "remove", d.GetRemove(), []string{"ctl/r3"})
+	assertIDs(t, "upsert", upsertIDs(d), []string{"ctl/r1", "ctl/r2", "ctl/r4"})
 
+	// An unchanged push is resent: a collector that rejected or missed the
+	// previous set has no other way to recover.
 	push(t, a, "ctl", dropRule("r1"), changed, dropRule("r4"))
-	fake.expectNoCommand(t)
+	d = rulesDelta(t, fake.waitForCommand(t))
+	if !d.GetReplace() {
+		t.Fatal("resend must be a replacement")
+	}
+	assertIDs(t, "upsert", upsertIDs(d), []string{"ctl/r1", "ctl/r2", "ctl/r4"})
+}
+
+func TestScrubCollectorsResyncWithoutPush(t *testing.T) {
+	a := newRuleAnalyzer(t)
+	fake, _ := addCollector(t, a, "scrub")
+	push(t, a, "ctl", dropRule("r1"))
+	rulesDelta(t, fake.waitForCommand(t))
+
+	if n := a.syncScrubCollectors(context.Background()); n != 1 {
+		t.Fatalf("resync reached %d collectors, want 1", n)
+	}
+	assertIDs(t, "upsert", upsertIDs(rulesDelta(t, fake.waitForCommand(t))), []string{"ctl/r1"})
 }
 
 func TestScrubCollectorAnnouncingLateGetsFullUnion(t *testing.T) {
@@ -298,14 +312,14 @@ func TestStopEnforcementWithdrawsRestrictingRules(t *testing.T) {
 
 	a.StopEnforcement("test")
 	d := rulesDelta(t, fake.waitForCommand(t))
-	if d.GetReplace() || len(d.GetUpsert()) != 0 {
-		t.Fatalf("withdrawal delta replace=%v upsert=%v, want only removes", d.GetReplace(), upsertIDs(d))
+	if !d.GetReplace() {
+		t.Fatal("withdrawal must replace the collector's set")
 	}
-	assertIDs(t, "remove", d.GetRemove(), []string{"ctl/drop", "ctl/rl"})
+	assertIDs(t, "upsert after withdrawal", upsertIDs(d), []string{"ctl/pass"})
 
 	push(t, a, "other", dropRule("d2"), testRule("p2", "192.0.2.0/24", apiv1.RuleAction_RULE_ACTION_PASS))
 	d = rulesDelta(t, fake.waitForCommand(t))
-	assertIDs(t, "upsert after stop", upsertIDs(d), []string{"other/p2"})
+	assertIDs(t, "upsert after stop", upsertIDs(d), []string{"ctl/pass", "other/p2"})
 }
 
 func TestRuleStoreDesiredDropsExpiredRules(t *testing.T) {
@@ -353,8 +367,10 @@ func TestExpiredRuleRemovedInNextDelta(t *testing.T) {
 	time.Sleep(400 * time.Millisecond)
 	push(t, a, "b", dropRule("x"))
 	d := rulesDelta(t, fake.waitForCommand(t))
+	if !d.GetReplace() {
+		t.Fatal("delta must replace, dropping the expired rule")
+	}
 	assertIDs(t, "upsert", upsertIDs(d), []string{"b/x"})
-	assertIDs(t, "remove", d.GetRemove(), []string{"a/short"})
 }
 
 func TestIsRoleSignal(t *testing.T) {

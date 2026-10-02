@@ -264,9 +264,7 @@ type collectorStream struct {
 
 	role atomic.Value // string, from the collector's role signal
 
-	rulesMu     sync.Mutex
-	sentRules   map[string]*apiv1.Rule // what this stream was last sent
-	rulesSynced bool
+	rulesMu sync.Mutex
 }
 
 // setRole stores role and returns the previous one.
@@ -574,6 +572,11 @@ func (a *Analyzer) Start() error {
 	// Start background tasks
 	a.wg.Add(1)
 	go a.runBaselineCalibrator()
+
+	if a.Config.EnableRuleAPI {
+		a.wg.Add(1)
+		go a.runRuleResync()
+	}
 
 	if a.Sustained != nil {
 		a.wg.Add(1)

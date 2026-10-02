@@ -205,33 +205,21 @@ func (a *Analyzer) syncScrubCollectors(ctx context.Context) int {
 	return synced
 }
 
-// syncRules sends one collector the difference between what it was last sent
-// and what it should hold. Holding rulesMu across the diff and the send keeps
-// deltas for one collector in order. The first sync on a stream replaces the
-// collector's whole set, clearing rules a restarted analyzer no longer knows.
+// syncRules sends one collector its complete rule set as a replacement.
+// Collectors do not acknowledge rule changes, so a change that was rejected
+// or lost can only be repaired by sending everything again; every push and
+// the periodic resync do that. Holding rulesMu keeps sends to one collector
+// in order.
 func (a *Analyzer) syncRules(cs *collectorStream) error {
 	cs.rulesMu.Lock()
 	defer cs.rulesMu.Unlock()
 
 	want := a.rules.desired(time.Now(), a.Enforcing())
-	delta := &apiv1.RuleSetDelta{Replace: !cs.rulesSynced}
-	for id, r := range want {
-		if prev, ok := cs.sentRules[id]; delta.Replace || !ok || !proto.Equal(prev, r) {
-			delta.Upsert = append(delta.Upsert, r)
-		}
-	}
-	if !delta.Replace {
-		for id := range cs.sentRules {
-			if _, ok := want[id]; !ok {
-				delta.Remove = append(delta.Remove, id)
-			}
-		}
-		if len(delta.Upsert) == 0 && len(delta.Remove) == 0 {
-			return nil
-		}
+	delta := &apiv1.RuleSetDelta{Replace: true, Upsert: make([]*apiv1.Rule, 0, len(want))}
+	for _, r := range want {
+		delta.Upsert = append(delta.Upsert, r)
 	}
 	slices.SortFunc(delta.Upsert, func(x, y *apiv1.Rule) int { return strings.Compare(x.GetId(), y.GetId()) })
-	slices.Sort(delta.Remove)
 
 	cmd := &apiv1.Command{
 		Id:        fmt.Sprintf("rules-%d", time.Now().UnixNano()),
@@ -246,10 +234,26 @@ func (a *Analyzer) syncRules(cs *collectorStream) error {
 	if err != nil {
 		return err
 	}
-	cs.sentRules = want
-	cs.rulesSynced = true
 	metrics.RuleDeltasSent.Inc()
 	return nil
+}
+
+// ruleResyncInterval bounds how long a scrub collector can stay out of sync
+// after a rule change it rejected or never received.
+const ruleResyncInterval = time.Minute
+
+func (a *Analyzer) runRuleResync() {
+	defer a.wg.Done()
+	ticker := time.NewTicker(ruleResyncInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-a.ctx.Done():
+			return
+		case <-ticker.C:
+			a.syncScrubCollectors(a.ctx)
+		}
+	}
 }
 
 // handleRoleSignal records a collector's announced role. It is never scored:

@@ -112,8 +112,8 @@ func TestPushRulesReachesScrubCollectorOverGRPC(t *testing.T) {
 	if ack.GetCollectors() != 1 {
 		t.Errorf("ack.collectors = %d, want 1", ack.GetCollectors())
 	}
-	if d := recvRules(t, stream); d.GetReplace() || !slices.Equal(upsertIDs(d), []string{"ctl/ntp"}) {
-		t.Fatalf("delta = %v, want upsert of ctl/ntp", d)
+	if d := recvRules(t, stream); !d.GetReplace() || !slices.Equal(upsertIDs(d), []string{"ctl/ntp"}) {
+		t.Fatalf("delta = %v, want the full set (ctl/ntp) as a replacement", d)
 	}
 
 	// A reconnecting scrub collector gets the full set as a replace.
@@ -128,8 +128,8 @@ func TestPushRulesReachesScrubCollectorOverGRPC(t *testing.T) {
 	if _, err := client.PushRules(ctx, &apiv1.RuleSet{Scope: "ctl"}); err != nil {
 		t.Fatalf("PushRules(empty): %v", err)
 	}
-	if d := recvRules(t, again); !slices.Equal(d.GetRemove(), []string{"ctl/ntp"}) {
-		t.Fatalf("delta = %v, want remove of ctl/ntp", d)
+	if d := recvRules(t, again); !d.GetReplace() || len(d.GetUpsert()) != 0 {
+		t.Fatalf("delta = %v, want an empty replacement", d)
 	}
 }
 

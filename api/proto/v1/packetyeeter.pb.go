@@ -1463,8 +1463,8 @@ type RuleSetDelta struct {
 	Upsert []*Rule                `protobuf:"bytes,1,rep,name=upsert,proto3" json:"upsert,omitempty"`
 	Remove []string               `protobuf:"bytes,2,rep,name=remove,proto3" json:"remove,omitempty"`
 	// replace: upsert is the complete rule set; every other rule is removed.
-	// Sent first on each stream, so rules a restarted analyzer no longer knows
-	// do not linger on the collector.
+	// The analyzer always sends replacements: collectors do not acknowledge
+	// rules, so resending the whole set is how a missed or rejected one heals.
 	Replace       bool `protobuf:"varint,3,opt,name=replace,proto3" json:"replace,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

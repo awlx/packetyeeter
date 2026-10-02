@@ -121,7 +121,7 @@ var (
 
 	RuleDeltasSent = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "packetyeeter_rule_deltas_sent_total",
-		Help: "Rule changes sent to scrub collectors",
+		Help: "Complete rule sets sent to scrub collectors",
 	})
 
 	EnforcementSuppressedCommands = promauto.NewCounter(prometheus.CounterOpts{
