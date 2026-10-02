@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/sirupsen/logrus"
+
+	metrics "PacketYeeter/pkg/metrics"
 )
 
 // BotType represents the type of verified bot
@@ -103,6 +105,13 @@ type VerificationResult struct {
 	// definitive result (verified, NXDOMAIN, DNS mismatch) resets this to 0.
 	ConsecutiveTransientFailures int
 	ErrorMessage                 string
+	// Pending: no cached verdict yet and a lookup is queued or running.
+	// Carries neither verification nor impersonation.
+	Pending bool
+	// Dropped: no cached verdict and no lookup was started (queue or cache
+	// full, or verifier closed). Carries neither verification nor
+	// impersonation.
+	Dropped bool
 }
 
 // IsForgivenTransientFailure reports whether this result is a transient DNS
@@ -168,7 +177,28 @@ type Verifier struct {
 	// own, which would let a hostile PTR zone multiply the total stall.
 	lookupAddr func(ctx context.Context, addr string) ([]string, error)
 	lookupHost func(ctx context.Context, host string) ([]string, error)
+
+	// Async lookup pool for VerifyAsync. queued holds IPs that are queued or
+	// being looked up (guarded by mu) so a burst from one IP costs one lookup.
+	queue  chan asyncJob
+	queued map[string]struct{}
+	ctx    context.Context // cancelled by Close; parent of every DNS lookup
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
 }
+
+type asyncJob struct {
+	ip      net.IP
+	pattern *BotPattern
+}
+
+// Pool sizing: a lookup that never answers holds a worker for dnsTimeout, so
+// throughput under a tarpitting PTR zone is roughly workers/dnsTimeout; the
+// queue absorbs bursts and anything beyond it is dropped, never waited on.
+const (
+	defaultAsyncWorkers   = 16
+	defaultAsyncQueueSize = 1024
+)
 
 // NewVerifier creates a new bot verifier
 func NewVerifier(cacheTTL, dnsTimeout time.Duration) *Verifier {
@@ -177,6 +207,10 @@ func NewVerifier(cacheTTL, dnsTimeout time.Duration) *Verifier {
 
 // NewVerifierWithGeoIP creates a new bot verifier with GeoIP support
 func NewVerifierWithGeoIP(cacheTTL, dnsTimeout time.Duration, geoIP GeoIPProvider) *Verifier {
+	return newVerifier(cacheTTL, dnsTimeout, geoIP, defaultAsyncWorkers, defaultAsyncQueueSize)
+}
+
+func newVerifier(cacheTTL, dnsTimeout time.Duration, geoIP GeoIPProvider, workers, queueSize int) *Verifier {
 	if cacheTTL == 0 {
 		cacheTTL = 1 * time.Hour
 	}
@@ -193,13 +227,15 @@ func NewVerifierWithGeoIP(cacheTTL, dnsTimeout time.Duration, geoIP GeoIPProvide
 		geoIP:           geoIP,
 		maxCacheEntries: 50000,
 		resolver:        net.DefaultResolver,
+		queue:           make(chan asyncJob, queueSize),
+		queued:          make(map[string]struct{}),
 	}
+	v.ctx, v.cancel = context.WithCancel(context.Background())
 	// Default DNS seams call the resolver with the caller-supplied context.
 	// They read v.resolver at call time so a test overriding it (or the whole
 	// seam) takes effect. verifyDNS supplies a single dnsTimeout-bounded context
-	// covering the whole verification. Verification runs inline on the
-	// per-collector signal-stream goroutine, so the bounded total budget keeps a
-	// hostile PTR zone from stalling detection for that collector.
+	// covering the whole verification, so a hostile PTR zone cannot hold a
+	// worker (or a synchronous Verify caller) beyond one dnsTimeout.
 	v.lookupAddr = func(ctx context.Context, addr string) ([]string, error) {
 		return v.resolver.LookupAddr(ctx, addr)
 	}
@@ -207,10 +243,116 @@ func NewVerifierWithGeoIP(cacheTTL, dnsTimeout time.Duration, geoIP GeoIPProvide
 		return v.resolver.LookupHost(ctx, host)
 	}
 
-	// Start cache cleanup goroutine
+	v.wg.Add(1 + workers)
 	go v.cleanupLoop()
+	for range workers {
+		go v.worker()
+	}
 
 	return v
+}
+
+// SetResolver replaces the DNS resolver (e.g. a local caching resolver). Call
+// it before the first verification.
+func (v *Verifier) SetResolver(r *net.Resolver) {
+	v.resolver = r
+}
+
+// Close stops the lookup workers and cleanup loop, cancelling in-flight DNS
+// lookups, and waits for them to exit. Queued lookups are discarded.
+func (v *Verifier) Close() {
+	v.cancel()
+	v.wg.Wait()
+	v.mu.Lock()
+	clear(v.queued) // discarded jobs must not read as pending forever
+	v.mu.Unlock()
+}
+
+// VerifyAsync is Verify for the signal-stream hot path: it never waits on DNS.
+// On a cache miss for a known-bot User-Agent it queues a lookup and returns a
+// Pending result (or Dropped if the queue is full); the lookup's verdict is
+// cached for later requests from the IP.
+func (v *Verifier) VerifyAsync(ip net.IP, userAgent string) *VerificationResult {
+	if ip == nil || userAgent == "" {
+		return &VerificationResult{IsVerified: false, ErrorMessage: "missing IP or User-Agent"}
+	}
+	ipStr := ip.String()
+	if cached := v.cachedResult(ipStr); cached != nil {
+		return cached
+	}
+	pattern := v.matchPattern(userAgent)
+	if pattern == nil {
+		return &VerificationResult{IsVerified: false, BotType: BotTypeUnknown}
+	}
+
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	// Re-check under the lock: a worker stores the verdict and clears queued
+	// in one critical section, so we see one or the other.
+	if cached, ok := v.cache[ipStr]; ok && time.Since(cached.VerifiedAt) < v.cachedResultTTL(cached) {
+		return cached
+	}
+	if _, inFlight := v.queued[ipStr]; inFlight {
+		return &VerificationResult{BotType: pattern.Type, Pending: true}
+	}
+	if v.ctx.Err() != nil {
+		return &VerificationResult{BotType: pattern.Type, Dropped: true, ErrorMessage: "verifier closed"}
+	}
+	_, hasEntry := v.cache[ipStr]
+	if !hasEntry && len(v.cache) >= v.maxCacheEntries {
+		// The verdict could not be cached, so Pending would never resolve and
+		// would become a permanent heuristics bypass for every new IP.
+		metrics.BotVerificationQueueDrops.WithLabelValues("cache_full").Inc()
+		return &VerificationResult{BotType: pattern.Type, Dropped: true, ErrorMessage: "verification cache full"}
+	}
+	select {
+	case v.queue <- asyncJob{ip: ip, pattern: pattern}:
+		v.queued[ipStr] = struct{}{}
+		metrics.BotVerificationQueueDepth.Set(float64(len(v.queue)))
+		return &VerificationResult{BotType: pattern.Type, Pending: true}
+	default:
+		metrics.BotVerificationQueueDrops.WithLabelValues("queue_full").Inc()
+		return &VerificationResult{BotType: pattern.Type, Dropped: true, ErrorMessage: "verification queue full"}
+	}
+}
+
+func (v *Verifier) worker() {
+	defer v.wg.Done()
+	for {
+		select {
+		case <-v.ctx.Done():
+			return
+		case job := <-v.queue:
+			metrics.BotVerificationQueueDepth.Set(float64(len(v.queue)))
+			ipStr := job.ip.String()
+			result := v.verifyDNS(job.ip, job.pattern)
+			v.mu.Lock()
+			// A lookup cut short by shutdown says nothing about the peer.
+			if v.ctx.Err() == nil {
+				v.storeLocked(ipStr, result)
+			}
+			delete(v.queued, ipStr)
+			v.mu.Unlock()
+		}
+	}
+}
+
+func (v *Verifier) cachedResult(ipStr string) *VerificationResult {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	if cached, ok := v.cache[ipStr]; ok && time.Since(cached.VerifiedAt) < v.cachedResultTTL(cached) {
+		return cached
+	}
+	return nil
+}
+
+func (v *Verifier) matchPattern(userAgent string) *BotPattern {
+	for i := range v.patterns {
+		if strings.Contains(userAgent, v.patterns[i].UserAgentMatch) {
+			return &v.patterns[i]
+		}
+	}
+	return nil
 }
 
 // Verify checks if the given IP and User-Agent represent a verified bot
@@ -221,23 +363,11 @@ func (v *Verifier) Verify(ip net.IP, userAgent string) *VerificationResult {
 
 	ipStr := ip.String()
 
-	// Check cache
-	v.mu.RLock()
-	cached, ok := v.cache[ipStr]
-	v.mu.RUnlock()
-	if ok && time.Since(cached.VerifiedAt) < v.cachedResultTTL(cached) {
+	if cached := v.cachedResult(ipStr); cached != nil {
 		return cached
 	}
 
-	// Find matching pattern
-	var pattern *BotPattern
-	for i := range v.patterns {
-		if strings.Contains(userAgent, v.patterns[i].UserAgentMatch) {
-			pattern = &v.patterns[i]
-			break
-		}
-	}
-
+	pattern := v.matchPattern(userAgent)
 	if pattern == nil {
 		// Not a known bot pattern
 		return &VerificationResult{IsVerified: false, BotType: BotTypeUnknown}
@@ -264,19 +394,22 @@ func (v *Verifier) Verify(ip net.IP, userAgent string) *VerificationResult {
 	}()
 
 	// Double-check cache after acquiring lock
-	v.mu.RLock()
-	cached, ok = v.cache[ipStr]
-	v.mu.RUnlock()
-	if ok && time.Since(cached.VerifiedAt) < v.cachedResultTTL(cached) {
+	if cached := v.cachedResult(ipStr); cached != nil {
 		return cached
 	}
 
-	// Perform verification
 	result := v.verifyDNS(ip, pattern)
 
-	// Cache result, accumulating the consecutive-transient counter under the
-	// same critical section so concurrent verifications cannot lose counts.
 	v.mu.Lock()
+	v.storeLocked(ipStr, result)
+	v.mu.Unlock()
+
+	return result
+}
+
+// storeLocked caches result, accumulating the consecutive-transient counter
+// under the caller's v.mu lock so concurrent verifications cannot lose counts.
+func (v *Verifier) storeLocked(ipStr string, result *VerificationResult) {
 	prev, exists := v.cache[ipStr]
 	if result.TransientFailure {
 		if exists && prev.TransientFailure {
@@ -303,9 +436,6 @@ func (v *Verifier) Verify(ip net.IP, userAgent string) *VerificationResult {
 		// failure as over-cap instead. Definitive results are unaffected.
 		result.ConsecutiveTransientFailures = maxConsecutiveTransientFailures + 1
 	}
-	v.mu.Unlock()
-
-	return result
 }
 
 // verifyDNS performs reverse and forward DNS verification
@@ -319,7 +449,7 @@ func (v *Verifier) verifyDNS(ip net.IP, pattern *BotPattern) *VerificationResult
 	// any forward-confirm lookup). Giving each lookup its own dnsTimeout let the
 	// total blow out to N*dnsTimeout and let a hostile PTR zone multiply the
 	// stall by chaining lookups; one shared deadline caps the total budget.
-	ctx, cancel := context.WithTimeout(context.Background(), v.dnsTimeout)
+	ctx, cancel := context.WithTimeout(v.ctx, v.dnsTimeout)
 	defer cancel()
 
 	// Reverse DNS lookup (shares the verification-wide deadline).
@@ -441,11 +571,17 @@ func (v *Verifier) cachedResultTTL(result *VerificationResult) time.Duration {
 
 // cleanupLoop periodically removes expired cache entries
 func (v *Verifier) cleanupLoop() {
+	defer v.wg.Done()
 	ticker := time.NewTicker(10 * time.Minute)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		v.cleanup()
+	for {
+		select {
+		case <-v.ctx.Done():
+			return
+		case <-ticker.C:
+			v.cleanup()
+		}
 	}
 }
 

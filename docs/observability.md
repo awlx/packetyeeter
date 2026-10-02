@@ -123,6 +123,14 @@ behavior) alongside `Tau` and `AnomalyMultiplier`.
 - **ML/Bot/JA4DB**: `packetyeeter_ml_*`,
   `packetyeeter_bot_detections_by_category_total`,
   `packetyeeter_bot_verification_*`, `packetyeeter_ja4db_*`.
+- **Bot verification pool**: DNS verification of claimed crawlers runs off the
+  signal stream (see `docs/operations.md#bot-verification`).
+  `packetyeeter_bot_verification_queue_depth` is the number of lookups waiting
+  for a worker. `packetyeeter_bot_verification_queue_drops_total{reason}`
+  counts lookups not started (`queue_full`, `cache_full`); those requests are
+  treated as unverified. `packetyeeter_bot_verification_pending_total{bot_type}`
+  counts requests handled as unverified while their lookup was still running;
+  `bot_type` is one of the seven DNS-verified crawler types.
 - **AI engine**: `packetyeeter_ai_signals_by_*`,
   `packetyeeter_ai_engine_signal_ingress_by_type_total`,
   `packetyeeter_ai_engine_queue_depth_by_shard`,

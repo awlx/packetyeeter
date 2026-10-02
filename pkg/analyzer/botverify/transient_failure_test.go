@@ -122,7 +122,7 @@ func TestRepeatedTransientFailuresEventuallyPenalize(t *testing.T) {
 	ipStr := ip.String()
 
 	for i := 1; i <= maxConsecutiveTransientFailures; i++ {
-		result := h.VerifyBot(ip, googlebotUA, "AS64496", "Evil VPS")
+		result := verifyBotSettled(t, h, v, ip, googlebotUA)
 		if result.IsImpersonation {
 			t.Fatalf("cycle %d: penalized before the forgiveness cap", i)
 		}
@@ -132,7 +132,7 @@ func TestRepeatedTransientFailuresEventuallyPenalize(t *testing.T) {
 		expireCachedResult(t, v, ipStr, 2*transientFailTTL)
 	}
 
-	result := h.VerifyBot(ip, googlebotUA, "AS64496", "Evil VPS")
+	result := verifyBotSettled(t, h, v, ip, googlebotUA)
 	if !result.IsImpersonation {
 		t.Fatalf("after %d consecutive transient failures the free pass must end (got IsImpersonation=false)", maxConsecutiveTransientFailures+1)
 	}

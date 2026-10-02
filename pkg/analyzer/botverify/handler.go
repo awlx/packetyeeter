@@ -37,6 +37,9 @@ type VerifyResult struct {
 	ErrorMessage    string
 	IsAICrawler     bool
 	IsImpersonation bool
+	// Pending: the claimed bot's DNS verification has not finished. The
+	// claim is neither trusted nor refuted yet; see VerifyBot.
+	Pending bool
 }
 
 // VerifyBot performs comprehensive bot verification including DNS-based and AI crawler checks
@@ -157,12 +160,33 @@ func (h *Handler) VerifyBot(ip net.IP, userAgent, asn, org string) *VerifyResult
 
 	// Check DNS-verified bots (Googlebot, Bingbot, etc.)
 	if h.verifier != nil {
-		dnsResult := h.verifier.Verify(ip, userAgent)
+		// Never waits on DNS: this runs on the collector's signal stream.
+		dnsResult := h.verifier.VerifyAsync(ip, userAgent)
 		result.BotType = dnsResult.BotType
 
 		// Only track metrics if we detected a bot pattern (not regular users)
 		if dnsResult.BotType != BotTypeUnknown {
 			metrics.BotVerificationAttempts.WithLabelValues(string(dnsResult.BotType)).Inc()
+
+			if dnsResult.Pending {
+				// No verdict yet: no exemption and no impersonation penalty,
+				// since either could be wrong. The caller also skips heuristics
+				// that presume the UA claim is false.
+				result.Pending = true
+				metrics.BotVerificationPending.WithLabelValues(string(dnsResult.BotType)).Inc()
+				return result
+			}
+			if dnsResult.Dropped {
+				// No lookup will run, so a Pending pass here would be an
+				// unbounded heuristics bypass; plain unverified instead.
+				result.ErrorMessage = dnsResult.ErrorMessage
+				logrus.WithFields(logrus.Fields{
+					"ip":       ip.String(),
+					"bot_type": dnsResult.BotType,
+					"error":    dnsResult.ErrorMessage,
+				}).Debug("Bot verification not started; treating request as unverified")
+				return result
+			}
 
 			if dnsResult.IsVerified {
 				result.IsVerified = true
