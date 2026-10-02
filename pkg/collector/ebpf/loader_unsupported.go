@@ -7,15 +7,27 @@ import (
 	"runtime"
 )
 
+type LoaderConfig struct {
+	Mode         Mode
+	Interface    string
+	InsideIface  string
+	XDPMode      XDPMode
+	AllowGeneric bool
+}
+
 type Loader struct {
 	iface string
 	maps  *Maps
 }
 
-func NewLoader(iface string) *Loader {
+func NewLoader(cfg LoaderConfig) *Loader {
 	return &Loader{
-		iface: iface,
+		iface: cfg.Interface,
 	}
+}
+
+func (l *Loader) ScrubAttached() error {
+	return fmt.Errorf("eBPF collector is only supported on Linux, not %s", runtime.GOOS)
 }
 
 func (l *Loader) Load() error {

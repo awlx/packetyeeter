@@ -1,5 +1,21 @@
 # PacketYeeter Changelog
 
+## 2026-10-02 - Collector scrub mode
+
+- New `-mode scrub` runs the collector as an inline scrubber: `xdp_scrub` on
+  the outside port (`-i`) applies the existing per-source checks and forwards
+  clean traffic out of `-inside-if` with `bpf_fib_lookup` and XDP redirect,
+  handing anything it cannot forward to the kernel. Requires Linux 5.15+,
+  native XDP (`-allow-generic` for labs), IP forwarding and non-strict
+  `rp_filter`; see `docs/operations.md#scrub-mode`.
+- Scrub nodes expose `/readyz` on the metrics listener, drain for
+  `-readyz-drain` on shutdown, and export `packetyeeter_scrub_*` metrics.
+- New `-xdp-mode` (`auto`, `native`, `generic`); `auto` keeps the previous
+  host-mode behaviour.
+- Host mode now writes monitor mode, allowlist and policy maps before attaching
+  XDP rather than just after, so the first packets are already judged with the
+  configured settings.
+
 ## 2026-08-09 - Collector UDP fragment policy and edge-triggered incidents
 
 - Fragmented UDP / IPv6 Fragment headers no longer hard-drop by default.

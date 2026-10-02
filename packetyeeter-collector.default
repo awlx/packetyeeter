@@ -43,6 +43,12 @@ BLOCK_DURATION=300s
 # it only the breadth/shape path can fire.
 # EXTRA_ARGS=-egress-accounting -egress-min-bytes 1048576
 #
+# Scrub mode: run as an inline scrubber that forwards clean redirected traffic
+# from INTERFACE (outside port) to the inside port. Needs kernel 5.15+, native
+# XDP, net.ipv4.ip_forward=1 and rp_filter 0 or 2 on the outside port. See
+# docs/operations.md#scrub-mode.
+# EXTRA_ARGS=-mode scrub -inside-if eth1 -readyz-drain 5s
+#
 # Fragmented UDP / IPv6 Fragment policy. Default is rate (no hard-drop solely
 # for fragmentation). Use drop only if you intentionally want the legacy
 # unconditional drop behavior.

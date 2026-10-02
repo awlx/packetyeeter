@@ -94,3 +94,49 @@ func (m *Maps) SetMonitorMode(enabled bool) error {
 
 	return m.ConfigMap.Put(configKeyMonitorMode, value)
 }
+
+// Mode selects which XDP program the collector runs.
+type Mode string
+
+const (
+	// ModeHost protects the local host with xdp_filter and the TC programs.
+	ModeHost Mode = "host"
+	// ModeScrub forwards clean redirected traffic from an outside to an
+	// inside port with xdp_scrub.
+	ModeScrub Mode = "scrub"
+)
+
+func ParseMode(s string) (Mode, error) {
+	switch Mode(s) {
+	case "", ModeHost:
+		return ModeHost, nil
+	case ModeScrub:
+		return ModeScrub, nil
+	default:
+		return "", fmt.Errorf("invalid mode %q (want host|scrub)", s)
+	}
+}
+
+// XDPMode selects how XDP programs are attached.
+type XDPMode string
+
+const (
+	// XDPModeAuto lets the kernel pick, which may silently fall back to
+	// generic XDP.
+	XDPModeAuto    XDPMode = "auto"
+	XDPModeNative  XDPMode = "native"
+	XDPModeGeneric XDPMode = "generic"
+)
+
+func ParseXDPMode(s string) (XDPMode, error) {
+	switch XDPMode(s) {
+	case "", XDPModeAuto:
+		return XDPModeAuto, nil
+	case XDPModeNative:
+		return XDPModeNative, nil
+	case XDPModeGeneric:
+		return XDPModeGeneric, nil
+	default:
+		return "", fmt.Errorf("invalid xdp-mode %q (want auto|native|generic)", s)
+	}
+}

@@ -261,6 +261,25 @@ traffic before paging operators.
 Metrics endpoints and the inspector are unauthenticated. Bind them to loopback
 or trusted management networks, or protect them with firewall/VPN controls.
 
+## Scrub-mode metrics
+
+Exported by collectors running `-mode scrub`, read from the kernel at scrape
+time:
+
+- `packetyeeter_scrub_packets_total{verdict,family}` and
+  `packetyeeter_scrub_bytes_total{verdict,family}` (counters): `verdict` is
+  `forward` (XDP redirect), `drop`, `slow_path` (handed to the kernel) or
+  `local` (the node's own, multicast or link-local traffic); `family` is
+  `ipv4`, `ipv6` or `other`.
+- `packetyeeter_scrub_slow_path_total{reason}` (counter): why packets took the
+  kernel path: `no_neigh`, `ttl`, `mtu`, `fib_fail`, `egress_other` (route out
+  of a port other than the inside port), `vlan`, `malformed` (monitor mode
+  only). A steady `no_neigh` or `egress_other` rate means traffic is not being
+  forwarded in XDP.
+- `packetyeeter_scrub_ttl_expired_total` (counter): packets arriving with TTL or
+  hop limit <= 1. A rising rate indicates a routing loop.
+- `packetyeeter_scrub_ready` (gauge): 1 while `/readyz` returns 200.
+
 ## Collector perf-ring health
 
 `packetyeeter_perf_lost_samples_total{reader}` counts records the kernel could
