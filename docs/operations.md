@@ -247,7 +247,12 @@ all scopes together still fit the limits below, and sends each scrub
 collector only the changes (`COMMAND_SET_RULES` with a `RuleSetDelta`). A
 collector (re)connecting gets the full set as a replacement, so rules a
 restarted analyzer no longer knows are removed. `PushRulesAck.collectors`
-says how many scrub collectors are up to date.
+says how many scrub collectors were sent the changes within 10 seconds; it
+does not confirm they applied them, so compare
+`packetyeeter_scrub_rules_active` on the collectors. All scopes together must
+also encode to at most 3 MiB. A rule is withdrawn from collectors 5 seconds
+before its `expires_at`, so a collector whose clock runs slightly ahead does
+not reject the whole change.
 
 While the analyzer is not enforcing (`-dry-run`, or the runtime kill switch),
 only `PASS` rules are sent, and pulling the kill switch withdraws the `DROP`
@@ -258,9 +263,8 @@ The gRPC listener has no authentication yet: anyone who can reach
 announces itself as a scrub collector receives them. Firewall it to the
 controllers and collectors.
 
-Scrub collectors announce their role when they connect. An analyzer older than
-this release scores that announcement as an unknown signal; upgrade analyzers
-first. A rule matches
+Scrub collectors announce their role when they connect; an analyzer older than
+this release ignores the announcement, since it carries no IP. A rule matches
 traffic for its `dst_prefix` on any combination of protocols, source and
 destination port ranges, IP total length, TCP flags (`flags & mask ==
 value`), fragment state and up to 8 source prefixes, and then:

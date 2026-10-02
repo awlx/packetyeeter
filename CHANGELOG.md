@@ -8,8 +8,11 @@
   (`RuleSetDelta.replace`). Off unless the analyzer runs with
   `-enable-rule-api`, since the gRPC listener is unauthenticated.
 - Collectors announce `role=host|scrub` (and their hostname) when they connect;
-  the analyzer no longer scores that announcement. Upgrade analyzers before
-  collectors.
+  the analyzer does not score that announcement, and older analyzers drop it
+  because it carries no IP.
+- All scopes together must encode to at most 3 MiB, rules are withdrawn 5
+  seconds before they expire, and `PushRules` waits at most 10 seconds for
+  collector sends.
 - With `-dry-run` or the kill switch pulled, only `PASS` rules are sent;
   pulling the kill switch withdraws existing `DROP`/`RATE_LIMIT` rules.
 - New analyzer metrics `packetyeeter_rules_desired{scope}` and
