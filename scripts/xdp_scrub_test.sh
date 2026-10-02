@@ -15,7 +15,9 @@ COLLECTOR_BIN="$REPO/bin/packetyeeter-collector"
 TOKEN="$(printf '%04x' $((RANDOM % 65536)))"
 NS_SRC="yeetsrc_${TOKEN}"; NS_SCR="yeetscr_${TOKEN}"; NS_DST="yeetdst_${TOKEN}"
 CREATED_NS=()
-COLLECTOR_PID=""; HTTP_PID=""
+COLLECTOR_PID=""; HTTP_PID=""; SINK_PID=""
+SINK_BIN="$REPO/bin/xdp_veth_sink"
+SINK_LOG="$(mktemp /tmp/yeet-scrub-sink.XXXXXX.log)"
 COLLECTOR_LOG="$(mktemp /tmp/yeet-scrub-collector.XXXXXX.log)"
 UDP_OUT="$(mktemp)"
 FAILURES=0
@@ -23,6 +25,10 @@ FAILURES=0
 SRC4=10.201.1.2; BLOCKED4=10.201.1.3; POLICY4=10.201.1.4; OUT4=10.201.1.1
 IN4=10.201.2.1; DST4=10.201.2.2
 SRC6=fd01:1::2; OUT6=fd01:1::1; IN6=fd01:2::1; DST6=fd01:2::2
+# Sources whose SYNs go unanswered, and prefixes the destination silently drops
+# (routed to it, but it does not forward).
+HS4=10.201.1.5; HS6=fd01:1::5; HOLE4=10.201.3.9; HOLE6=fd01:3::9
+TTL1_4=10.201.1.6  # its SYNs expire on the scrub node and must not be reported
 
 log()  { printf '\033[1;36m[test]\033[0m %s\n' "$*"; }
 pass() { printf '\033[1;32m[pass]\033[0m %s\n' "$*"; }
@@ -32,9 +38,10 @@ die()  { printf '\033[1;31m[fail]\033[0m %s\n' "$*"; exit 1; }
 cleanup() {
   [[ -n "$COLLECTOR_PID" ]] && kill -9 "$COLLECTOR_PID" 2>/dev/null || true
   [[ -n "$HTTP_PID" ]] && kill "$HTTP_PID" 2>/dev/null || true
+  [[ -n "$SINK_PID" ]] && kill "$SINK_PID" 2>/dev/null || true
   for ns in "${CREATED_NS[@]}"; do ip netns del "$ns" 2>/dev/null || true; done
   rm -f "$UDP_OUT"
-  log "cleaned up (collector log: $COLLECTOR_LOG)"
+  log "cleaned up (collector log: $COLLECTOR_LOG, analyzer sink log: $SINK_LOG)"
 }
 trap cleanup EXIT
 
@@ -49,7 +56,7 @@ done
 log "building eBPF object and collector"
 make -C "$REPO" bpf >/dev/null
 mkdir -p "$REPO/bin"
-( cd "$REPO" && go build -o "$COLLECTOR_BIN" ./cmd/collector )
+( cd "$REPO" && go build -o "$COLLECTOR_BIN" ./cmd/collector && go build -o "$SINK_BIN" ./scripts/xdp_veth_sink )
 
 src() { ip netns exec "$NS_SRC" "$@"; }
 scr() { ip netns exec "$NS_SCR" "$@"; }
@@ -63,7 +70,10 @@ ip link add in0 netns "$NS_SCR" type veth peer name dst0 netns "$NS_DST"
 src ip addr add "$SRC4/24" dev src0
 src ip addr add "$BLOCKED4/24" dev src0
 src ip addr add "$POLICY4/24" dev src0
+src ip addr add "$HS4/24" dev src0
+src ip addr add "$TTL1_4/24" dev src0
 src ip -6 addr add "$SRC6/64" dev src0 nodad
+src ip -6 addr add "$HS6/64" dev src0 nodad
 scr ip addr add "$OUT4/24" dev out0
 scr ip -6 addr add "$OUT6/64" dev out0 nodad
 scr ip addr add "$IN4/24" dev in0
@@ -74,6 +84,10 @@ for ns in "$NS_SRC" "$NS_SCR" "$NS_DST"; do ip -n "$ns" link set lo up; done
 src ip link set src0 up; scr ip link set out0 up; scr ip link set in0 up; dst ip link set dst0 up
 src ip route add default via "$OUT4"; src ip -6 route add default via "$OUT6"
 dst ip route add default via "$IN4";  dst ip -6 route add default via "$IN6"
+scr ip route add 10.201.3.0/24 via "$DST4"; scr ip -6 route add fd01:3::/64 via "$DST6"
+# New namespaces may inherit forwarding from the host; the HOLE prefixes rely on
+# the destination silently dropping what it does not own.
+dst sysctl -qw net.ipv4.ip_forward=0 net.ipv6.conf.all.forwarding=0
 
 scr sysctl -qw net.ipv4.ip_forward=1 net.ipv6.conf.all.forwarding=1 \
   net.ipv4.conf.all.rp_filter=0 net.ipv4.conf.out0.rp_filter=0
@@ -216,6 +230,42 @@ scr ip neigh flush dev in0
 http_ok "http://$DST4:8080/" && http_ok "http://$DST4:8080/" && pass "traffic recovers after neighbour flush" || bad "no recovery after neighbour flush"
 increased "$neigh" "$(metric packetyeeter_scrub_slow_path_total 'reason="no_neigh"')" \
   && pass "slow_path{no_neigh} counted" || bad "slow_path{no_neigh} did not increase"
+
+log "handshake tracking"
+stop_collector
+ip netns exec "$NS_SCR" "$SINK_BIN" 127.0.0.1:59999 >"$SINK_LOG" 2>&1 &
+SINK_PID=$!
+sleep 0.5
+start_collector -analyzer-addr 127.0.0.1:59999 -handshake-timeout 1s
+# Resolve the inside neighbours first: a SYN that takes the kernel path is not
+# tracked, which would make the check below vacuous. Bind the sources, since
+# Linux would otherwise pick the newest address (HS6).
+src ping -c1 -W1 "$DST4" >/dev/null; src ping -c1 -W1 "$DST6" >/dev/null
+http_ok --interface "$SRC4" "http://$DST4:8080/" && http_ok -6 --interface "$SRC6" "http://[$DST6]:8080/" \
+  || bad "completed handshakes failed"
+syn_only() { # SOURCE DEST [TTL]: a connect() that never completes
+  src python3 -c '
+import socket, sys
+s = socket.socket(socket.AF_INET6 if ":" in sys.argv[2] else socket.AF_INET)
+if len(sys.argv) > 3:
+    s.setsockopt(socket.IPPROTO_IP, socket.IP_TTL, int(sys.argv[3]))
+s.bind((sys.argv[1], 0)); s.settimeout(1.5)
+try:
+    s.connect((sys.argv[2], 80))
+except OSError:
+    pass' "$@"
+}
+syn_only "$HS4" "$HOLE4" & syn4=$!
+syn_only "$HS6" "$HOLE6" & syn6=$!
+syn_only "$TTL1_4" "$DST4" 1 & synttl=$!
+wait "$syn4" "$syn6" "$synttl"
+reported() { grep -q "type=SIGNAL_INCOMPLETE_HANDSHAKE .*ip=$1\$" "$SINK_LOG"; }
+for _ in $(seq 30); do reported "$HS4" && reported "$HS6" && break; sleep 0.2; done
+sleep 2 # two more polls, so an expired entry for a completed handshake would have surfaced
+reported "$HS4" && pass "unanswered IPv4 SYN reported as incomplete handshake" || bad "no incomplete handshake signal for $HS4"
+reported "$HS6" && pass "unanswered IPv6 SYN reported as incomplete handshake" || bad "no incomplete handshake signal for $HS6"
+reported "$SRC4" || reported "$SRC6" && bad "completed handshake reported as incomplete" || pass "completed handshakes not reported"
+reported "$TTL1_4" && bad "SYN the node did not forward was reported" || pass "SYNs left to the kernel not reported"
 
 log "IPv6 transit with forwarding disabled is visible"
 nf=$(metric packetyeeter_scrub_slow_path_total 'reason="not_fwded"')

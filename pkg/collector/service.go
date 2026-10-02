@@ -66,6 +66,11 @@ type Config struct {
 	// ReadyzDrain is how long a scrub node reports not-ready before detaching
 	// on shutdown, so the controller can move traffic away first.
 	ReadyzDrain time.Duration
+
+	// HandshakeTimeout is how long a SYN may go without the client's ACK
+	// before it is reported as an incomplete handshake. 0 means
+	// DefaultHandshakeTimeout.
+	HandshakeTimeout time.Duration
 	// ScrubSlowPathPPS caps the packets per second xdp_scrub hands to the
 	// kernel, across all CPUs (0 = unlimited).
 	ScrubSlowPathPPS uint32
@@ -162,6 +167,9 @@ func max(a, b int) int {
 }
 
 func New(cfg Config, logger *logrus.Logger) (*Collector, error) {
+	if cfg.HandshakeTimeout < 0 {
+		return nil, fmt.Errorf("-handshake-timeout must not be negative, got %s", cfg.HandshakeTimeout)
+	}
 	warnings, err := validateModeConfig(cfg)
 	if err != nil {
 		return nil, err
@@ -994,7 +1002,14 @@ func avgRTTNanos(totalRTT int64, rttCount int) int64 {
 	return totalRTT / int64(rttCount)
 }
 
-const pendingHandshakeTimeout = 3 * time.Second
+const DefaultHandshakeTimeout = 3 * time.Second
+
+func (c *Collector) handshakeTimeout() time.Duration {
+	if c.Config.HandshakeTimeout > 0 {
+		return c.Config.HandshakeTimeout
+	}
+	return DefaultHandshakeTimeout
+}
 
 func monotonicNowNS() (uint64, error) {
 	var ts unix.Timespec
@@ -1007,11 +1022,11 @@ func monotonicNowNS() (uint64, error) {
 	return uint64(ts.Sec)*uint64(time.Second) + uint64(ts.Nsec), nil
 }
 
-func pendingHandshakeExpired(nowNS, beginNS uint64) bool {
+func pendingHandshakeExpired(nowNS, beginNS uint64, timeout time.Duration) bool {
 	if beginNS == 0 || nowNS < beginNS {
 		return false
 	}
-	return nowNS-beginNS >= uint64(pendingHandshakeTimeout)
+	return nowNS-beginNS >= uint64(timeout)
 }
 
 func pendingHandshakeRate(count int, interval time.Duration) float64 {
@@ -1025,7 +1040,7 @@ func pendingHandshakeRate(count int, interval time.Duration) float64 {
 }
 
 // sendPendingHandshakes sends incomplete TCP handshakes to analyzer
-// once they have remained incomplete for pendingHandshakeTimeout. Consumed
+// once they have remained incomplete for the handshake timeout. Consumed
 // entries are deleted so map polling cannot turn one missed final ACK into a
 // fresh signal every second.
 func (c *Collector) sendPendingHandshakes() {
@@ -1038,6 +1053,7 @@ func (c *Collector) sendPendingHandshakes() {
 		c.Logger.WithError(err).Error("Failed to read monotonic clock for pending handshakes")
 		return
 	}
+	timeout := c.handshakeTimeout()
 
 	// Aggregate by source IP
 	type ipStats struct {
@@ -1064,7 +1080,7 @@ func (c *Collector) sendPendingHandshakes() {
 
 	iter := c.Maps.PendingHandshakes.Iterate()
 	for iter.Next(&key, &val) {
-		if !pendingHandshakeExpired(nowNS, val.BeginTime) {
+		if !pendingHandshakeExpired(nowNS, val.BeginTime, timeout) {
 			continue
 		}
 		if _, ok := selectedIPv4[key.Saddr]; !ok {
@@ -1136,7 +1152,7 @@ func (c *Collector) sendPendingHandshakes() {
 			},
 			Metadata: map[string]string{
 				"aggregate_snapshot": "true",
-				"handshake_timeout":  pendingHandshakeTimeout.String(),
+				"handshake_timeout":  timeout.String(),
 				"observation_window": observationWindow.String(),
 				"pending_count":      fmt.Sprintf("%d", stats.count),
 				"unique_ports":       fmt.Sprintf("%d", len(stats.ports)),
@@ -1163,7 +1179,7 @@ func (c *Collector) sendPendingHandshakes() {
 	var key6 ebpf.TcpSessionKeyV6
 	iter6 := c.Maps.PendingHandshakesV6.Iterate()
 	for iter6.Next(&key6, &val) {
-		if !pendingHandshakeExpired(nowNS, val.BeginTime) {
+		if !pendingHandshakeExpired(nowNS, val.BeginTime, timeout) {
 			continue
 		}
 		k := ipv6Key(key6.Saddr)
@@ -1236,7 +1252,7 @@ func (c *Collector) sendPendingHandshakes() {
 			},
 			Metadata: map[string]string{
 				"aggregate_snapshot": "true",
-				"handshake_timeout":  pendingHandshakeTimeout.String(),
+				"handshake_timeout":  timeout.String(),
 				"observation_window": observationWindow.String(),
 				"pending_count":      fmt.Sprintf("%d", stats.count),
 				"unique_ports":       fmt.Sprintf("%d", len(stats.ports)),

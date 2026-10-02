@@ -3,6 +3,8 @@ package collector
 import (
 	"testing"
 	"time"
+
+	"github.com/sirupsen/logrus"
 )
 
 // A pending handshake with no SYN-ACK observed has SynAckTime==0; the unsigned
@@ -31,7 +33,7 @@ func TestAvgRTTNanos(t *testing.T) {
 
 func TestPendingHandshakeExpired(t *testing.T) {
 	now := uint64(30 * time.Second)
-	timeout := uint64(pendingHandshakeTimeout)
+	timeout := uint64(5 * time.Second)
 
 	tests := []struct {
 		name    string
@@ -47,7 +49,7 @@ func TestPendingHandshakeExpired(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := pendingHandshakeExpired(now, tt.beginNS); got != tt.want {
+			if got := pendingHandshakeExpired(now, tt.beginNS, 5*time.Second); got != tt.want {
 				t.Fatalf("pendingHandshakeExpired(%d, %d) = %v, want %v", now, tt.beginNS, got, tt.want)
 			}
 		})
@@ -66,5 +68,18 @@ func TestPendingHandshakeRateUsesPollInterval(t *testing.T) {
 	}
 	if got := pendingHandshakeRate(6, 0); got != 6 {
 		t.Fatalf("zero interval must use the one-second poll default, got %v pps", got)
+	}
+}
+
+func TestHandshakeTimeoutConfig(t *testing.T) {
+	if got := (&Collector{}).handshakeTimeout(); got != DefaultHandshakeTimeout {
+		t.Errorf("unset timeout = %s, want %s", got, DefaultHandshakeTimeout)
+	}
+	c := &Collector{Config: Config{HandshakeTimeout: 10 * time.Second}}
+	if got := c.handshakeTimeout(); got != 10*time.Second {
+		t.Errorf("configured timeout = %s, want 10s", got)
+	}
+	if _, err := New(Config{HandshakeTimeout: -time.Second}, logrus.New()); err == nil {
+		t.Error("New accepted a negative handshake timeout")
 	}
 }

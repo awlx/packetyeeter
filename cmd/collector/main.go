@@ -25,6 +25,7 @@ func main() {
 		xdpMode         = flag.String("xdp-mode", "auto", "XDP attach mode: auto, native or generic")
 		allowGeneric    = flag.Bool("allow-generic", false, "Scrub mode: allow generic XDP (labs only, far slower)")
 		readyzDrain     = flag.Duration("readyz-drain", collector.DefaultReadyzDrain, "Scrub mode: how long /readyz reports not ready on shutdown before detaching")
+		hsTimeout       = flag.Duration("handshake-timeout", collector.DefaultHandshakeTimeout, "How long a SYN may go without the client's ACK before it is reported as an incomplete handshake")
 		slowPathPPS     = flag.Uint("scrub-slow-path-pps", collector.DefaultScrubSlowPathPPS, "Scrub mode: max packets/s handed to the kernel slow path across all CPUs, excess dropped (0 = unlimited)")
 		analyzerAddr    = flag.String("analyzer-addr", "127.0.0.1:9090", "Analyzer gRPC address")
 		metricsAddr     = flag.String("metrics-addr", ":2112", "Prometheus metrics HTTP listen address")
@@ -91,6 +92,8 @@ func main() {
 		XDPMode:         attachMode,
 		AllowGeneric:    *allowGeneric,
 		ReadyzDrain:     *readyzDrain,
+
+		HandshakeTimeout: *hsTimeout,
 
 		ScrubSlowPathPPS: uint32(min(*slowPathPPS, math.MaxUint32)),
 	}

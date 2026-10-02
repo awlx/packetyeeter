@@ -303,6 +303,7 @@ sudo ./packetyeeter-collector -i eth0 -analyzer-addr 127.0.0.1:9090
 | `-xdp-mode` | `auto` | XDP attach mode: `auto` (kernel default; in scrub mode native, failing unless `-allow-generic`), `native`, or `generic`. |
 | `-allow-generic` | `false` | Scrub mode: allow generic XDP. Labs only; far slower than native. Rejected in host mode. |
 | `-readyz-drain` | `5s` | Scrub mode: how long `/readyz` reports not ready on shutdown before XDP detaches. The control plane keeps running meanwhile. |
+| `-handshake-timeout` | `3s` | How long a SYN may go without the client's ACK before it is reported to the analyzer as an incomplete handshake. Applies in both modes. |
 | `-scrub-slow-path-pps` | `100000` | Scrub mode: max packets/s handed to the kernel slow path across all CPUs; excess is dropped (counted in monitor mode). `0` = unlimited. |
 | `-analyzer-addr` | `127.0.0.1:9090` | Analyzer gRPC address to connect to. |
 | `-metrics-addr` | `:2112` | Prometheus metrics HTTP listen address. |

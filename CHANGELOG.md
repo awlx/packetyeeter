@@ -1,5 +1,14 @@
 # PacketYeeter Changelog
 
+## 2026-10-02 - Scrub mode handshake tracking
+
+- `xdp_scrub` tracks TCP handshakes for forwarded traffic: a SYN opens an entry
+  and the client's first ACK closes it, since the SYN-ACK never crosses a scrub
+  node. Unanswered SYNs reach the analyzer as `SIGNAL_INCOMPLETE_HANDSHAKE`,
+  exactly as in host mode. Handshake RTT (JA4L) is not available in scrub mode.
+- New `-handshake-timeout` (default `3s`, the previous hard-coded value) sets
+  how long a SYN may stay unanswered before it is reported, in both modes.
+
 ## 2026-10-02 - Scrub mode review fixes
 
 - IPv6 forwarding is now required whenever IPv6 can be routed out of the inside
