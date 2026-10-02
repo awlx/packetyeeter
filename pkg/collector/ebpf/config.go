@@ -1,6 +1,10 @@
 package ebpf
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/cilium/ebpf"
+)
 
 // configKeyMonitorMode is the config_map array index checked by the XDP
 // program (as `key_monitor = 1` in protector.bpf.c) before every enforcement
@@ -93,4 +97,78 @@ func (m *Maps) SetMonitorMode(enabled bool) error {
 	}
 
 	return m.ConfigMap.Put(configKeyMonitorMode, value)
+}
+
+// Mode selects which XDP program the collector runs.
+type Mode string
+
+const (
+	// ModeHost protects the local host with xdp_filter and the TC programs.
+	ModeHost Mode = "host"
+	// ModeScrub forwards clean redirected traffic from an outside to an
+	// inside port with xdp_scrub.
+	ModeScrub Mode = "scrub"
+)
+
+func ParseMode(s string) (Mode, error) {
+	switch Mode(s) {
+	case "", ModeHost:
+		return ModeHost, nil
+	case ModeScrub:
+		return ModeScrub, nil
+	default:
+		return "", fmt.Errorf("invalid mode %q (want host|scrub)", s)
+	}
+}
+
+// XDPMode selects how XDP programs are attached.
+type XDPMode string
+
+const (
+	// XDPModeAuto lets the kernel pick, which may silently fall back to
+	// generic XDP.
+	XDPModeAuto    XDPMode = "auto"
+	XDPModeNative  XDPMode = "native"
+	XDPModeGeneric XDPMode = "generic"
+)
+
+func ParseXDPMode(s string) (XDPMode, error) {
+	switch XDPMode(s) {
+	case "", XDPModeAuto:
+		return XDPModeAuto, nil
+	case XDPModeNative:
+		return XDPModeNative, nil
+	case XDPModeGeneric:
+		return XDPModeGeneric, nil
+	default:
+		return "", fmt.Errorf("invalid xdp-mode %q (want auto|native|generic)", s)
+	}
+}
+
+// configKeyScrubSlowPPS is the config_map index for the per-CPU slow-path
+// packet budget (CONFIG_KEY_SCRUB_SLOW_PPS in protector.bpf.c).
+const configKeyScrubSlowPPS uint32 = 5
+
+// scrubSlowPathPerCPU splits a node-wide packets-per-second budget evenly over
+// CPUs, rounding up so a non-zero budget never becomes unlimited (0).
+func scrubSlowPathPerCPU(total uint32, cpus int) uint32 {
+	if total == 0 || cpus <= 1 {
+		return total
+	}
+	return 1 + (total-1)/uint32(cpus)
+}
+
+// SetScrubSlowPathPPS limits the packets xdp_scrub hands to the kernel to
+// roughly total per second across all CPUs (0 = unlimited). The kernel
+// enforces it per CPU, so traffic concentrated on one RX queue hits its share
+// sooner. No-op when ConfigMap is nil.
+func (m *Maps) SetScrubSlowPathPPS(total uint32) error {
+	if m.ConfigMap == nil {
+		return nil
+	}
+	cpus, err := ebpf.PossibleCPU()
+	if err != nil {
+		return fmt.Errorf("count CPUs: %w", err)
+	}
+	return m.ConfigMap.Put(configKeyScrubSlowPPS, scrubSlowPathPerCPU(total, cpus))
 }

@@ -295,6 +295,26 @@ var (
 		Help: "Structured kernel-space enforcement incidents by reason",
 	}, []string{"reason"})
 
+	// Scrub-mode collector counters, read from the kernel at scrape time.
+	ScrubPacketsDesc = prometheus.NewDesc("packetyeeter_scrub_packets_total",
+		"Packets seen by xdp_scrub by verdict (forward, drop, slow_path, local) and family",
+		[]string{"verdict", "family"}, nil)
+	ScrubBytesDesc = prometheus.NewDesc("packetyeeter_scrub_bytes_total",
+		"Bytes seen by xdp_scrub by verdict and family",
+		[]string{"verdict", "family"}, nil)
+	ScrubSlowPathDesc = prometheus.NewDesc("packetyeeter_scrub_slow_path_total",
+		"Packets xdp_scrub handed to the kernel instead of forwarding, by reason",
+		[]string{"reason"}, nil)
+	ScrubTTLExpiredDesc = prometheus.NewDesc("packetyeeter_scrub_ttl_expired_total",
+		"Packets arriving with TTL/hop limit <= 1; a rising rate indicates a routing loop",
+		nil, nil)
+	ScrubSlowPathLimitedDesc = prometheus.NewDesc("packetyeeter_scrub_slow_path_limited_total",
+		"Slow-path packets over -scrub-slow-path-pps, dropped (or passed in monitor mode)",
+		nil, nil)
+	ScrubReadyDesc = prometheus.NewDesc("packetyeeter_scrub_ready",
+		"1 when /readyz reports the scrub node ready, else 0",
+		nil, nil)
+
 	PerfLostSamples = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "packetyeeter_perf_lost_samples_total",
 		Help: "Kernel perf-ring samples lost before userspace could read them",

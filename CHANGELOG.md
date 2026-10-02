@@ -1,5 +1,44 @@
 # PacketYeeter Changelog
 
+## 2026-10-02 - Scrub mode review fixes
+
+- IPv6 forwarding is now required whenever IPv6 can be routed out of the inside
+  port (including routes via link-local next hops), not only when a port has a
+  global IPv6 address; the outside port's own `forwarding` sysctls are checked
+  too. Applies to start-up and `/readyz`.
+- Packets the kernel will not forward are counted as
+  `packetyeeter_scrub_slow_path_total{reason="not_fwded"}` instead of
+  `verdict="local"`, so a blackhole is visible.
+- `blocked_ips` and `-policy` now apply to unicast traffic for the scrub node's
+  own addresses (multicast, link-local, ARP and neighbour discovery still pass
+  unchecked).
+- New `-scrub-slow-path-pps` (default 100000, 0 = unlimited) caps packets handed
+  to the kernel; over-limit packets are dropped and counted in
+  `packetyeeter_scrub_slow_path_limited_total`.
+- `local_addrs` holds 4096 addresses per family (was 256); poll-time sync
+  failures are logged once per change.
+- On shutdown the control plane keeps running during `-readyz-drain`, and
+  `xdp_scrub` detaches before `xdp_pass_inside`.
+- Failed redirects are counted as `drop` instead of `forward`.
+- Host mode now rejects `-inside-if` and `-allow-generic`, and warns about a
+  non-default `-readyz-drain` or `-scrub-slow-path-pps`.
+
+## 2026-10-02 - Collector scrub mode
+
+- New `-mode scrub` runs the collector as an inline scrubber: `xdp_scrub` on
+  the outside port (`-i`) applies the existing per-source checks and forwards
+  clean traffic out of `-inside-if` with `bpf_fib_lookup` and XDP redirect,
+  handing anything it cannot forward to the kernel. Requires Linux 5.15+,
+  native XDP (`-allow-generic` for labs), IP forwarding and non-strict
+  `rp_filter`; see `docs/operations.md#scrub-mode`.
+- Scrub nodes expose `/readyz` on the metrics listener, drain for
+  `-readyz-drain` on shutdown, and export `packetyeeter_scrub_*` metrics.
+- New `-xdp-mode` (`auto`, `native`, `generic`); `auto` keeps the previous
+  host-mode behaviour.
+- Host mode now writes monitor mode, allowlist and policy maps before attaching
+  XDP rather than just after, so the first packets are already judged with the
+  configured settings.
+
 ## 2026-08-09 - Collector UDP fragment policy and edge-triggered incidents
 
 - Fragmented UDP / IPv6 Fragment headers no longer hard-drop by default.

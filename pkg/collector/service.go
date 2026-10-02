@@ -58,6 +58,17 @@ type Config struct {
 	// UDPFragMode controls fragmented UDP / IPv6 fragment handling in XDP.
 	// Use ebpf.UDPFragModeRate (default) or ebpf.UDPFragModeDrop.
 	UDPFragMode uint32
+
+	Mode            ebpf.Mode // zero value is host mode
+	InsideInterface string    // scrub mode: forwarding target; Interface is the outside port
+	XDPMode         ebpf.XDPMode
+	AllowGeneric    bool
+	// ReadyzDrain is how long a scrub node reports not-ready before detaching
+	// on shutdown, so the controller can move traffic away first.
+	ReadyzDrain time.Duration
+	// ScrubSlowPathPPS caps the packets per second xdp_scrub hands to the
+	// kernel, across all CPUs (0 = unlimited).
+	ScrubSlowPathPPS uint32
 }
 
 // Collector is a thin relay layer that:
@@ -130,6 +141,11 @@ type Collector struct {
 	// Management API
 	managementListener net.Listener
 
+	draining        atomic.Bool
+	readinessChecks []readinessCheck
+	// lastLocalAddrsErr is only touched by pollMaps.
+	lastLocalAddrsErr string
+
 	// Lifecycle
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -146,6 +162,13 @@ func max(a, b int) int {
 }
 
 func New(cfg Config, logger *logrus.Logger) (*Collector, error) {
+	warnings, err := validateModeConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
+	for _, w := range warnings {
+		logger.Warn(w)
+	}
 	c := &Collector{
 		Config:             cfg,
 		Logger:             logger,
@@ -205,19 +228,28 @@ func (c *Collector) Start(ctx context.Context) error {
 	// PacketYeeter's existing incomplete-handshake detection and
 	// blocked_ips enforcement to cut off flood traffic before it reaches
 	// the backend at all. Warn loudly if the sysctl looks disabled.
-	c.checkKernelSynCookies()
+	scrub := c.Config.Mode == ebpf.ModeScrub
+	if scrub {
+		if err := c.preflightScrub(); err != nil {
+			return fmt.Errorf("scrub mode start-up check failed: %w", err)
+		}
+	} else {
+		c.checkKernelSynCookies()
+	}
 
 	// Load eBPF programs
 	c.Logger.Info("Loading eBPF programs...")
-	c.Loader = ebpf.NewLoader(c.Config.Interface)
+	c.Loader = ebpf.NewLoader(ebpf.LoaderConfig{
+		Mode:         c.Config.Mode,
+		Interface:    c.Config.Interface,
+		InsideIface:  c.Config.InsideInterface,
+		XDPMode:      c.Config.XDPMode,
+		AllowGeneric: c.Config.AllowGeneric,
+	})
 	if err := c.Loader.Load(); err != nil {
 		return fmt.Errorf("failed to load eBPF: %w", err)
 	}
-	if err := c.Loader.Attach(); err != nil {
-		return fmt.Errorf("failed to attach eBPF: %w", err)
-	}
 	c.Maps = c.Loader.GetMaps()
-	c.Logger.Info("eBPF programs loaded and attached")
 
 	// Enable kernel-space monitor/dry-run mode if requested. This is
 	// independent of the analyzer's own -dry-run flag: it governs whether
@@ -277,6 +309,29 @@ func (c *Collector) Start(ctx context.Context) error {
 		}
 	}
 
+	// Attach only once the maps hold the configuration, so no packet is ever
+	// judged against an empty allowlist or without monitor mode.
+	if scrub {
+		if err := c.Maps.SetScrubSlowPathPPS(c.Config.ScrubSlowPathPPS); err != nil {
+			return fmt.Errorf("failed to set -scrub-slow-path-pps: %w", err)
+		}
+		if err := c.syncLocalAddrs(); err != nil {
+			return fmt.Errorf("failed to populate local_addrs: %w", err)
+		}
+	}
+	if err := c.Loader.Attach(); err != nil {
+		return fmt.Errorf("failed to attach eBPF: %w", err)
+	}
+	if scrub {
+		c.readinessChecks = c.scrubReadinessChecks()
+		c.Logger.WithFields(logrus.Fields{
+			"outside": c.Config.Interface,
+			"inside":  c.Config.InsideInterface,
+		}).Info("xdp_scrub attached: forwarding clean traffic from outside to inside port")
+	} else {
+		c.Logger.Info("eBPF programs loaded and attached")
+	}
+
 	if c.Config.SocketPath != "" {
 		if err := c.startManagementSocket(); err != nil {
 			return fmt.Errorf("failed to start management socket: %w", err)
@@ -302,16 +357,19 @@ func (c *Collector) Start(ctx context.Context) error {
 	c.wg.Add(1)
 	go c.signalSender()
 
-	// Start SPOE agent with callbacks
-	spoeAddr := c.Config.SPOEAddr
-	if spoeAddr == "" {
-		spoeAddr = ":9876"
+	// Start SPOE agent with callbacks. Scrub nodes see no HTTP: replies
+	// bypass them and nothing terminates there.
+	if !scrub {
+		spoeAddr := c.Config.SPOEAddr
+		if spoeAddr == "" {
+			spoeAddr = ":9876"
+		}
+		c.spoeAgent = spoe.NewCollectorAgent(spoeAddr, c.checkAllowlist, spoe.CollectorCallbacks{
+			EmitSignal:      c.emitSignal,
+			GetSynTimestamp: c.getSynTimestamp, // Pass SYN lookup function
+			QueueLen:        func() int { return len(c.signalQueue) },
+		})
 	}
-	c.spoeAgent = spoe.NewCollectorAgent(spoeAddr, c.checkAllowlist, spoe.CollectorCallbacks{
-		EmitSignal:      c.emitSignal,
-		GetSynTimestamp: c.getSynTimestamp, // Pass SYN lookup function
-		QueueLen:        func() int { return len(c.signalQueue) },
-	})
 
 	// Start map poller (streams raw events to analyzer)
 	c.wg.Add(1)
@@ -322,13 +380,15 @@ func (c *Collector) Start(ctx context.Context) error {
 	go c.cleanupSynCache()
 
 	// Start SPOE
-	c.wg.Add(1)
-	go func() {
-		defer c.wg.Done()
-		if err := c.spoeAgent.Start(); err != nil {
-			c.Logger.WithError(err).Error("SPOE agent error")
-		}
-	}()
+	if c.spoeAgent != nil {
+		c.wg.Add(1)
+		go func() {
+			defer c.wg.Done()
+			if err := c.spoeAgent.Start(); err != nil {
+				c.Logger.WithError(err).Error("SPOE agent error")
+			}
+		}()
+	}
 
 	// Start block GC (cleanup expired blocks)
 	c.wg.Add(1)
@@ -339,7 +399,7 @@ func (c *Collector) Start(ctx context.Context) error {
 	c.wg.Add(1)
 	go func() {
 		defer c.wg.Done()
-		c.Logger.WithField("addr", c.Config.MetricsAddr).Info("Starting metrics server (SPOE metrics only)")
+		c.Logger.WithField("addr", c.Config.MetricsAddr).Info("Starting metrics server")
 		if err := c.metricsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			c.Logger.WithError(err).Error("Metrics server error")
 		}
@@ -483,6 +543,11 @@ func (c *Collector) checkAllowlist(ip net.IP) bool {
 // Stop stops the collector gracefully
 func (c *Collector) Stop() {
 	c.Logger.Info("Stopping collector...")
+	if c.Config.Mode == ebpf.ModeScrub && c.Config.ReadyzDrain > 0 {
+		c.draining.Store(true)
+		c.Logger.WithField("drain", c.Config.ReadyzDrain).Info("Reporting not ready before detaching xdp_scrub")
+		time.Sleep(c.Config.ReadyzDrain)
+	}
 	c.cancel()
 
 	c.mu.Lock()
@@ -659,6 +724,9 @@ func (c *Collector) pollMaps() {
 			c.sendBadFlagsAlerts()
 			c.sendEgressVolume()
 			c.pruneStaleState()
+			if c.Config.Mode == ebpf.ModeScrub {
+				c.reportLocalAddrsSync(c.syncLocalAddrs())
+			}
 		}
 	}
 }
@@ -1843,8 +1911,11 @@ func (c *Collector) startCollectorMetricsServer() *http.Server {
 	registry.MustRegister(metrics.EgressVolumeSignals)
 	registry.MustRegister(metrics.EgressBytesReported)
 
-	// Create HTTP handler with custom registry
 	mux := http.NewServeMux()
+	if c.Config.Mode == ebpf.ModeScrub {
+		registry.MustRegister(&scrubMetrics{stats: c.Maps.ReadScrubStats, ready: c.scrubReady, logger: c.Logger})
+		mux.Handle("/readyz", readyzHandler(c.scrubReady))
+	}
 	mux.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
 
 	return &http.Server{

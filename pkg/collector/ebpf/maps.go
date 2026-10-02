@@ -24,10 +24,14 @@ type Maps struct {
 	PolicyV6            *ebpf.Map
 	PolicyBlocks        *ebpf.Map
 	PolicyBlocksV6      *ebpf.Map
-	Events              *ebpf.Map    // Perf Event Array
-	Incidents           *ebpf.Map    // Structured incident logging perf event array
-	EgressBytes         *ebpf.Map    // Cumulative egress bytes per IPv4 client
-	EgressBytesV6       *ebpf.Map    // Cumulative egress bytes per IPv6 client
+	Events              *ebpf.Map // Perf Event Array
+	Incidents           *ebpf.Map // Structured incident logging perf event array
+	EgressBytes         *ebpf.Map // Cumulative egress bytes per IPv4 client
+	EgressBytesV6       *ebpf.Map // Cumulative egress bytes per IPv6 client
+	ScrubStats          *ebpf.Map // Per-CPU scrub verdict and slow-path counters
+	TxPorts             *ebpf.Map // Scrub-mode redirect targets (inside port)
+	LocalAddrsV4        *ebpf.Map // Scrub node's own addresses, never forwarded
+	LocalAddrsV6        *ebpf.Map
 	AllowedNets         []*net.IPNet // Userspace check
 	DryRun              bool
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"math"
 	"os"
 	"os/signal"
 	"syscall"
@@ -18,7 +19,13 @@ import (
 
 func main() {
 	var (
-		iface           = flag.String("i", "eth0", "Network interface to attach to")
+		iface           = flag.String("i", "eth0", "Network interface to attach to (the outside port in scrub mode)")
+		mode            = flag.String("mode", "host", "host: protect this host; scrub: forward clean traffic from -i to -inside-if")
+		insideIf        = flag.String("inside-if", "", "Scrub mode: inside port that clean traffic is forwarded to")
+		xdpMode         = flag.String("xdp-mode", "auto", "XDP attach mode: auto, native or generic")
+		allowGeneric    = flag.Bool("allow-generic", false, "Scrub mode: allow generic XDP (labs only, far slower)")
+		readyzDrain     = flag.Duration("readyz-drain", collector.DefaultReadyzDrain, "Scrub mode: how long /readyz reports not ready on shutdown before detaching")
+		slowPathPPS     = flag.Uint("scrub-slow-path-pps", collector.DefaultScrubSlowPathPPS, "Scrub mode: max packets/s handed to the kernel slow path across all CPUs, excess dropped (0 = unlimited)")
 		analyzerAddr    = flag.String("analyzer-addr", "127.0.0.1:9090", "Analyzer gRPC address")
 		metricsAddr     = flag.String("metrics-addr", ":2112", "Prometheus metrics HTTP listen address")
 		spoePort        = flag.Int("spoe-port", 9876, "SPOE agent port")
@@ -52,6 +59,14 @@ func main() {
 	if err != nil {
 		logrus.WithError(err).Fatal("Invalid -udp-frag-mode")
 	}
+	collectorMode, err := ebpf.ParseMode(*mode)
+	if err != nil {
+		logrus.WithError(err).Fatal("Invalid -mode")
+	}
+	attachMode, err := ebpf.ParseXDPMode(*xdpMode)
+	if err != nil {
+		logrus.WithError(err).Fatal("Invalid -xdp-mode")
+	}
 
 	cfg := collector.Config{
 		Interface:       *iface,
@@ -70,6 +85,14 @@ func main() {
 		EgressAccounting: *egressAccount,
 		EgressMinBytes:   *egressMinBytes,
 		UDPFragMode:      fragMode,
+
+		Mode:            collectorMode,
+		InsideInterface: *insideIf,
+		XDPMode:         attachMode,
+		AllowGeneric:    *allowGeneric,
+		ReadyzDrain:     *readyzDrain,
+
+		ScrubSlowPathPPS: uint32(min(*slowPathPPS, math.MaxUint32)),
 	}
 
 	coll, err := collector.New(cfg, logger)
@@ -93,9 +116,15 @@ func main() {
 	<-sigChan
 
 	logger.Info("Shutting down collector...")
-	cancel()
+	// Do not cancel ctx here: in scrub mode Stop keeps the control plane
+	// (analyzer commands, block GC, local_addrs sync) running during the
+	// -readyz-drain period, and cancels it itself afterwards.
 
 	// Stop with timeout - SPOE library doesn't gracefully handle active connections
+	stopTimeout := 5 * time.Second
+	if collectorMode == ebpf.ModeScrub {
+		stopTimeout += *readyzDrain
+	}
 	done := make(chan struct{})
 	go func() {
 		coll.Stop()
@@ -105,7 +134,7 @@ func main() {
 	select {
 	case <-done:
 		logger.Info("Collector stopped gracefully")
-	case <-time.After(5 * time.Second):
+	case <-time.After(stopTimeout):
 		logger.Warn("Shutdown timeout - forcing exit")
 	}
 }
