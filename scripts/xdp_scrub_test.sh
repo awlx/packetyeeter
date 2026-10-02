@@ -407,10 +407,38 @@ increased "$lim" "$(metric packetyeeter_scrub_slow_path_limited_total)" \
   && pass "slow_path_limited counted" || bad "slow_path_limited did not increase"
 http_ok "http://$DST4:8080/" && pass "fast path unaffected by the slow-path limit" || bad "forwarding broken with slow-path limit"
 
+log "routing loop"
+# A leaked redirect route: the inside sends the prefix back to the edge, which
+# redirects it to the outside port again. Each lap costs four TTL (edge, XDP,
+# destination, scrub kernel); pings with TTL 61-64 make sure one of them
+# reaches xdp_scrub with TTL 1.
+scr ip route add 10.201.4.0/24 via "$DST4"
+scr ip rule add iif in0 to 10.201.4.0/24 lookup 104
+scr ip route add 10.201.4.0/24 via "$SRC4" dev out0 table 104
+src ip route add 10.201.4.0/24 via "$OUT4"
+# The edge sees its own echo requests come back; accept_local lets it forward them.
+src sysctl -qw net.ipv4.ip_forward=1 net.ipv4.conf.all.accept_local=1 net.ipv4.conf.src0.accept_local=1
+dst sysctl -qw net.ipv4.ip_forward=1
+ttl=$(metric packetyeeter_scrub_ttl_expired_total)
+for t in 61 62 63 64; do src ping -c1 -W1 -t "$t" 10.201.4.9 >/dev/null 2>&1 || true; done
+increased "$ttl" "$(metric packetyeeter_scrub_ttl_expired_total)" \
+  && pass "routing loop shows up in ttl_expired" || bad "ttl_expired did not increase on a routing loop"
+dst sysctl -qw net.ipv4.ip_forward=0
+src sysctl -qw net.ipv4.ip_forward=0 net.ipv4.conf.all.accept_local=0 net.ipv4.conf.src0.accept_local=0
+src ip route del 10.201.4.0/24
+scr ip route del 10.201.4.0/24 table 104
+scr ip rule del iif in0 to 10.201.4.0/24 lookup 104
+scr ip route del 10.201.4.0/24
+
 log "monitor mode"
 stop_collector
-start_collector -dry-run
+start_collector -dry-run -analyzer-addr 127.0.0.1:59999
 http_ok --interface "$POLICY4" "http://$DST4:8080/" && pass "monitor mode forwards a policy-blocked source" || bad "monitor mode dropped traffic"
+drops=$(metric packetyeeter_scrub_rule_matches_total 'action="drop"')
+send_rules '{"upsert":[{"id":"ntp-monitor","dstPrefix":"'"$DST4"'/32","protocols":[17],"srcPorts":[{"from":123,"to":123}],"action":"RULE_ACTION_DROP","expiresAt":"'"$EXPIRES"'"}]}'
+[[ "$(udp_through "$SRC4" 123 "$DST4" 5400 20)" == 20 ]] && pass "monitor mode forwards traffic a DROP rule matches" || bad "monitor mode dropped rule-matched traffic"
+increased "$drops" "$(metric packetyeeter_scrub_rule_matches_total 'action="drop"')" \
+  && pass "monitor mode still counts rule matches" || bad "no rule matches counted in monitor mode"
 [[ "$(metric packetyeeter_scrub_packets_total 'family="ipv4",verdict="drop"')" == 0 ]] \
   && pass "monitor mode dropped nothing" || bad "drop{ipv4} non-zero in monitor mode"
 
