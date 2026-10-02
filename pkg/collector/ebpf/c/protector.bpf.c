@@ -1174,6 +1174,288 @@ int xdp_filter(struct xdp_md *ctx) {
     return XDP_PASS;
 }
 
+// --- Scrub mode ---
+//
+// xdp_scrub runs on the outside port of a scrub node. Everything arriving there
+// was redirected by the edge for a protected destination, so surviving packets
+// are forwarded out of the inside port instead of being delivered locally.
+// Whatever the fast path cannot forward correctly is handed to the kernel
+// (XDP_PASS), which resolves neighbours, sends ICMP errors and forwards it.
+
+#define AF_INET  2
+#define AF_INET6 10
+#ifndef ETH_ALEN
+#define ETH_ALEN 6
+#endif
+
+// scrub_stats layout; pkg/collector/ebpf/scrub.go mirrors it.
+#define SCRUB_FAMILY_V4    0
+#define SCRUB_FAMILY_V6    1
+#define SCRUB_FAMILY_OTHER 2
+#define SCRUB_FAMILIES     3
+
+#define SCRUB_VERDICT_FORWARD 0
+#define SCRUB_VERDICT_DROP    1
+#define SCRUB_VERDICT_SLOW    2
+#define SCRUB_VERDICT_LOCAL   3
+#define SCRUB_VERDICTS        4
+
+#define SCRUB_SLOW_NO_NEIGH     0
+#define SCRUB_SLOW_TTL          1
+#define SCRUB_SLOW_MTU          2
+#define SCRUB_SLOW_FIB_FAIL     3
+#define SCRUB_SLOW_EGRESS_OTHER 4
+#define SCRUB_SLOW_VLAN         5
+#define SCRUB_SLOW_MALFORMED    6
+#define SCRUB_SLOW_REASONS      7
+
+#define SCRUB_SLOW_BASE  (SCRUB_VERDICTS * SCRUB_FAMILIES)
+#define SCRUB_STATS_SIZE (SCRUB_SLOW_BASE + SCRUB_SLOW_REASONS)
+
+struct scrub_counter {
+    __u64 packets;
+    __u64 bytes;
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, SCRUB_STATS_SIZE);
+    __type(key, __u32);
+    __type(value, struct scrub_counter);
+} scrub_stats SEC(".maps");
+
+// Keyed by ifindex so the FIB result can be checked before the packet is
+// rewritten: a route out of any other port must take the kernel path.
+struct {
+    __uint(type, BPF_MAP_TYPE_DEVMAP_HASH);
+    __uint(max_entries, 8);
+    __type(key, __u32);
+    __type(value, __u32);
+} tx_ports SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 256);
+    __type(key, __u32);
+    __type(value, __u8);
+} local_addrs_v4 SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 256);
+    __type(key, struct in6_addr);
+    __type(value, __u8);
+} local_addrs_v6 SEC(".maps");
+
+static __always_inline int scrub_count(struct xdp_md *ctx, __u32 idx, int action) {
+    struct scrub_counter *c = bpf_map_lookup_elem(&scrub_stats, &idx);
+    if (c) {
+        c->packets++;
+        c->bytes += ctx->data_end - ctx->data;
+    }
+    return action;
+}
+
+static __always_inline int scrub_verdict(struct xdp_md *ctx, __u32 verdict, __u32 family, int action) {
+    return scrub_count(ctx, verdict * SCRUB_FAMILIES + family, action);
+}
+
+static __always_inline int scrub_slow_path(struct xdp_md *ctx, __u32 reason, __u32 family) {
+    scrub_count(ctx, SCRUB_SLOW_BASE + reason, 0);
+    return scrub_verdict(ctx, SCRUB_VERDICT_SLOW, family, XDP_PASS);
+}
+
+// A frame we cannot parse cannot be forwarded either, so monitor mode hands it
+// to the kernel instead.
+static __always_inline int scrub_malformed(struct xdp_md *ctx, __u32 family, int is_monitor) {
+    if (is_monitor)
+        return scrub_slow_path(ctx, SCRUB_SLOW_MALFORMED, family);
+    return scrub_verdict(ctx, SCRUB_VERDICT_DROP, family, XDP_DROP);
+}
+
+static __always_inline int scrub_fib_slow_path(struct xdp_md *ctx, int rc, __u32 family) {
+    switch (rc) {
+    case BPF_FIB_LKUP_RET_NO_NEIGH:
+        return scrub_slow_path(ctx, SCRUB_SLOW_NO_NEIGH, family);
+    case BPF_FIB_LKUP_RET_FRAG_NEEDED:
+        return scrub_slow_path(ctx, SCRUB_SLOW_MTU, family);
+    case BPF_FIB_LKUP_RET_NOT_FWDED:
+        // Destined to the node itself (address not yet in local_addrs).
+        return scrub_verdict(ctx, SCRUB_VERDICT_LOCAL, family, XDP_PASS);
+    default:
+        return scrub_slow_path(ctx, SCRUB_SLOW_FIB_FAIL, family);
+    }
+}
+
+static __always_inline int scrub_redirect(struct xdp_md *ctx, struct ethhdr *eth,
+                                          struct bpf_fib_lookup *fib, __u32 family) {
+    __builtin_memcpy(eth->h_dest, fib->dmac, ETH_ALEN);
+    __builtin_memcpy(eth->h_source, fib->smac, ETH_ALEN);
+    scrub_verdict(ctx, SCRUB_VERDICT_FORWARD, family, 0);
+    return bpf_redirect_map(&tx_ports, fib->ifindex, 0);
+}
+
+static __always_inline void ip_decrease_ttl(struct iphdr *ip) {
+    __u32 check = (__u32)ip->check;
+    check += (__u32)bpf_htons(0x0100);
+    ip->check = (__sum16)(check + (check >= 0xFFFF));
+    ip->ttl--;
+}
+
+static __always_inline int scrub_forward_v4(struct xdp_md *ctx, struct ethhdr *eth, struct iphdr *ip, int tagged) {
+    // Forwarding a tagged frame would carry the outside VLAN onto the inside;
+    // the kernel's VLAN sub-interfaces handle it correctly.
+    if (tagged)
+        return scrub_slow_path(ctx, SCRUB_SLOW_VLAN, SCRUB_FAMILY_V4);
+    if (ip->ttl <= 1)
+        return scrub_slow_path(ctx, SCRUB_SLOW_TTL, SCRUB_FAMILY_V4);
+
+    struct bpf_fib_lookup fib = {};
+    fib.family = AF_INET;
+    fib.tos = ip->tos;
+    fib.l4_protocol = ip->protocol;
+    fib.tot_len = bpf_ntohs(ip->tot_len);
+    fib.ipv4_src = ip->saddr;
+    fib.ipv4_dst = ip->daddr;
+    fib.ifindex = ctx->ingress_ifindex;
+
+    int rc = bpf_fib_lookup(ctx, &fib, sizeof(fib), 0);
+    if (rc != BPF_FIB_LKUP_RET_SUCCESS)
+        return scrub_fib_slow_path(ctx, rc, SCRUB_FAMILY_V4);
+    if (!bpf_map_lookup_elem(&tx_ports, &fib.ifindex))
+        return scrub_slow_path(ctx, SCRUB_SLOW_EGRESS_OTHER, SCRUB_FAMILY_V4);
+
+    ip_decrease_ttl(ip);
+    return scrub_redirect(ctx, eth, &fib, SCRUB_FAMILY_V4);
+}
+
+static __always_inline int scrub_forward_v6(struct xdp_md *ctx, struct ethhdr *eth, struct ipv6hdr *ip6, int tagged) {
+    if (tagged)
+        return scrub_slow_path(ctx, SCRUB_SLOW_VLAN, SCRUB_FAMILY_V6);
+    if (ip6->hop_limit <= 1)
+        return scrub_slow_path(ctx, SCRUB_SLOW_TTL, SCRUB_FAMILY_V6);
+
+    struct bpf_fib_lookup fib = {};
+    fib.family = AF_INET6;
+    fib.flowinfo = *(__be32 *)ip6 & bpf_htonl(0x0FFFFFFF);
+    fib.l4_protocol = ip6->nexthdr;
+    fib.tot_len = bpf_ntohs(ip6->payload_len) + sizeof(struct ipv6hdr);
+    __builtin_memcpy(fib.ipv6_src, &ip6->saddr, 16);
+    __builtin_memcpy(fib.ipv6_dst, &ip6->daddr, 16);
+    fib.ifindex = ctx->ingress_ifindex;
+
+    int rc = bpf_fib_lookup(ctx, &fib, sizeof(fib), 0);
+    if (rc != BPF_FIB_LKUP_RET_SUCCESS)
+        return scrub_fib_slow_path(ctx, rc, SCRUB_FAMILY_V6);
+    if (!bpf_map_lookup_elem(&tx_ports, &fib.ifindex))
+        return scrub_slow_path(ctx, SCRUB_SLOW_EGRESS_OTHER, SCRUB_FAMILY_V6);
+
+    ip6->hop_limit--;
+    return scrub_redirect(ctx, eth, &fib, SCRUB_FAMILY_V6);
+}
+
+// The node's own traffic (BGP, SSH, management) and link-scoped traffic (ARP's
+// IPv6 counterpart, neighbour discovery) must reach the kernel, and is never
+// forwarded anyway.
+static __always_inline int scrub_local_v4(__u32 daddr) {
+    if ((daddr & bpf_htonl(0xF0000000)) == bpf_htonl(0xE0000000) || daddr == 0xFFFFFFFF)
+        return 1;
+    return bpf_map_lookup_elem(&local_addrs_v4, &daddr) != NULL;
+}
+
+static __always_inline int scrub_local_v6(struct in6_addr *daddr) {
+    __u8 b0 = daddr->in6_u.u6_addr8[0];
+    __u8 b1 = daddr->in6_u.u6_addr8[1];
+    if (b0 == 0xFF || (b0 == 0xFE && (b1 & 0xC0) == 0x80))
+        return 1;
+    return bpf_map_lookup_elem(&local_addrs_v6, daddr) != NULL;
+}
+
+static __always_inline int scrub_ipv4(struct xdp_md *ctx, struct ethhdr *eth, void *l3, void *data_end,
+                                      int tagged, int is_monitor) {
+    struct iphdr *ip = l3;
+    if ((void *)(ip + 1) > data_end || ip->version != 4 || ip->ihl < 5)
+        return scrub_malformed(ctx, SCRUB_FAMILY_V4, is_monitor);
+
+    __u32 daddr = ip->daddr;
+    if (scrub_local_v4(daddr))
+        return scrub_verdict(ctx, SCRUB_VERDICT_LOCAL, SCRUB_FAMILY_V4, XDP_PASS);
+
+    __u64 now = bpf_ktime_get_ns();
+    __u32 saddr = ip->saddr;
+    if (!source_allowlisted_v4(saddr)) {
+        // CHECK_STOP (TCP header not locatable) forwards, as host mode passes
+        // it: dropping would break fragmented TCP whose later fragments carry
+        // no header.
+        if (check_policy_v4(ctx, saddr, now, &is_monitor) == CHECK_DROP ||
+            check_blocked_v4(ctx, saddr, now, is_monitor) == CHECK_DROP ||
+            check_l4_v4(ctx, ip, data_end, saddr, now, is_monitor) == CHECK_DROP)
+            return scrub_verdict(ctx, SCRUB_VERDICT_DROP, SCRUB_FAMILY_V4, XDP_DROP);
+    }
+
+    return scrub_forward_v4(ctx, eth, ip, tagged);
+}
+
+static __always_inline int scrub_ipv6(struct xdp_md *ctx, struct ethhdr *eth, void *l3, void *data_end,
+                                      int tagged, int is_monitor) {
+    struct ipv6hdr *ip6 = l3;
+    if ((void *)(ip6 + 1) > data_end || ip6->version != 6)
+        return scrub_malformed(ctx, SCRUB_FAMILY_V6, is_monitor);
+
+    struct in6_addr daddr = ip6->daddr;
+    if (scrub_local_v6(&daddr))
+        return scrub_verdict(ctx, SCRUB_VERDICT_LOCAL, SCRUB_FAMILY_V6, XDP_PASS);
+
+    __u64 now = bpf_ktime_get_ns();
+    struct in6_addr saddr = ip6->saddr;
+    if (!source_allowlisted_v6(&saddr)) {
+        if (check_policy_v6(ctx, &saddr, now, &is_monitor) == CHECK_DROP ||
+            check_blocked_v6(ctx, &saddr, now, is_monitor) == CHECK_DROP)
+            return scrub_verdict(ctx, SCRUB_VERDICT_DROP, SCRUB_FAMILY_V6, XDP_DROP);
+
+        __u8 l4_proto = 0;
+        void *l4_hdr = (void *)(ip6 + 1);
+        __u8 ext_count = 0;
+        if (parse_ipv6_l4(ip6, data_end, &l4_proto, &l4_hdr, &ext_count) < 0) {
+            emit_incident_v6(ctx, &saddr, INCIDENT_MALFORMED, now);
+            return scrub_malformed(ctx, SCRUB_FAMILY_V6, is_monitor);
+        }
+        if (check_l4_v6(ctx, l4_proto, l4_hdr, data_end, &saddr, now, is_monitor) == CHECK_DROP)
+            return scrub_verdict(ctx, SCRUB_VERDICT_DROP, SCRUB_FAMILY_V6, XDP_DROP);
+    }
+
+    return scrub_forward_v6(ctx, eth, ip6, tagged);
+}
+
+SEC("xdp")
+int xdp_scrub(struct xdp_md *ctx) {
+    void *data = (void *)(long)ctx->data;
+    void *data_end = (void *)(long)ctx->data_end;
+    int is_monitor = monitor_mode_enabled();
+
+    __u16 h_proto = 0;
+    void *cursor = data;
+    if (parse_eth_vlan(data, data_end, &h_proto, &cursor) < 0 || is_vlan_proto(h_proto))
+        return scrub_malformed(ctx, SCRUB_FAMILY_OTHER, is_monitor);
+    int tagged = cursor != data + sizeof(struct ethhdr);
+
+    if (h_proto == bpf_htons(ETH_P_IP))
+        return scrub_ipv4(ctx, data, cursor, data_end, tagged, is_monitor);
+    if (h_proto == bpf_htons(ETH_P_IPV6))
+        return scrub_ipv6(ctx, data, cursor, data_end, tagged, is_monitor);
+
+    // ARP and other non-IP frames: the kernel never forwards them, and the
+    // edge router cannot reach the node without ARP replies.
+    return scrub_verdict(ctx, SCRUB_VERDICT_LOCAL, SCRUB_FAMILY_OTHER, XDP_PASS);
+}
+
+// Several drivers (ixgbe, i40e, veth) only transmit XDP_REDIRECT frames on a
+// port that has an XDP program attached.
+SEC("xdp")
+int xdp_pass_inside(struct xdp_md *ctx) {
+    return XDP_PASS;
+}
+
 // --- TC Ingress (SYN Monitor) ---
 
 SEC("classifier/ingress")
