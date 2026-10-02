@@ -38,16 +38,16 @@ func TestComputePPSV6PerKey(t *testing.T) {
 	a[15] = 1
 	b[15] = 2
 
-	computePPSV6(prev, a, ebpf.ICMPRate{LastTime: 10, Count: 100})
-	computePPSV6(prev, b, ebpf.ICMPRate{LastTime: 10, Count: 200})
+	computePPSV6(prev, a, ebpf.ICMPRate{LastTime: 10, Count: 1100})
+	computePPSV6(prev, b, ebpf.ICMPRate{LastTime: 10, Count: 1200})
 	if len(prev) != 2 {
 		t.Fatalf("expected 2 tracked keys, got %d", len(prev))
 	}
 	// b's window rolls; a must be unaffected.
-	if got := computePPSV6(prev, b, ebpf.ICMPRate{LastTime: 20, Count: 5}); got != 200 {
-		t.Fatalf("key b rolled pps = %v, want 200", got)
+	if got := computePPSV6(prev, b, ebpf.ICMPRate{LastTime: 20, Count: 5}); got != 1200 {
+		t.Fatalf("key b rolled pps = %v, want 1200", got)
 	}
-	if got := computePPSV6(prev, a, ebpf.ICMPRate{LastTime: 20, Count: 150}); got != 150 {
-		t.Fatalf("key a pps = %v, want 150", got)
+	if got := computePPSV6(prev, a, ebpf.ICMPRate{LastTime: 20, Count: 1500}); got != 1500 {
+		t.Fatalf("key a pps = %v, want 1500", got)
 	}
 }

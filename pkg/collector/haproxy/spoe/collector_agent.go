@@ -176,12 +176,14 @@ func (a *CollectorAgent) Start() error {
 				// Calculate RTT from SYN to HTTP request
 				rttDuration := time.Since(synTime)
 				rttMs = float64(rttDuration.Milliseconds())
-				logrus.WithFields(logrus.Fields{
-					"ip":             srcIP.String(),
-					"syn_to_http_ms": rttMs,
-					"syn_age":        rttDuration.String(),
-				}).Debug("Calculated RTT from eBPF SYN timestamp")
-			} else {
+				if logrus.IsLevelEnabled(logrus.DebugLevel) {
+					logrus.WithFields(logrus.Fields{
+						"ip":             srcIP.String(),
+						"syn_to_http_ms": rttMs,
+						"syn_age":        rttDuration.String(),
+					}).Debug("Calculated RTT from eBPF SYN timestamp")
+				}
+			} else if logrus.IsLevelEnabled(logrus.DebugLevel) {
 				logrus.WithField("ip", srcIP.String()).Debug("No SYN timestamp found for IP")
 			}
 		}

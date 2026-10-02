@@ -1,7 +1,6 @@
 package collector
 
 import (
-	"encoding/binary"
 	"fmt"
 	"net"
 	"time"
@@ -9,6 +8,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	apiv1 "PacketYeeter/api/proto/v1"
+	"PacketYeeter/pkg/collector/ebpf"
 	"PacketYeeter/pkg/metrics"
 )
 
@@ -72,23 +72,22 @@ func (c *Collector) sendEgressVolume() {
 	var totalBytes uint64
 
 	if c.Maps.EgressBytes != nil {
-		var key uint32
-		var total uint64
-		iter := c.Maps.EgressBytes.Iterate()
-		for iter.Next(&key, &total) {
+		err := ebpf.Walk(&c.mapWalker, c.Maps.EgressBytes, func(key uint32, total uint64) bool {
 			if sent >= egressMaxBatchSize {
-				break
+				return false
 			}
-			ipBytes := make([]byte, 4)
-			binary.LittleEndian.PutUint32(ipBytes, key)
 			delta, ok := deltaEgress(c.prevEgressBytes, key, total, now)
 			if !ok {
-				continue
+				return true
 			}
-			if c.emitEgressSignal(net.IP(ipBytes), delta, total, windowSeconds) {
+			if c.emitEgressSignal(ipv4FromKey(key), delta, total, windowSeconds) {
 				totalBytes += delta
 				sent++
 			}
+			return true
+		})
+		if err != nil {
+			c.Logger.WithError(err).Warn("Failed to walk IPv4 egress map")
 		}
 	}
 
@@ -96,21 +95,22 @@ func (c *Collector) sendEgressVolume() {
 	// cannot starve IPv6 emission on the same poll.
 	sentV6 := 0
 	if c.Maps.EgressBytesV6 != nil {
-		var key [16]byte
-		var total uint64
-		iter := c.Maps.EgressBytesV6.Iterate()
-		for iter.Next(&key, &total) {
+		err := ebpf.Walk(&c.mapWalker, c.Maps.EgressBytesV6, func(key [16]byte, total uint64) bool {
 			if sentV6 >= egressMaxBatchSize {
-				break
+				return false
 			}
 			delta, ok := deltaEgress(c.prevEgressBytesV6, key, total, now)
 			if !ok {
-				continue
+				return true
 			}
 			if c.emitEgressSignal(net.IP(key[:]), delta, total, windowSeconds) {
 				totalBytes += delta
 				sentV6++
 			}
+			return true
+		})
+		if err != nil {
+			c.Logger.WithError(err).Warn("Failed to walk IPv6 egress map")
 		}
 	}
 
