@@ -17,6 +17,7 @@ NS_SRC="yeetsrc_${TOKEN}"; NS_SCR="yeetscr_${TOKEN}"; NS_DST="yeetdst_${TOKEN}"
 CREATED_NS=()
 COLLECTOR_PID=""; HTTP_PID=""
 COLLECTOR_LOG="$(mktemp /tmp/yeet-scrub-collector.XXXXXX.log)"
+UDP_OUT="$(mktemp)"
 FAILURES=0
 
 SRC4=10.201.1.2; BLOCKED4=10.201.1.3; POLICY4=10.201.1.4; OUT4=10.201.1.1
@@ -32,6 +33,7 @@ cleanup() {
   [[ -n "$COLLECTOR_PID" ]] && kill -9 "$COLLECTOR_PID" 2>/dev/null || true
   [[ -n "$HTTP_PID" ]] && kill "$HTTP_PID" 2>/dev/null || true
   for ns in "${CREATED_NS[@]}"; do ip netns del "$ns" 2>/dev/null || true; done
+  rm -f "$UDP_OUT"
   log "cleaned up (collector log: $COLLECTOR_LOG)"
 }
 trap cleanup EXIT
@@ -134,6 +136,23 @@ else
   pass "generic XDP refused"
 fi
 
+log "IPv6 forwarding is required when IPv6 is routed via the inside port"
+scr sysctl -qw net.ipv6.conf.all.forwarding=0
+if scr "$COLLECTOR_BIN" -mode scrub -i out0 -inside-if in0 -socket "" \
+     -metrics-addr 127.0.0.1:2113 -analyzer-addr 127.0.0.1:1 >/dev/null 2>&1; then
+  bad "collector started with net.ipv6.conf.all.forwarding=0"
+else
+  pass "IPv6 forwarding off refused"
+fi
+scr sysctl -qw net.ipv6.conf.all.forwarding=1 net.ipv6.conf.out0.forwarding=1 net.ipv4.conf.out0.forwarding=0
+if scr "$COLLECTOR_BIN" -mode scrub -i out0 -inside-if in0 -socket "" \
+     -metrics-addr 127.0.0.1:2113 -analyzer-addr 127.0.0.1:1 >/dev/null 2>&1; then
+  bad "collector started with net.ipv4.conf.out0.forwarding=0"
+else
+  pass "IPv4 forwarding off on the outside port refused"
+fi
+scr sysctl -qw net.ipv4.conf.out0.forwarding=1
+
 log "starting collector in scrub mode"
 start_collector
 pass "/readyz is 200"
@@ -157,7 +176,7 @@ try:
         s.recv(2048); n += 1
 except socket.timeout:
     pass
-print(n)' >/tmp/yeet-scrub-udp.$$ &
+print(n)' >"$UDP_OUT" &
 UDP_PID=$!
 sleep 0.5
 src python3 -c '
@@ -165,8 +184,7 @@ import socket
 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 for _ in range(20): s.sendto(b"x" * 64, ("'"$DST4"'", 5353))'
 wait "$UDP_PID" || true
-[[ "$(cat /tmp/yeet-scrub-udp.$$)" == 20 ]] && pass "IPv4 UDP forwarded" || bad "UDP: received $(cat /tmp/yeet-scrub-udp.$$)/20"
-rm -f /tmp/yeet-scrub-udp.$$
+[[ "$(cat "$UDP_OUT")" == 20 ]] && pass "IPv4 UDP forwarded" || bad "UDP: received $(cat "$UDP_OUT")/20"
 
 drop4=$(metric packetyeeter_scrub_packets_total 'family="ipv4",verdict="drop"')
 http_ok --interface "$POLICY4" "http://$DST4:8080/" && bad "policy-blocked source got through" || pass "policy-blocked source dropped"
@@ -175,6 +193,12 @@ http_ok --interface "$BLOCKED4" "http://$DST4:8080/" && bad "blocked_ips source 
 increased "$drop4" "$(metric packetyeeter_scrub_packets_total 'family="ipv4",verdict="drop"')" \
   && pass "drop{ipv4} counted" || bad "drop{ipv4} did not increase"
 http_ok "http://$DST4:8080/" && pass "other sources unaffected" || bad "clean source broken after blocks"
+
+drop4=$(metric packetyeeter_scrub_packets_total 'family="ipv4",verdict="drop"')
+src ping -c1 -W1 -I "$POLICY4" "$OUT4" >/dev/null 2>&1 && bad "policy-blocked source reached the node" || pass "policy applies to the node's own addresses"
+src ping -c1 -W1 -I "$BLOCKED4" "$IN4" >/dev/null 2>&1 && bad "blocked_ips source reached the node" || pass "blocked_ips applies to the node's own addresses"
+increased "$drop4" "$(metric packetyeeter_scrub_packets_total 'family="ipv4",verdict="drop"')" \
+  && pass "local drops counted" || bad "drop{ipv4} did not increase for local traffic"
 
 local4=$(metric packetyeeter_scrub_packets_total 'family="ipv4",verdict="local"')
 src ping -c1 -W1 "$OUT4" >/dev/null && src ping -c1 -W1 "$IN4" >/dev/null \
@@ -192,6 +216,27 @@ scr ip neigh flush dev in0
 http_ok "http://$DST4:8080/" && http_ok "http://$DST4:8080/" && pass "traffic recovers after neighbour flush" || bad "no recovery after neighbour flush"
 increased "$neigh" "$(metric packetyeeter_scrub_slow_path_total 'reason="no_neigh"')" \
   && pass "slow_path{no_neigh} counted" || bad "slow_path{no_neigh} did not increase"
+
+log "IPv6 transit with forwarding disabled is visible"
+nf=$(metric packetyeeter_scrub_slow_path_total 'reason="not_fwded"')
+scr sysctl -qw net.ipv6.conf.all.forwarding=0
+code=$(scr curl -s -o /dev/null -w '%{http_code}' "http://$METRICS/readyz" || true)
+[[ "$code" == 503 ]] && pass "/readyz 503 with IPv6 forwarding off" || bad "/readyz=$code with IPv6 forwarding off"
+http_ok -6 --max-time 1 "http://[$DST6]:8080/" || true
+increased "$nf" "$(metric packetyeeter_scrub_slow_path_total 'reason="not_fwded"')" \
+  && pass "slow_path{not_fwded} counted" || bad "slow_path{not_fwded} did not increase"
+scr sysctl -qw net.ipv6.conf.all.forwarding=1
+code=$(scr curl -s -o /dev/null -w '%{http_code}' "http://$METRICS/readyz" || true)
+[[ "$code" == 200 ]] && pass "/readyz recovers with IPv6 forwarding on" || bad "/readyz=$code after re-enabling IPv6 forwarding"
+
+log "slow-path rate limit"
+stop_collector
+start_collector -scrub-slow-path-pps 1
+lim=$(metric packetyeeter_scrub_slow_path_limited_total)
+src ping -q -c 100 -i 0.005 -W1 -t1 "$DST4" >/dev/null 2>&1 || true
+increased "$lim" "$(metric packetyeeter_scrub_slow_path_limited_total)" \
+  && pass "slow_path_limited counted" || bad "slow_path_limited did not increase"
+http_ok "http://$DST4:8080/" && pass "fast path unaffected by the slow-path limit" || bad "forwarding broken with slow-path limit"
 
 log "monitor mode"
 stop_collector
