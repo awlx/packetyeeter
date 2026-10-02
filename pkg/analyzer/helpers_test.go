@@ -45,7 +45,8 @@ func resetBlockedTracking(t *testing.T, lastSweep time.Time) {
 }
 
 func TestTrackBlockedSweepIsThrottled(t *testing.T) {
-	resetBlockedTracking(t, time.Now())
+	// A future last sweep keeps a slow -race run from crossing the interval.
+	resetBlockedTracking(t, time.Now().Add(time.Hour))
 	stale := time.Now().Add(-2 * blockedWindow)
 	blockedMu.Lock()
 	blockedIPs["198.51.100.1"] = stale
@@ -122,7 +123,8 @@ func TestRecentBlocksTTLIndependentOfSweep(t *testing.T) {
 	a.recentBlocks[expired.String()] = now.Add(-recentBlockTTL - time.Second)
 	a.recentBlocks[live.String()] = now.Add(-recentBlockTTL + 5*time.Second)
 	a.recentBlocks[stale.String()] = now.Add(-3 * recentBlockTTL)
-	a.recentBlocksSwept = now
+	// Future, so a slow -race run cannot cross the sweep interval.
+	a.recentBlocksSwept = now.Add(time.Hour)
 
 	a.markBlocked(net.ParseIP("192.0.2.4"))
 	if _, ok := a.recentBlocks[stale.String()]; !ok {
