@@ -235,6 +235,9 @@ type Analyzer struct {
 
 	// Desired scrub-mode runtime rules, by scope
 	rules ruleStore
+	// Per instance rather than a package variable: syncs started by
+	// StopEnforcement outlive the call that started them. 0 = default.
+	ruleSyncTimeout time.Duration
 
 	// Connected collectors
 	collectors   map[string]*collectorStream

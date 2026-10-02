@@ -34,9 +34,9 @@ const (
 	maxRuleSetBytes = 3 << 20
 )
 
-// ruleSyncTimeout bounds how long PushRules waits for collector sends; a
-// collector that stops reading must not hang the controller. Var for tests.
-var ruleSyncTimeout = 10 * time.Second
+// defaultRuleSyncTimeout bounds how long PushRules waits for collector sends; a
+// collector that stops reading must not hang the controller.
+const defaultRuleSyncTimeout = 10 * time.Second
 
 // ruleStore holds the desired runtime rules per scope.
 type ruleStore struct {
@@ -161,7 +161,7 @@ func (a *Analyzer) PushRules(ctx context.Context, rs *apiv1.RuleSet) (*apiv1.Pus
 }
 
 // syncScrubCollectors brings every scrub collector up to date and returns how
-// many were, waiting at most ruleSyncTimeout or until ctx ends.
+// many were, waiting at most the rule sync timeout or until ctx ends.
 func (a *Analyzer) syncScrubCollectors(ctx context.Context) int {
 	a.collectorsMu.RLock()
 	var scrub []*collectorStream
@@ -182,7 +182,11 @@ func (a *Analyzer) syncScrubCollectors(ctx context.Context) int {
 			results <- err == nil
 		}()
 	}
-	timeout := time.NewTimer(ruleSyncTimeout)
+	limit := a.ruleSyncTimeout
+	if limit <= 0 {
+		limit = defaultRuleSyncTimeout
+	}
+	timeout := time.NewTimer(limit)
 	defer timeout.Stop()
 	synced := 0
 	for range scrub {

@@ -486,9 +486,7 @@ func addBlockedScrubCollector(t *testing.T, a *Analyzer) *collectorStream {
 
 func TestPushRulesDoesNotHangOnBlockedCollector(t *testing.T) {
 	a := newRuleAnalyzer(t)
-	prev := ruleSyncTimeout
-	ruleSyncTimeout = 100 * time.Millisecond
-	t.Cleanup(func() { ruleSyncTimeout = prev })
+	a.ruleSyncTimeout = 100 * time.Millisecond
 	addBlockedScrubCollector(t, a)
 	fake, _ := addCollector(t, a, "scrub")
 
