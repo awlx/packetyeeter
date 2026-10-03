@@ -1978,6 +1978,9 @@ func (a *Analyzer) Close() {
 func (a *Analyzer) close() {
 	a.cancel()
 
+	if a.BotVerifier != nil {
+		a.BotVerifier.Close()
+	}
 	if a.AIEngine != nil {
 		a.AIEngine.Stop()
 	}
