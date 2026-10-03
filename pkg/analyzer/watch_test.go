@@ -527,3 +527,22 @@ func TestWatchDecisionsLeavesNoGoroutines(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+func TestWatchDecisionsPublishesPushedRuleSetOnce(t *testing.T) {
+	a := newWatchAnalyzer(t, Config{EnableRuleAPI: true})
+	addCollector(t, a, "scrub")
+	addCollector(t, a, "scrub")
+	w := startWatch(t, a, "ctl", nil, 8)
+
+	push(t, a, "ctl", dropRule("x"))
+
+	cmd := w.next(t).GetCommand()
+	if cmd.GetType() != apiv1.CommandType_COMMAND_SET_RULES || !cmd.GetRules().GetReplace() {
+		t.Fatalf("published %v, want a SET_RULES replacement", cmd)
+	}
+	if got := upsertIDs(cmd.GetRules()); len(got) != 1 || got[0] != "ctl/x" {
+		t.Fatalf("published rules %v, want [ctl/x]", got)
+	}
+	// Two scrub collectors and the resync must not add more decisions.
+	w.expectNone(t)
+}
