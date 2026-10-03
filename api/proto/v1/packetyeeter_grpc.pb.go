@@ -30,6 +30,7 @@ const (
 	AnalyzerService_ReportBlock_FullMethodName     = "/packetyeeter.v1.AnalyzerService/ReportBlock"
 	AnalyzerService_Health_FullMethodName          = "/packetyeeter.v1.AnalyzerService/Health"
 	AnalyzerService_PushRules_FullMethodName       = "/packetyeeter.v1.AnalyzerService/PushRules"
+	AnalyzerService_WatchDecisions_FullMethodName  = "/packetyeeter.v1.AnalyzerService/WatchDecisions"
 )
 
 // AnalyzerServiceClient is the client API for AnalyzerService service.
@@ -61,6 +62,9 @@ type AnalyzerServiceClient interface {
 	// the resulting changes to scrub collectors. Disabled unless the analyzer
 	// runs with -enable-rule-api.
 	PushRules(ctx context.Context, in *RuleSet, opts ...grpc.CallOption) (*PushRulesAck, error)
+	// Stream of what the analyzer decides and sees, for a controller: every
+	// command sent to collectors, campaign observations and scrub fingerprints.
+	WatchDecisions(ctx context.Context, in *WatchRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[Decision], error)
 }
 
 type analyzerServiceClient struct {
@@ -174,6 +178,25 @@ func (c *analyzerServiceClient) PushRules(ctx context.Context, in *RuleSet, opts
 	return out, nil
 }
 
+func (c *analyzerServiceClient) WatchDecisions(ctx context.Context, in *WatchRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[Decision], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &AnalyzerService_ServiceDesc.Streams[1], AnalyzerService_WatchDecisions_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[WatchRequest, Decision]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type AnalyzerService_WatchDecisionsClient = grpc.ServerStreamingClient[Decision]
+
 // AnalyzerServiceServer is the server API for AnalyzerService service.
 // All implementations must embed UnimplementedAnalyzerServiceServer
 // for forward compatibility.
@@ -203,6 +226,9 @@ type AnalyzerServiceServer interface {
 	// the resulting changes to scrub collectors. Disabled unless the analyzer
 	// runs with -enable-rule-api.
 	PushRules(context.Context, *RuleSet) (*PushRulesAck, error)
+	// Stream of what the analyzer decides and sees, for a controller: every
+	// command sent to collectors, campaign observations and scrub fingerprints.
+	WatchDecisions(*WatchRequest, grpc.ServerStreamingServer[Decision]) error
 	mustEmbedUnimplementedAnalyzerServiceServer()
 }
 
@@ -242,6 +268,9 @@ func (UnimplementedAnalyzerServiceServer) Health(context.Context, *emptypb.Empty
 }
 func (UnimplementedAnalyzerServiceServer) PushRules(context.Context, *RuleSet) (*PushRulesAck, error) {
 	return nil, status.Error(codes.Unimplemented, "method PushRules not implemented")
+}
+func (UnimplementedAnalyzerServiceServer) WatchDecisions(*WatchRequest, grpc.ServerStreamingServer[Decision]) error {
+	return status.Error(codes.Unimplemented, "method WatchDecisions not implemented")
 }
 func (UnimplementedAnalyzerServiceServer) mustEmbedUnimplementedAnalyzerServiceServer() {}
 func (UnimplementedAnalyzerServiceServer) testEmbeddedByValue()                         {}
@@ -433,6 +462,17 @@ func _AnalyzerService_PushRules_Handler(srv interface{}, ctx context.Context, de
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AnalyzerService_WatchDecisions_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(WatchRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(AnalyzerServiceServer).WatchDecisions(m, &grpc.GenericServerStream[WatchRequest, Decision]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type AnalyzerService_WatchDecisionsServer = grpc.ServerStreamingServer[Decision]
+
 // AnalyzerService_ServiceDesc is the grpc.ServiceDesc for AnalyzerService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -483,6 +523,11 @@ var AnalyzerService_ServiceDesc = grpc.ServiceDesc{
 			Handler:       _AnalyzerService_StreamSignals_Handler,
 			ServerStreams: true,
 			ClientStreams: true,
+		},
+		{
+			StreamName:    "WatchDecisions",
+			Handler:       _AnalyzerService_WatchDecisions_Handler,
+			ServerStreams: true,
 		},
 	},
 	Metadata: "v1/packetyeeter.proto",
