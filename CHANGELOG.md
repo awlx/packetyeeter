@@ -10,6 +10,12 @@
   spoofed-source floods no longer grow it to millions of entries. Signals are
   unchanged.
 - Expired pending handshakes are consumed with batch deletes.
+## 2026-10-02 - Scrub mode handshake tracking fixes
+
+- An ACK the kernel forwards (slow path, e.g. right after a neighbour
+  expired) now completes a tracked handshake too, so such clients are no longer
+  reported as incomplete handshakes.
+- An RST|ACK no longer counts as completing a handshake.
 
 ## 2026-10-02 - Scrub mode runtime rules
 
