@@ -36,6 +36,16 @@ GEOIP_ASN_PATH=/var/lib/GeoIP/GeoLite2-ASN.mmdb
 
 # Enable verbose logging
 # EXTRA_ARGS=-v
+#
+# Runtime rules for scrub collectors (PushRules). Off by default: the gRPC
+# listener is unauthenticated, so firewall -listen-addr to trusted controllers
+# and collectors before enabling it.
+# EXTRA_ARGS=-enable-rule-api
+#
+# Keep pushed rules across analyzer restarts (otherwise a restart clears the
+# scrub collectors' rules until the controller pushes again). The unit can
+# write /var/lib/packetyeeter.
+# EXTRA_ARGS=-enable-rule-api -rule-state-dir /var/lib/packetyeeter
 
 # Runtime enforcement kill switch: POST /api/enforcement/stop on the inspector
 # suppresses every enforcing command from every detector, immediately, without a
