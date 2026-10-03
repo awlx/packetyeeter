@@ -1,6 +1,8 @@
 package mapcleaner
 
 import (
+	"cmp"
+	"math/bits"
 	"slices"
 	"time"
 )
@@ -60,20 +62,79 @@ func RemoveOldestN[K comparable, V any](m map[K]V, n int, getTimestamp func(K, V
 		return
 	}
 
-	type entry struct {
-		key K
-		ts  time.Time
-	}
-	entries := make([]entry, 0, len(m))
+	// Keys are offsets from one monotonic reference so ordering matches
+	// time.Time.Compare for timestamps taken from time.Now, at int64 cost.
+	ref := time.Now()
+	entries := make([]oldestEntry[K], 0, len(m))
 	for key, value := range m {
-		entries = append(entries, entry{key: key, ts: getTimestamp(key, value)})
+		entries = append(entries, oldestEntry[K]{key: key, age: int64(getTimestamp(key, value).Sub(ref))})
 	}
-	slices.SortFunc(entries, func(a, b entry) int {
-		return a.ts.Compare(b.ts)
-	})
+	selectOldest(entries, n)
 	for i := range n {
 		delete(m, entries[i].key)
 	}
+}
+
+type oldestEntry[K comparable] struct {
+	key K
+	age int64
+}
+
+// selectOldest partially orders e so that e[:n] holds the n smallest ages
+// (quickselect, expected O(len(e))). Among entries tied with the n-th age,
+// which ones land in e[:n] is unspecified, as it was with the unstable sort
+// this replaced; callers only rely on every evicted age being <= every kept
+// age. Falls back to a full sort if partitioning degenerates.
+func selectOldest[K comparable](e []oldestEntry[K], n int) {
+	if n <= 0 || n >= len(e) {
+		return
+	}
+	lo, hi := 0, len(e)-1
+	budget := 4 * bits.Len(uint(len(e)))
+	for lo < hi {
+		if budget == 0 {
+			slices.SortFunc(e[lo:hi+1], func(a, b oldestEntry[K]) int { return cmp.Compare(a.age, b.age) })
+			return
+		}
+		budget--
+		pivot := medianOfThree(e[lo].age, e[lo+(hi-lo)/2].age, e[hi].age)
+		i, j := lo, hi
+		for i <= j {
+			for e[i].age < pivot {
+				i++
+			}
+			for e[j].age > pivot {
+				j--
+			}
+			if i <= j {
+				e[i], e[j] = e[j], e[i]
+				i++
+				j--
+			}
+		}
+		// Now e[lo:j+1] <= pivot <= e[i:hi+1], and e[j+1:i] == pivot.
+		switch {
+		case n-1 <= j:
+			hi = j
+		case n-1 >= i:
+			lo = i
+		default:
+			return
+		}
+	}
+}
+
+func medianOfThree(a, b, c int64) int64 {
+	if a > b {
+		a, b = b, a
+	}
+	if b > c {
+		b = c
+	}
+	if a > b {
+		b = a
+	}
+	return b
 }
 
 // RemoveEntriesOlderThan removes all entries from a map that are older than the cutoff time.
@@ -119,7 +180,7 @@ const batchEvictHeadroom = 10
 
 // EnforceMaxSizeBatch keeps m at or below maxSize while amortizing the cost of
 // locating the oldest entries. When m exceeds maxSize it removes, in a single
-// sorted pass, the overflow plus a maxSize/batchEvictHeadroom headroom margin,
+// selection pass, the overflow plus a maxSize/batchEvictHeadroom headroom margin,
 // so a caller on a hot insert path pays the O(n) scan once per batch rather
 // than on every insert (unlike EnforceMaxSize, which evicts one-at-a-time).
 // Prefer this on paths that insert under load — per-signal or per-packet caches
