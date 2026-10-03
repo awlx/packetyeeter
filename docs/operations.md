@@ -254,9 +254,46 @@ reference numbers (`make bench-scrub-veth`).
 
 ### Runtime rules
 
-Scrub collectors apply match rules received on the analyzer stream as
-`COMMAND_SET_RULES` (a `RuleSetDelta`: rules to upsert by `id`, ids to
-remove). The analyzer API that sends them is not available yet. A rule matches
+A controller pushes rules with the analyzer's `PushRules(RuleSet)` RPC, which
+is refused unless the analyzer runs with `-enable-rule-api`. Each `RuleSet`
+is the complete set for one `scope` (a controller identity); pushing an empty
+set removes the scope's rules, and scopes never overwrite each other (rule
+ids are sent as `<scope>/<id>`). The analyzer validates the set, checks that
+all scopes together still fit the limits below, and sends every scrub
+collector the complete set of all scopes as a replacement
+(`COMMAND_SET_RULES` with `RuleSetDelta.replace`). It does this on every push,
+when a collector (re)connects and once a minute, because collectors do not
+acknowledge rules: a collector that rejected or missed a set converges within
+a minute, and rules a restarted analyzer no longer knows are removed.
+`PushRulesAck.collectors` says how many scrub collectors were sent the set
+within 10 seconds; it does not confirm they applied it, so compare
+`packetyeeter_scrub_rules_active` on the collectors. All scopes together must
+also encode to at most 3 MiB. A rule is withdrawn from collectors 5 seconds
+before its `expires_at`, so a collector whose clock runs slightly ahead does
+not reject the whole set.
+
+Rules live in the analyzer's memory: after a restart it would send scrub
+collectors an empty set, clearing their rules until the controller pushes
+again. With `-rule-state-dir DIR` the analyzer writes every accepted push to
+`DIR/scrub-rules.json` (mode 0600, written atomically) and restores the
+unexpired rules on start, before collectors connect. Restored rules are
+checked like pushed ones; invalid or expired entries are skipped. A file that
+cannot be read as rule state is renamed to `scrub-rules.json.corrupt-<time>`
+and the analyzer starts without rules. Failures are logged and counted in
+`packetyeeter_rule_state_errors_total{op}`. The file is as sensitive as the
+rule API itself: keep the directory writable by the analyzer only.
+
+While the analyzer is not enforcing (`-dry-run`, or the runtime kill switch),
+only `PASS` rules are sent, and pulling the kill switch withdraws the `DROP`
+and `RATE_LIMIT` rules collectors already hold.
+
+The gRPC listener has no authentication yet: anyone who can reach
+`-listen-addr` can push rules once the API is enabled, and any client that
+announces itself as a scrub collector receives them. Firewall it to the
+controllers and collectors.
+
+Scrub collectors announce their role when they connect; an analyzer older than
+this release ignores the announcement, since it carries no IP. A rule matches
 traffic for its `dst_prefix` on any combination of protocols, source and
 destination port ranges, IP total length, TCP flags (`flags & mask ==
 value`), fragment state and up to 8 source prefixes, and then:
