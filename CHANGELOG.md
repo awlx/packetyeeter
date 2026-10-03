@@ -12,6 +12,17 @@
 - Over-cap map eviction uses selection instead of a full sort (~22 ms to
   ~2.5 ms per eviction at a 100k cap), evicting the same entries.
 - `Analyzer.Close` is idempotent.
+## 2026-10-02 - Scrub mode handshake map per-CPU LRU
+
+- `xdp_scrub` tracks handshakes in its own `scrub_handshakes(_v6)` maps, LRU
+  hashes with per-CPU LRU lists (`BPF_F_NO_COMMON_LRU`), instead of sharing
+  `pending_handshakes(_v6)` with host mode. A random-source SYN flood no longer
+  contends on one LRU lock across CPUs. Host mode is unchanged, and each mode
+  only creates its own pair of maps.
+- The 500k-entry capacity is now split evenly across the kernel's possible
+  CPUs for eviction, so under a flood hitting few RX queues, or on a host with
+  far fewer online than possible CPUs, old entries are evicted earlier.
+
 ## 2026-10-02 - Scrub mode handshake tracking fixes
 
 - An ACK the kernel forwards (slow path, e.g. right after a neighbour
