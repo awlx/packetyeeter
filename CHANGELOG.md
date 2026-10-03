@@ -1,5 +1,12 @@
 # PacketYeeter Changelog
 
+## 2026-10-02 - Scrub mode handshake tracking fixes
+
+- An ACK the kernel forwards (slow path, e.g. right after a neighbour
+  expired) now completes a tracked handshake too, so such clients are no longer
+  reported as incomplete handshakes.
+- An RST|ACK no longer counts as completing a handshake.
+
 ## 2026-10-02 - Scrub mode runtime rules
 
 - Scrub collectors apply match rules delivered as `COMMAND_SET_RULES`
