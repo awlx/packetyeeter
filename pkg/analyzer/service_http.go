@@ -455,23 +455,27 @@ func (a *Analyzer) processHTTPRequest(sig *apiv1.Signal, ip net.IP, asn string, 
 		}))
 	}
 
-	logrus.WithFields(logrus.Fields{
-		"ip":            ip.String(),
-		"user_agent":    userAgent,
-		"client_req_ms": ctx.ClientReqMs,
-		"rtt_ms":        ctx.PacketRttMs,
-	}).Debug("Processing HTTP request in analyzer")
+	if logrus.IsLevelEnabled(logrus.DebugLevel) {
+		logrus.WithFields(logrus.Fields{
+			"ip":            ip.String(),
+			"user_agent":    userAgent,
+			"client_req_ms": ctx.ClientReqMs,
+			"rtt_ms":        ctx.PacketRttMs,
+		}).Debug("Processing HTTP request in analyzer")
+	}
 
 	// Record SPOE latency metrics
 	if ctx.ClientReqMs > 0 {
 		metrics.SPOEClientReqTimeHistogram.Observe(float64(ctx.ClientReqMs))
 		metrics.SPOELatencyReports.Inc()
 
-		logrus.WithFields(logrus.Fields{
-			"ip":         ip.String(),
-			"client_ms":  ctx.ClientReqMs,
-			"user_agent": userAgent,
-		}).Debug("Recorded SPOE latency metrics")
+		if logrus.IsLevelEnabled(logrus.DebugLevel) {
+			logrus.WithFields(logrus.Fields{
+				"ip":         ip.String(),
+				"client_ms":  ctx.ClientReqMs,
+				"user_agent": userAgent,
+			}).Debug("Recorded SPOE latency metrics")
+		}
 
 		// Calculate proxy lag (client request time - network RTT)
 		// If RTT is available from eBPF, use it for more accurate proxy lag
@@ -481,12 +485,14 @@ func (a *Analyzer) processHTTPRequest(sig *apiv1.Signal, ip net.IP, asn string, 
 			proxyLag = float64(ctx.ClientReqMs) - ctx.PacketRttMs
 		}
 
-		logrus.WithFields(logrus.Fields{
-			"ip":        ip.String(),
-			"client_ms": ctx.ClientReqMs,
-			"rtt_ms":    ctx.PacketRttMs,
-			"proxy_lag": proxyLag,
-		}).Debug("Calculating proxy lag")
+		if logrus.IsLevelEnabled(logrus.DebugLevel) {
+			logrus.WithFields(logrus.Fields{
+				"ip":        ip.String(),
+				"client_ms": ctx.ClientReqMs,
+				"rtt_ms":    ctx.PacketRttMs,
+				"proxy_lag": proxyLag,
+			}).Debug("Calculating proxy lag")
+		}
 
 		if proxyLag > 0 {
 			// Update highest proxy lag (gauges don't have Get, just Set)
@@ -666,11 +672,13 @@ func (a *Analyzer) processHTTPRequest(sig *apiv1.Signal, ip net.IP, asn string, 
 		// Check for common bot keywords
 		for _, keyword := range ja4db.BotKeywordsExtended {
 			if strings.Contains(lowerUA, keyword) {
-				logrus.WithFields(logrus.Fields{
-					"ip":         ip.String(),
-					"user_agent": userAgent,
-					"keyword":    keyword,
-				}).Debug("Bot keyword detected in user-agent")
+				if logrus.IsLevelEnabled(logrus.DebugLevel) {
+					logrus.WithFields(logrus.Fields{
+						"ip":         ip.String(),
+						"user_agent": userAgent,
+						"keyword":    keyword,
+					}).Debug("Bot keyword detected in user-agent")
+				}
 
 				if a.SignalBuilder != nil {
 					a.SignalBuilder.EmitBotUA(ip, asn, org, userAgent, 5.0, map[string]interface{}{
@@ -688,10 +696,12 @@ func (a *Analyzer) processHTTPRequest(sig *apiv1.Signal, ip net.IP, asn string, 
 	// signals are intentionally skipped for API/protocol requests where
 	// browser navigation headers are not expected in the first place.
 	if ctx.AcceptLanguage == "" && !browserHeadersOptional {
-		logrus.WithFields(logrus.Fields{
-			"ip":   ip.String(),
-			"host": ctx.Host,
-		}).Debug("Missing Accept-Language header")
+		if logrus.IsLevelEnabled(logrus.DebugLevel) {
+			logrus.WithFields(logrus.Fields{
+				"ip":   ip.String(),
+				"host": ctx.Host,
+			}).Debug("Missing Accept-Language header")
+		}
 
 		if a.SignalBuilder != nil {
 			a.SignalBuilder.EmitMissingHeader(ip, asn, org, aidetection.SignalMissingAcceptLang, userAgent, 0.5, createHTTPMetadata(nil))
@@ -792,13 +802,15 @@ func (a *Analyzer) recordVerifiedBot(ip net.IP, userAgent, asn, org string, resu
 	}
 
 	// Log for visibility
-	logrus.WithFields(logrus.Fields{
-		"ip":         ip.String(),
-		"bot_type":   botType,
-		"user_agent": userAgent,
-		"asn":        asn,
-		"path":       ctx.Path,
-	}).Debug("Verified bot observation recorded")
+	if logrus.IsLevelEnabled(logrus.DebugLevel) {
+		logrus.WithFields(logrus.Fields{
+			"ip":         ip.String(),
+			"bot_type":   botType,
+			"user_agent": userAgent,
+			"asn":        asn,
+			"path":       ctx.Path,
+		}).Debug("Verified bot observation recorded")
+	}
 
 	// Store in engine's detection cache so it appears in the UI
 	if a.AIEngine != nil {

@@ -43,39 +43,63 @@ func (a *Analyzer) mlConfirmsReputationBlock(ip net.IP, asn string, score float6
 	return confirmed
 }
 
-// blockedMu guards blockedIPs and blockedASNs: trackBlocked runs concurrently
-// from the per-collector gRPC stream handler goroutines.
+const (
+	blockedWindow = 60 * time.Second
+	// Expiry is swept at most this often: a per-call full-map scan made each
+	// rate-limited signal O(map size) under blockedMu during a spoofed flood.
+	blockedSweepInterval = time.Second
+	// The maps only feed the "currently blocked" gauges, so past this many
+	// distinct keys per window the gauge saturates instead of the map growing.
+	maxTrackedBlocked = 100000
+)
+
+// blockedMu guards blockedIPs, blockedASNs and blockedLastSweep: trackBlocked
+// runs concurrently from the per-collector gRPC stream handler goroutines.
 var (
-	blockedMu   sync.Mutex
-	blockedIPs  = make(map[string]time.Time)
-	blockedASNs = make(map[string]time.Time)
+	blockedMu        sync.Mutex
+	blockedIPs       = make(map[string]time.Time)
+	blockedASNs      = make(map[string]time.Time)
+	blockedLastSweep time.Time
 )
 
 func trackBlocked(ip net.IP, asn string) {
 	now := time.Now()
-	window := 60 * time.Second
+	ipKey := ""
+	if ip != nil {
+		ipKey = ip.String()
+	}
+	trackASN := asn != "" && asn != "Unknown"
+
 	blockedMu.Lock()
 	defer blockedMu.Unlock()
+	if now.Sub(blockedLastSweep) >= blockedSweepInterval {
+		cutoff := now.Add(-blockedWindow)
+		for k, ts := range blockedIPs {
+			if ts.Before(cutoff) {
+				delete(blockedIPs, k)
+			}
+		}
+		for k, ts := range blockedASNs {
+			if ts.Before(cutoff) {
+				delete(blockedASNs, k)
+			}
+		}
+		blockedLastSweep = now
+	}
 	if ip != nil {
-		blockedIPs[ip.String()] = now
+		recordBlockedLocked(blockedIPs, ipKey, now)
 	}
-	if asn != "" && asn != "Unknown" {
-		blockedASNs[asn] = now
-	}
-	// Cleanup
-	cutoff := now.Add(-window)
-	for k, ts := range blockedIPs {
-		if ts.Before(cutoff) {
-			delete(blockedIPs, k)
-		}
-	}
-	for k, ts := range blockedASNs {
-		if ts.Before(cutoff) {
-			delete(blockedASNs, k)
-		}
+	if trackASN {
+		recordBlockedLocked(blockedASNs, asn, now)
 	}
 	metrics.RateLimitCurrentlyBlockedIPs.Set(float64(len(blockedIPs)))
 	metrics.RateLimitCurrentlyBlockedASNs.Set(float64(len(blockedASNs)))
+}
+
+func recordBlockedLocked(m map[string]time.Time, key string, now time.Time) {
+	if _, ok := m[key]; ok || len(m) < maxTrackedBlocked {
+		m[key] = now
+	}
 }
 
 // checkRateLimit checks if IP or ASN has exceeded rate limits
