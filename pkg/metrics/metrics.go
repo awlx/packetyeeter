@@ -114,6 +114,21 @@ var (
 		Help: "1 when the analyzer's runtime enforcement kill switch has been pulled",
 	})
 
+	RulesDesired = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "packetyeeter_rules_desired",
+		Help: "Runtime rules pushed for scrub collectors, by scope",
+	}, []string{"scope"})
+
+	RuleStateErrors = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "packetyeeter_rule_state_errors_total",
+		Help: "Failures saving or restoring persisted scrub rules (-rule-state-dir), by operation",
+	}, []string{"op"})
+
+	RuleDeltasSent = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "packetyeeter_rule_deltas_sent_total",
+		Help: "Complete rule sets sent to scrub collectors",
+	})
+
 	EnforcementSuppressedCommands = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "packetyeeter_enforcement_suppressed_commands_total",
 		Help: "Block commands not issued because the runtime enforcement kill switch is pulled",

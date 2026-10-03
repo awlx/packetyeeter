@@ -89,6 +89,8 @@ type Config struct {
 	MaxCollectors                int      // Max concurrent collector streams (default 1024)
 	InspectorTrustedHosts        []string // Extra Host/Origin hostnames the inspector trusts for mutating requests (in addition to loopback), e.g. a reverse-proxy hostname
 	DryRun                       bool     // Monitor mode - log detections but don't block
+	EnableRuleAPI                bool     // Accept PushRules; off because the gRPC listener is unauthenticated
+	RuleStateDir                 string   // Persist pushed rules here across restarts; empty disables
 	Sustained                    sustained.Config
 }
 
@@ -233,6 +235,13 @@ type Analyzer struct {
 	httpErrorWindows map[string]*httpErrorWindow
 	httpErrorMu      sync.Mutex
 
+	// Desired scrub-mode runtime rules, by scope
+	rules         ruleStore
+	rulePersister *ruleStatePersister // nil unless -rule-state-dir is set
+	// Per instance rather than a package variable: syncs started by
+	// StopEnforcement outlive the call that started them. 0 = default.
+	ruleSyncTimeout time.Duration
+
 	// Connected collectors
 	collectors   map[string]*collectorStream
 	collectorsMu sync.RWMutex
@@ -256,6 +265,21 @@ type Analyzer struct {
 type collectorStream struct {
 	stream apiv1.AnalyzerService_StreamSignalsServer
 	sendMu sync.Mutex
+
+	role atomic.Value // string, from the collector's role signal
+
+	rulesMu sync.Mutex
+}
+
+// setRole stores role and returns the previous one.
+func (cs *collectorStream) setRole(role string) string {
+	prev, _ := cs.role.Swap(role).(string)
+	return prev
+}
+
+func (cs *collectorStream) isScrub() bool {
+	role, _ := cs.role.Load().(string)
+	return role == "scrub"
 }
 
 func mapProtoSignalType(t apiv1.SignalType) aidetection.SignalType {
@@ -312,6 +336,7 @@ func New(cfg Config) (*Analyzer, error) {
 	a := &Analyzer{
 		Config:                 cfg,
 		collectors:             make(map[string]*collectorStream),
+		rules:                  ruleStore{scopes: map[string]map[string]*apiv1.Rule{}},
 		ipRateLimiters:         make(map[string]*ratelimit.TokenBucket),
 		asnRateLimiters:        make(map[string]*ratelimit.TokenBucket),
 		RateLimiter:            ratelimit.NewLimiter(ratelimit.DefaultConfig()),
@@ -552,6 +577,12 @@ func (a *Analyzer) Start() error {
 	a.wg.Add(1)
 	go a.runBaselineCalibrator()
 
+	a.restoreRules()
+	if a.Config.EnableRuleAPI {
+		a.wg.Add(1)
+		go a.runRuleResync()
+	}
+
 	if a.Sustained != nil {
 		a.wg.Add(1)
 		go a.runSustainedEvaluator()
@@ -749,6 +780,10 @@ func (a *Analyzer) StreamSignals(stream apiv1.AnalyzerService_StreamSignalsServe
 			}).Debug("Signal received by analyzer")
 		}
 
+		if isRoleSignal(sig) {
+			a.handleRoleSignal(collectorID, cs, sig)
+			continue
+		}
 		a.processSignal(sig, cs)
 	}
 }

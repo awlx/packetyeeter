@@ -12,6 +12,27 @@
 - Over-cap map eviction uses selection instead of a full sort (~22 ms to
   ~2.5 ms per eviction at a 100k cap), evicting the same entries.
 - `Analyzer.Close` is idempotent.
+## 2026-10-02 - Analyzer PushRules for scrub collectors
+
+- New `PushRules(RuleSet)` RPC: a controller sets the complete rule set of its
+  scope, and the analyzer sends every scrub collector the complete set of all
+  scopes as a replacement (`RuleSetDelta.replace`) on each push, on
+  (re)connect and once a minute, so collectors converge without
+  acknowledgements. Off unless the analyzer runs with
+  `-enable-rule-api`, since the gRPC listener is unauthenticated.
+- Optional `-rule-state-dir`: the analyzer persists pushed rules and restores
+  them on start, so a restart does not clear scrub collectors' rules until the
+  controller pushes again.
+- Collectors announce `role=host|scrub` (and their hostname) when they connect;
+  the analyzer does not score that announcement, and older analyzers drop it
+  because it carries no IP.
+- All scopes together must encode to at most 3 MiB, rules are withdrawn 5
+  seconds before they expire, and `PushRules` waits at most 10 seconds for
+  collector sends.
+- With `-dry-run` or the kill switch pulled, only `PASS` rules are sent;
+  pulling the kill switch withdraws existing `DROP`/`RATE_LIMIT` rules.
+- New analyzer metrics `packetyeeter_rules_desired{scope}` and
+  `packetyeeter_rule_deltas_sent_total`.
 ## 2026-10-02 - Scrub mode handshake map per-CPU LRU
 
 - `xdp_scrub` tracks handshakes in its own `scrub_handshakes(_v6)` maps, LRU
