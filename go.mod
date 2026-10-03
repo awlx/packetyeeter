@@ -12,7 +12,7 @@ require (
 	github.com/rivo/tview v0.42.0
 	github.com/sirupsen/logrus v1.10.2
 	github.com/vishvananda/netlink v1.3.1
-	github.com/yalue/onnxruntime_go v1.36.0
+	github.com/yalue/onnxruntime_go v1.25.0
 	golang.org/x/sync v0.23.0
 	golang.org/x/sys v0.48.0
 	google.golang.org/grpc v1.83.2
