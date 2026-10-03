@@ -13,6 +13,7 @@ type LoaderConfig struct {
 	InsideIface  string
 	XDPMode      XDPMode
 	AllowGeneric bool
+	Fingerprints bool
 }
 
 type Loader struct {

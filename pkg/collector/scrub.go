@@ -40,6 +40,12 @@ func validateModeConfig(cfg Config) (warnings []string, err error) {
 		if cfg.ScrubSlowPathPPS != 0 && cfg.ScrubSlowPathPPS != DefaultScrubSlowPathPPS {
 			warnings = append(warnings, "-scrub-slow-path-pps has no effect in host mode")
 		}
+		if cfg.FingerprintInterval != 0 && cfg.FingerprintInterval != DefaultFingerprintInterval {
+			warnings = append(warnings, "-fingerprint-interval has no effect in host mode")
+		}
+		if cfg.FingerprintTop != 0 && cfg.FingerprintTop != DefaultFingerprintTop {
+			warnings = append(warnings, "-fingerprint-top has no effect in host mode")
+		}
 		return warnings, nil
 	}
 	return nil, validateScrubConfig(cfg)
@@ -55,6 +61,10 @@ func validateScrubConfig(cfg Config) error {
 		return errors.New("-xdp-mode generic in scrub mode requires -allow-generic")
 	case cfg.EgressAccounting:
 		return errors.New("-egress-accounting is not available in scrub mode (no TC programs)")
+	case cfg.FingerprintInterval < 0 || (cfg.FingerprintInterval > 0 && cfg.FingerprintInterval < time.Second):
+		return fmt.Errorf("-fingerprint-interval must be 0 (off) or at least 1s, got %s", cfg.FingerprintInterval)
+	case cfg.FingerprintInterval > 0 && cfg.FingerprintTop < 1:
+		return fmt.Errorf("-fingerprint-top must be at least 1, got %d", cfg.FingerprintTop)
 	}
 	return nil
 }

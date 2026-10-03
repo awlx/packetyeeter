@@ -353,6 +353,18 @@ var (
 	ScrubReadyDesc = prometheus.NewDesc("packetyeeter_scrub_ready",
 		"1 when /readyz reports the scrub node ready, else 0",
 		nil, nil)
+	ScrubFingerprintOverflowDesc = prometheus.NewDesc("packetyeeter_scrub_fingerprint_overflow_total",
+		"Packets not fingerprinted because the active fingerprint map was full",
+		nil, nil)
+	// Registered only by scrub collectors, so not promauto.
+	ScrubFingerprintBuckets = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "packetyeeter_scrub_fingerprint_buckets",
+		Help: "Fingerprint buckets read in the last interval, before the -fingerprint-top and destination caps",
+	})
+	ScrubFingerprintCapped = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "packetyeeter_scrub_fingerprint_capped_total",
+		Help: "Fingerprint buckets (kind=bucket) and destinations (kind=destination) not sent because of the per-interval caps",
+	}, []string{"kind"})
 
 	PerfLostSamples = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "packetyeeter_perf_lost_samples_total",
