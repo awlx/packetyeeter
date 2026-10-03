@@ -328,9 +328,10 @@ struct {
 //   3 = egress accounting enable
 //   4 = UDP/IPv6 fragment mode (see CONFIG_KEY_UDP_FRAG_MODE)
 //   5 = scrub mode: per-CPU slow-path packets per second (0 = unlimited)
+//   6 = scrub mode: fingerprint generation (0 = off; parity selects the map)
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
-    __uint(max_entries, 6);
+    __uint(max_entries, 7);
     __type(key, __u32);
     __type(value, __u32);
 } config_map SEC(".maps");
@@ -1666,6 +1667,7 @@ struct rule_pkt {
     __u8  tcp_flags;
     __u8  is_frag;
     __u8  v6;
+    __u8  ttl;
 };
 
 static __always_inline void rule_pkt_ports(struct rule_pkt *p, __u8 proto, void *l4, void *data_end) {
@@ -1831,6 +1833,135 @@ __attribute__((noinline)) int scrub_match_rules(struct rule_pkt *p) {
     return 0;
 }
 
+// --- Scrub fingerprints ---
+//
+// Per-destination traffic shapes for a controller, counted at the filtering
+// verdict. Two maps so userspace can drain one while XDP fills the other
+// without losing increments: it bumps the generation in config_map, waits for
+// in-flight packets, then reads and clears the map XDP no longer selects.
+// Layouts are mirrored in pkg/collector/ebpf/fingerprint.go.
+#define FP_MAP_SIZE 65536
+#define CONFIG_KEY_FINGERPRINT 6
+#define FP_EEXIST 17
+
+struct fp_key {
+    __u32 dst[4];
+    __u32 src_net[2];   // source /24 or /48, network byte order
+    __u16 dport;
+    __u8  proto;
+    __u8  size_bucket;
+    __u8  ttl_bucket;
+    __u8  dropped;
+    __u8  family;
+    __u8  pad;
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_HASH);
+    __uint(max_entries, FP_MAP_SIZE);
+    __type(key, struct fp_key);
+    __type(value, struct scrub_counter);
+} fingerprints_a SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_HASH);
+    __uint(max_entries, FP_MAP_SIZE);
+    __type(key, struct fp_key);
+    __type(value, struct scrub_counter);
+} fingerprints_b SEC(".maps");
+
+struct fp_overflow {
+    __u64 packets;
+    __u32 full_gen;     // generation in which this CPU found the map full
+    __u32 pad;
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, struct fp_overflow);
+} fingerprint_overflow SEC(".maps");
+
+static __always_inline void fp_bump(void *map, struct fp_key *k, __u64 len, __u32 gen) {
+    struct scrub_counter *c = bpf_map_lookup_elem(map, k);
+    if (c) {
+        c->packets++;
+        c->bytes += len;
+        return;
+    }
+    __u32 zero = 0;
+    struct fp_overflow *o = bpf_map_lookup_elem(&fingerprint_overflow, &zero);
+    // A failing insert takes a bucket lock and scans every CPU's free list;
+    // under a spoofed-source flood that would hit every packet, so stop trying
+    // until the next generation.
+    if (o && o->full_gen == gen) {
+        o->packets++;
+        return;
+    }
+    struct scrub_counter init = { .packets = 1, .bytes = len };
+    long err = bpf_map_update_elem(map, k, &init, BPF_NOEXIST);
+    if (err == 0)
+        return;
+    // NOEXIST rather than ANY: another CPU inserting the same key first must
+    // not have its count overwritten.
+    if (err == -FP_EEXIST) {
+        c = bpf_map_lookup_elem(map, k);
+        if (c) {
+            c->packets++;
+            c->bytes += len;
+        }
+        return;
+    }
+    if (o) {
+        o->packets++;
+        o->full_gen = gen;
+    }
+}
+
+// Global so the verifier checks it once, not at every verdict site.
+__attribute__((noinline)) int scrub_fingerprint(struct rule_pkt *p, __u32 dropped) {
+    if (!p)
+        return 0;
+    __u32 key = CONFIG_KEY_FINGERPRINT;
+    __u32 *genp = bpf_map_lookup_elem(&config_map, &key);
+    if (!genp)
+        return 0;
+    __u32 gen = *genp;
+    if (!gen)
+        return 0;
+
+    struct fp_key k = {};
+    __builtin_memcpy(k.dst, p->dst, 16);
+    k.src_net[0] = p->src[0];
+    if (p->v6) {
+        k.src_net[1] = p->src[1] & bpf_htonl(0xFFFF0000);
+        k.family = 1;
+    } else {
+        k.src_net[0] &= bpf_htonl(0xFFFFFF00);
+    }
+    if (p->has_ports)
+        k.dport = p->dport;
+    k.proto = p->proto;
+    __u16 len = p->len;
+    k.size_bucket = len < 128 ? 0 : len < 256 ? 1 : len < 512 ? 2 : len < 1024 ? 3 : 4;
+    k.ttl_bucket = p->ttl >> 5;
+    k.dropped = dropped != 0;
+
+    if (gen & 1)
+        fp_bump(&fingerprints_a, &k, len, gen);
+    else
+        fp_bump(&fingerprints_b, &k, len, gen);
+    return 0;
+}
+
+// fp is 0 for packets that never reach the fingerprint stage (malformed).
+static __always_inline int scrub_drop(struct xdp_md *ctx, struct rule_pkt *p, __u32 family, int fp) {
+    if (fp)
+        scrub_fingerprint(p, 1);
+    return scrub_verdict(ctx, SCRUB_VERDICT_DROP, family, XDP_DROP);
+}
+
 #define RULE_VERDICT_NONE 0 // no rule, or under a rate limit: run the per-source checks
 #define RULE_VERDICT_DROP 1
 #define RULE_VERDICT_PASS 2 // skip the per-source checks
@@ -1884,12 +2015,13 @@ static __always_inline int scrub_ipv4(struct xdp_md *ctx, struct ethhdr *eth, vo
         return scrub_verdict(ctx, SCRUB_VERDICT_LOCAL, SCRUB_FAMILY_V4, XDP_PASS);
     }
 
+    struct rule_pkt rp = {};
+    rule_pkt_v4(&rp, ip, data_end);
+    rp.ttl = ip->ttl;
     if (!source_allowlisted_v4(saddr)) {
-        struct rule_pkt rp = {};
-        rule_pkt_v4(&rp, ip, data_end);
         int rv = scrub_eval_rules(ctx, &rp, now, is_monitor);
         if (rv == RULE_VERDICT_DROP)
-            return scrub_verdict(ctx, SCRUB_VERDICT_DROP, SCRUB_FAMILY_V4, XDP_DROP);
+            return scrub_drop(ctx, &rp, SCRUB_FAMILY_V4, 1);
         // CHECK_STOP (TCP header not locatable) forwards, as host mode passes
         // it: dropping would break fragmented TCP whose later fragments carry
         // no header.
@@ -1897,11 +2029,12 @@ static __always_inline int scrub_ipv4(struct xdp_md *ctx, struct ethhdr *eth, vo
             (check_policy_v4(ctx, saddr, now, &is_monitor) == CHECK_DROP ||
              check_blocked_v4(ctx, saddr, now, is_monitor) == CHECK_DROP ||
              check_l4_v4(ctx, ip, data_end, saddr, now, is_monitor) == CHECK_DROP))
-            return scrub_verdict(ctx, SCRUB_VERDICT_DROP, SCRUB_FAMILY_V4, XDP_DROP);
+            return scrub_drop(ctx, &rp, SCRUB_FAMILY_V4, 1);
         scrub_hs_prepare_v4(&hs, ip, data_end, now);
         scrub_hs_close(&scrub_handshakes, &hs);
     }
 
+    scrub_fingerprint(&rp, 0);
     return scrub_forward_v4(ctx, eth, ip, tagged, is_monitor, &hs);
 }
 
@@ -1926,32 +2059,33 @@ static __always_inline int scrub_ipv6(struct xdp_md *ctx, struct ethhdr *eth, vo
     }
 
     struct scrub_hs hs = {};
+    __u8 l4_proto = 0;
+    void *l4_hdr = (void *)(ip6 + 1);
+    __u8 ext_count = 0;
+    int l4_ok = parse_ipv6_l4(ip6, data_end, &l4_proto, &l4_hdr, &ext_count) == 0;
+    // Rules and fingerprints use L4 fields, so they only see packets whose
+    // header chain parsed; a malformed chain keeps its host-mode handling.
+    struct rule_pkt rp = {};
+    if (l4_ok) {
+        rule_pkt_v6(&rp, ip6, l4_proto, l4_hdr, data_end);
+        rp.ttl = ip6->hop_limit;
+    }
     if (!source_allowlisted_v6(&saddr)) {
-        __u8 l4_proto = 0;
-        void *l4_hdr = (void *)(ip6 + 1);
-        __u8 ext_count = 0;
-        int l4_ok = parse_ipv6_l4(ip6, data_end, &l4_proto, &l4_hdr, &ext_count) == 0;
-
-        // Rules match on L4 fields, so they only see packets whose header
-        // chain parsed; a malformed chain keeps its host-mode handling below.
         int rv = RULE_VERDICT_NONE;
-        if (l4_ok) {
-            struct rule_pkt rp = {};
-            rule_pkt_v6(&rp, ip6, l4_proto, l4_hdr, data_end);
+        if (l4_ok)
             rv = scrub_eval_rules(ctx, &rp, now, is_monitor);
-        }
         if (rv == RULE_VERDICT_DROP)
-            return scrub_verdict(ctx, SCRUB_VERDICT_DROP, SCRUB_FAMILY_V6, XDP_DROP);
+            return scrub_drop(ctx, &rp, SCRUB_FAMILY_V6, 1);
         if (rv != RULE_VERDICT_PASS) {
             if (check_policy_v6(ctx, &saddr, now, &is_monitor) == CHECK_DROP ||
                 check_blocked_v6(ctx, &saddr, now, is_monitor) == CHECK_DROP)
-                return scrub_verdict(ctx, SCRUB_VERDICT_DROP, SCRUB_FAMILY_V6, XDP_DROP);
+                return scrub_drop(ctx, &rp, SCRUB_FAMILY_V6, l4_ok);
             if (!l4_ok) {
                 emit_incident_v6(ctx, &saddr, INCIDENT_MALFORMED, now);
                 return scrub_malformed(ctx, SCRUB_FAMILY_V6, is_monitor);
             }
             if (check_l4_v6(ctx, l4_proto, l4_hdr, data_end, &saddr, now, is_monitor) == CHECK_DROP)
-                return scrub_verdict(ctx, SCRUB_VERDICT_DROP, SCRUB_FAMILY_V6, XDP_DROP);
+                return scrub_drop(ctx, &rp, SCRUB_FAMILY_V6, 1);
         }
         if (l4_proto == IPPROTO_TCP) {
             scrub_hs_prepare_v6(&hs, ip6, l4_hdr, data_end, now);
@@ -1959,6 +2093,8 @@ static __always_inline int scrub_ipv6(struct xdp_md *ctx, struct ethhdr *eth, vo
         }
     }
 
+    if (l4_ok)
+        scrub_fingerprint(&rp, 0);
     return scrub_forward_v6(ctx, eth, ip6, tagged, is_monitor, &hs);
 }
 

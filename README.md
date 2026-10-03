@@ -305,6 +305,8 @@ sudo ./packetyeeter-collector -i eth0 -analyzer-addr 127.0.0.1:9090
 | `-readyz-drain` | `5s` | Scrub mode: how long `/readyz` reports not ready on shutdown before XDP detaches. The control plane keeps running meanwhile. |
 | `-handshake-timeout` | `3s` | How long a SYN may go without the client's ACK before it is reported to the analyzer as an incomplete handshake. Applies in both modes. |
 | `-scrub-slow-path-pps` | `100000` | Scrub mode: max packets/s handed to the kernel slow path across all CPUs; excess is dropped (counted in monitor mode). `0` = unlimited. |
+| `-fingerprint-interval` | `10s` | Scrub mode: how often per-destination traffic fingerprints are sent to the analyzer. `0` turns fingerprinting off, including its per-packet XDP work. |
+| `-fingerprint-top` | `32` | Scrub mode: fingerprint buckets sent per destination and interval, busiest first (for at most 256 destinations). |
 | `-analyzer-addr` | `127.0.0.1:9090` | Analyzer gRPC address to connect to. |
 | `-analyzer-tls-ca` | `""` | PEM CA bundle that verifies the analyzer's certificate. Enables TLS to the analyzer; unset = plaintext. See [TLS and mTLS](docs/operations.md#tls-and-mtls). |
 | `-analyzer-tls-cert` | `""` | PEM client certificate for mTLS. Requires `-analyzer-tls-key` and `-analyzer-tls-ca`. |

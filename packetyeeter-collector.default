@@ -54,9 +54,11 @@ BLOCK_DURATION=300s
 # from INTERFACE (outside port) to the inside port. Needs kernel 5.15+, native
 # XDP, IPv4 (and, if IPv6 is routed inside, IPv6) forwarding enabled globally
 # and on the outside port, and rp_filter 0 or 2 on the outside port.
-# -scrub-slow-path-pps caps packets handed to the kernel (0 = unlimited). See
+# -scrub-slow-path-pps caps packets handed to the kernel (0 = unlimited).
+# -fingerprint-interval sends per-destination traffic fingerprints to the
+# analyzer (0 = off), the busiest -fingerprint-top buckets per destination. See
 # docs/operations.md#scrub-mode.
-# EXTRA_ARGS=-mode scrub -inside-if eth1 -readyz-drain 5s -scrub-slow-path-pps 100000
+# EXTRA_ARGS=-mode scrub -inside-if eth1 -readyz-drain 5s -scrub-slow-path-pps 100000 -fingerprint-interval 10s -fingerprint-top 32
 #
 # Fragmented UDP / IPv6 Fragment policy. Default is rate (no hard-drop solely
 # for fragmentation). Use drop only if you intentionally want the legacy
