@@ -1,12 +1,9 @@
 package collector
 
 import (
-	"cmp"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"maps"
-	"math"
 	"net/netip"
 	"slices"
 	"sync"
@@ -15,6 +12,7 @@ import (
 
 	apiv1 "PacketYeeter/api/proto/v1"
 	"PacketYeeter/pkg/collector/ebpf"
+	"PacketYeeter/pkg/scrubrules"
 
 	"github.com/sirupsen/logrus"
 )
@@ -29,14 +27,6 @@ type ruleMaps interface {
 // slotGrace is how long a replaced rule body stays reserved. XDP readers of
 // the previous trie finish within microseconds; this only has to outlast them.
 const slotGrace = time.Second
-
-type rule struct {
-	id       string
-	priority uint32
-	dst      netip.Prefix
-	expires  time.Time
-	body     ebpf.ScrubRule
-}
 
 type installedRule struct {
 	slot uint16
@@ -53,7 +43,7 @@ type retiredSlot struct {
 type ruleEngine struct {
 	mu        sync.Mutex
 	maps      ruleMaps
-	rules     map[string]*rule
+	rules     map[string]*scrubrules.Rule
 	installed map[string]installedRule
 	free      []uint16
 	retired   []retiredSlot
@@ -65,7 +55,7 @@ type ruleEngine struct {
 func newRuleEngine(m ruleMaps) *ruleEngine {
 	e := &ruleEngine{
 		maps:      m,
-		rules:     map[string]*rule{},
+		rules:     map[string]*scrubrules.Rule{},
 		installed: map[string]installedRule{},
 		free:      make([]uint16, 0, ebpf.RuleSlots),
 	}
@@ -88,6 +78,9 @@ func (e *ruleEngine) Apply(delta *apiv1.RuleSetDelta, now time.Time) (ruleApplyR
 
 	next := maps.Clone(e.rules)
 	removed := 0
+	if delta.GetReplace() {
+		next = map[string]*scrubrules.Rule{}
+	}
 	for _, id := range delta.GetRemove() {
 		if _, ok := next[id]; ok {
 			delete(next, id)
@@ -96,15 +89,22 @@ func (e *ruleEngine) Apply(delta *apiv1.RuleSetDelta, now time.Time) (ruleApplyR
 	}
 	seen := map[string]bool{}
 	for _, pr := range delta.GetUpsert() {
-		r, err := parseRule(pr, now)
+		r, err := scrubrules.Parse(pr, now)
 		if err != nil {
 			return ruleApplyResult{}, err
 		}
-		if seen[r.id] {
-			return ruleApplyResult{}, fmt.Errorf("rule %q appears twice in one delta", r.id)
+		if seen[r.ID] {
+			return ruleApplyResult{}, fmt.Errorf("rule %q appears twice in one delta", r.ID)
 		}
-		seen[r.id] = true
-		next[r.id] = r
+		seen[r.ID] = true
+		next[r.ID] = r
+	}
+	if delta.GetReplace() {
+		for id := range e.rules {
+			if _, ok := next[id]; !ok {
+				removed++
+			}
+		}
 	}
 	if err := e.install(next, now); err != nil {
 		return ruleApplyResult{}, err
@@ -121,7 +121,7 @@ func (e *ruleEngine) Expire(now time.Time) ([]string, error) {
 
 	var expired []string
 	for id, r := range e.rules {
-		if !now.Before(r.expires) {
+		if !now.Before(r.Expires) {
 			expired = append(expired, id)
 		}
 	}
@@ -146,18 +146,18 @@ func (e *ruleEngine) Counts() (v4, v6 int) {
 
 // install makes next the active rule set. On error the kernel keeps the
 // previous tries and e.rules is unchanged.
-func (e *ruleEngine) install(next map[string]*rule, now time.Time) error {
+func (e *ruleEngine) install(next map[string]*scrubrules.Rule, now time.Time) error {
 	e.releaseRetired(now)
 
-	v4, v6 := splitFamilies(next)
+	v4, v6 := scrubrules.SplitFamilies(next)
 	if len(v4) > ebpf.RulesMax || len(v6) > ebpf.RulesMax {
 		return fmt.Errorf("too many rules: %d IPv4, %d IPv6 (at most %d per family)", len(v4), len(v6), ebpf.RulesMax)
 	}
-	entries4, err := flattenRules(v4)
+	entries4, err := scrubrules.Flatten(v4)
 	if err != nil {
 		return err
 	}
-	entries6, err := flattenRules(v6)
+	entries6, err := scrubrules.Flatten(v6)
 	if err != nil {
 		return err
 	}
@@ -167,7 +167,7 @@ func (e *ruleEngine) install(next map[string]*rule, now time.Time) error {
 	var fresh []uint16
 	rollback := func() { e.free = append(e.free, fresh...) }
 	for id, r := range next {
-		if cur, ok := e.installed[id]; ok && cur.body == r.body {
+		if cur, ok := e.installed[id]; ok && cur.body == r.Body {
 			slots[id] = cur.slot
 			continue
 		}
@@ -178,7 +178,7 @@ func (e *ruleEngine) install(next map[string]*rule, now time.Time) error {
 		slot := e.free[len(e.free)-1]
 		e.free = e.free[:len(e.free)-1]
 		fresh = append(fresh, slot)
-		if err := e.maps.PutRuleBody(slot, &r.body); err != nil {
+		if err := e.maps.PutRuleBody(slot, &r.Body); err != nil {
 			rollback()
 			return fmt.Errorf("write rule %q: %w", id, err)
 		}
@@ -198,8 +198,8 @@ func (e *ruleEngine) install(next map[string]*rule, now time.Time) error {
 	if err := e.maps.SwapRuleTrie(true, slotEntries(entries6, slots)); err != nil {
 		// Put the previous IPv4 rules back. If that fails too, the next
 		// successful install rebuilds both tries from scratch.
-		old4, _ := splitFamilies(e.rules)
-		prev, ferr := flattenRules(old4)
+		old4, _ := scrubrules.SplitFamilies(e.rules)
+		prev, ferr := scrubrules.Flatten(old4)
 		if ferr == nil {
 			ferr = e.maps.SwapRuleTrie(false, slotEntries(prev, e.installedSlots()))
 		}
@@ -226,10 +226,10 @@ func (e *ruleEngine) installedSlots() map[string]uint16 {
 	return out
 }
 
-func (e *ruleEngine) commit(next map[string]*rule, slots map[string]uint16, now time.Time) {
+func (e *ruleEngine) commit(next map[string]*scrubrules.Rule, slots map[string]uint16, now time.Time) {
 	installed := make(map[string]installedRule, len(next))
 	for id, r := range next {
-		installed[id] = installedRule{slot: slots[id], body: r.body}
+		installed[id] = installedRule{slot: slots[id], body: r.Body}
 	}
 	for id, cur := range e.installed {
 		if n, ok := installed[id]; !ok || n.slot != cur.slot {
@@ -238,7 +238,7 @@ func (e *ruleEngine) commit(next map[string]*rule, slots map[string]uint16, now 
 	}
 	e.installed = installed
 	e.rules = next
-	v4, v6 := splitFamilies(next)
+	v4, v6 := scrubrules.SplitFamilies(next)
 	e.activeV4.Store(int64(len(v4)))
 	e.activeV6.Store(int64(len(v6)))
 }
@@ -255,249 +255,16 @@ func (e *ruleEngine) releaseRetired(now time.Time) {
 	e.retired = kept
 }
 
-func splitFamilies(rules map[string]*rule) (v4, v6 []*rule) {
-	for _, r := range rules {
-		if r.dst.Addr().Is4() {
-			v4 = append(v4, r)
-		} else {
-			v6 = append(v6, r)
-		}
-	}
-	return v4, v6
-}
-
-// flattenRules returns, for each distinct destination prefix, every rule
-// whose prefix covers it, in evaluation order. The kernel only sees the
-// longest-prefix match, so a /24 rule with a lower priority than a /32 rule
-// must also be listed under the /32.
-func flattenRules(rules []*rule) (map[netip.Prefix][]*rule, error) {
-	byPrefix := map[netip.Prefix][]*rule{}
-	for _, r := range rules {
-		byPrefix[r.dst] = append(byPrefix[r.dst], r)
-	}
-	out := make(map[netip.Prefix][]*rule, len(byPrefix))
-	for p := range byPrefix {
-		// Walking p's ancestors keeps this linear in the number of prefixes.
-		var covering []*rule
-		for bits := 0; bits <= p.Bits(); bits++ {
-			ancestor, _ := p.Addr().Prefix(bits)
-			covering = append(covering, byPrefix[ancestor]...)
-		}
-		slices.SortFunc(covering, func(a, b *rule) int {
-			return cmp.Or(cmp.Compare(a.priority, b.priority), cmp.Compare(a.id, b.id))
-		})
-		if len(covering) > ebpf.RulesPerDst {
-			return nil, fmt.Errorf("destination %s would be covered by %d rules, at most %d", p, len(covering), ebpf.RulesPerDst)
-		}
-		out[p] = covering
-	}
-	return out, nil
-}
-
-func slotEntries(entries map[netip.Prefix][]*rule, slots map[string]uint16) map[netip.Prefix][]uint16 {
+func slotEntries(entries map[netip.Prefix][]*scrubrules.Rule, slots map[string]uint16) map[netip.Prefix][]uint16 {
 	out := make(map[netip.Prefix][]uint16, len(entries))
 	for p, rules := range entries {
 		s := make([]uint16, len(rules))
 		for i, r := range rules {
-			s[i] = slots[r.id]
+			s[i] = slots[r.ID]
 		}
 		out[p] = s
 	}
 	return out
-}
-
-func parseRule(pr *apiv1.Rule, now time.Time) (*rule, error) {
-	r := &rule{id: pr.GetId(), priority: pr.GetPriority()}
-	if r.id == "" {
-		return nil, errors.New("rule without id")
-	}
-	fail := func(format string, args ...any) (*rule, error) {
-		return nil, fmt.Errorf("rule %q: %s", r.id, fmt.Sprintf(format, args...))
-	}
-
-	dst, err := netip.ParsePrefix(pr.GetDstPrefix())
-	if err != nil {
-		return fail("dst_prefix: %v", err)
-	}
-	r.dst = dst.Masked()
-	v4 := r.dst.Addr().Is4()
-
-	if pr.GetExpiresAt() == nil {
-		return fail("expires_at is required")
-	}
-	r.expires = pr.GetExpiresAt().AsTime()
-	if !now.Before(r.expires) {
-		return fail("already expired at %s", r.expires.Format(time.RFC3339))
-	}
-
-	b := &r.body
-	switch pr.GetAction() {
-	case apiv1.RuleAction_RULE_ACTION_DROP:
-		b.Action = ebpf.RuleActionDrop
-	case apiv1.RuleAction_RULE_ACTION_PASS:
-		b.Action = ebpf.RuleActionPass
-	case apiv1.RuleAction_RULE_ACTION_RATE_LIMIT:
-		if pr.GetRatePps() == 0 {
-			return fail("rate_limit needs rate_pps > 0")
-		}
-		b.Action = ebpf.RuleActionRateLimit
-		b.RateWindowNS, b.RateBudget = rateWindow(pr.GetRatePps())
-	default:
-		return fail("unsupported action %v", pr.GetAction())
-	}
-	if pr.GetRatePps() != 0 && b.Action != ebpf.RuleActionRateLimit {
-		return fail("rate_pps is only valid with RULE_ACTION_RATE_LIMIT")
-	}
-
-	// Conditions the protocols rule out could never match; reject them
-	// rather than install a rule that silently does nothing.
-	allows := func(proto uint32) bool {
-		return len(pr.GetProtocols()) == 0 || slices.Contains(pr.GetProtocols(), proto)
-	}
-	if (len(pr.GetSrcPorts()) > 0 || len(pr.GetDstPorts()) > 0) && !allows(6) && !allows(17) {
-		return fail("port ranges need protocol 6 (TCP) or 17 (UDP)")
-	}
-	if pr.GetTcpFlagsMask() != 0 && !allows(6) {
-		return fail("tcp flags need protocol 6 (TCP)")
-	}
-
-	if len(pr.GetProtocols()) == 0 {
-		b.AnyProto = 1
-	}
-	for _, p := range pr.GetProtocols() {
-		if p > 255 {
-			return fail("protocol %d out of range", p)
-		}
-		b.ProtoBits[p/64] |= 1 << (p % 64)
-	}
-
-	if b.NSrcPorts, err = portRanges(b.SrcPorts[:], pr.GetSrcPorts()); err != nil {
-		return fail("src_ports: %v", err)
-	}
-	if b.NDstPorts, err = portRanges(b.DstPorts[:], pr.GetDstPorts()); err != nil {
-		return fail("dst_ports: %v", err)
-	}
-
-	if l := pr.GetPktLen(); l != nil && (l.GetFrom() != 0 || l.GetTo() != 0) {
-		if l.GetFrom() > l.GetTo() || l.GetTo() > 65535 || l.GetTo() == 0 {
-			return fail("pkt_len %d-%d is not a valid range", l.GetFrom(), l.GetTo())
-		}
-		b.LenFrom, b.LenTo = uint16(l.GetFrom()), uint16(l.GetTo())
-	}
-
-	if pr.GetTcpFlagsMask() > 255 || pr.GetTcpFlagsValue() > 255 {
-		return fail("tcp flags must fit in 8 bits")
-	}
-	if pr.GetTcpFlagsValue()&^pr.GetTcpFlagsMask() != 0 {
-		return fail("tcp_flags_value sets bits outside tcp_flags_mask")
-	}
-	b.TCPFlagsMask, b.TCPFlagsValue = uint8(pr.GetTcpFlagsMask()), uint8(pr.GetTcpFlagsValue())
-
-	if pr.Fragment != nil {
-		b.Fragment = ebpf.RuleFragNone
-		if pr.GetFragment() {
-			b.Fragment = ebpf.RuleFragOnly
-		}
-	}
-
-	if len(pr.GetSrcPrefixes()) > ebpf.RuleMaxSources {
-		return fail("%d src_prefixes, at most %d", len(pr.GetSrcPrefixes()), ebpf.RuleMaxSources)
-	}
-	srcs := make([]netip.Prefix, 0, len(pr.GetSrcPrefixes()))
-	for _, s := range pr.GetSrcPrefixes() {
-		src, err := netip.ParsePrefix(s)
-		if err != nil {
-			return fail("src_prefixes: %v", err)
-		}
-		if src.Addr().Is4() != v4 {
-			return fail("src_prefixes %s is not the same address family as dst_prefix", s)
-		}
-		srcs = append(srcs, src.Masked())
-	}
-	encodeSources(b, srcs, v4)
-	return r, nil
-}
-
-// encodeSources sorts IPv4 sources and records their span and whether they
-// share one length, which lets XDP reject most packets with two compares and
-// binary-search the rest.
-func encodeSources(b *ebpf.ScrubRule, srcs []netip.Prefix, v4 bool) {
-	if v4 {
-		slices.SortFunc(srcs, func(x, y netip.Prefix) int { return x.Addr().Compare(y.Addr()) })
-		srcs = slices.Compact(srcs)
-	}
-	for i, p := range srcs {
-		b.Sources[i] = rulePrefix(p)
-	}
-	b.NSources = uint8(len(srcs))
-	if !v4 || len(srcs) == 0 {
-		return
-	}
-	b.SrcBsearch = 1
-	b.SrcLo = math.MaxUint32
-	for _, p := range srcs {
-		if p.Bits() != srcs[0].Bits() {
-			b.SrcBsearch = 0
-		}
-		start := binary.BigEndian.Uint32(p.Addr().AsSlice())
-		end := start | uint32(math.MaxUint32>>p.Bits())
-		if p.Bits() == 0 {
-			end = math.MaxUint32
-		}
-		// The collector package shadows the max builtin.
-		if start < b.SrcLo {
-			b.SrcLo = start
-		}
-		if end > b.SrcHi {
-			b.SrcHi = end
-		}
-	}
-}
-
-func portRanges(dst []ebpf.RuleRange, in []*apiv1.PortRange) (uint8, error) {
-	if len(in) > len(dst) {
-		return 0, fmt.Errorf("%d ranges, at most %d", len(in), len(dst))
-	}
-	ranges := make([]ebpf.RuleRange, 0, len(in))
-	for _, pr := range in {
-		if pr.GetFrom() > pr.GetTo() || pr.GetTo() > 65535 {
-			return 0, fmt.Errorf("%d-%d is not a valid port range", pr.GetFrom(), pr.GetTo())
-		}
-		ranges = append(ranges, ebpf.RuleRange{From: uint16(pr.GetFrom()), To: uint16(pr.GetTo())})
-	}
-	// XDP binary-searches the ranges, so they must be sorted and disjoint.
-	slices.SortFunc(ranges, func(x, y ebpf.RuleRange) int { return cmp.Compare(x.From, y.From) })
-	n := 0
-	for _, r := range ranges {
-		if n > 0 && uint32(r.From) <= uint32(dst[n-1].To)+1 {
-			if r.To > dst[n-1].To {
-				dst[n-1].To = r.To
-			}
-			continue
-		}
-		dst[n] = r
-		n++
-	}
-	return uint8(n), nil
-}
-
-func rulePrefix(p netip.Prefix) ebpf.RulePrefix {
-	var out ebpf.RulePrefix
-	addr := p.Addr().AsSlice()
-	copy(out.Addr[:], addr)
-	for i := 0; i < p.Bits(); i++ {
-		out.Mask[i/8] |= 0x80 >> (i % 8)
-	}
-	return out
-}
-
-// rateWindow uses 100ms windows for smooth pacing, and 1s below 100 pps so a
-// small rate is not rounded down to zero packets per window.
-func rateWindow(pps uint64) (windowNS, budget uint64) {
-	if pps < 100 {
-		return uint64(time.Second), pps
-	}
-	return uint64(100 * time.Millisecond), pps / 10
 }
 
 func (c *Collector) applyRules(delta *apiv1.RuleSetDelta) {

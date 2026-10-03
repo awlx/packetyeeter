@@ -19,6 +19,44 @@
 - `make e2e-scrub-test` now also checks that a routing loop shows up in
   `packetyeeter_scrub_ttl_expired_total` and that `-dry-run` forwards traffic a
   DROP rule matches while still counting the match.
+## 2026-10-02 - Analyzer PushRules for scrub collectors
+
+- New `PushRules(RuleSet)` RPC: a controller sets the complete rule set of its
+  scope, and the analyzer sends every scrub collector the complete set of all
+  scopes as a replacement (`RuleSetDelta.replace`) on each push, on
+  (re)connect and once a minute, so collectors converge without
+  acknowledgements. Off unless the analyzer runs with
+  `-enable-rule-api`, since the gRPC listener is unauthenticated.
+- Optional `-rule-state-dir`: the analyzer persists pushed rules and restores
+  them on start, so a restart does not clear scrub collectors' rules until the
+  controller pushes again.
+- Collectors announce `role=host|scrub` (and their hostname) when they connect;
+  the analyzer does not score that announcement, and older analyzers drop it
+  because it carries no IP.
+- All scopes together must encode to at most 3 MiB, rules are withdrawn 5
+  seconds before they expire, and `PushRules` waits at most 10 seconds for
+  collector sends.
+- With `-dry-run` or the kill switch pulled, only `PASS` rules are sent;
+  pulling the kill switch withdraws existing `DROP`/`RATE_LIMIT` rules.
+- New analyzer metrics `packetyeeter_rules_desired{scope}` and
+  `packetyeeter_rule_deltas_sent_total`.
+## 2026-10-02 - Scrub mode handshake map per-CPU LRU
+
+- `xdp_scrub` tracks handshakes in its own `scrub_handshakes(_v6)` maps, LRU
+  hashes with per-CPU LRU lists (`BPF_F_NO_COMMON_LRU`), instead of sharing
+  `pending_handshakes(_v6)` with host mode. A random-source SYN flood no longer
+  contends on one LRU lock across CPUs. Host mode is unchanged, and each mode
+  only creates its own pair of maps.
+- The 500k-entry capacity is now split evenly across the kernel's possible
+  CPUs for eviction, so under a flood hitting few RX queues, or on a host with
+  far fewer online than possible CPUs, old entries are evicted earlier.
+
+## 2026-10-02 - Scrub mode handshake tracking fixes
+
+- An ACK the kernel forwards (slow path, e.g. right after a neighbour
+  expired) now completes a tracked handshake too, so such clients are no longer
+  reported as incomplete handshakes.
+- An RST|ACK no longer counts as completing a handshake.
 
 ## 2026-10-02 - Scrub mode runtime rules
 

@@ -17,6 +17,7 @@ import (
 
 	apiv1 "PacketYeeter/api/proto/v1"
 	"PacketYeeter/pkg/collector/ebpf"
+	"PacketYeeter/pkg/scrubrules"
 )
 
 var ruleT0 = time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
@@ -211,7 +212,7 @@ func TestRuleValidationAccepts(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if _, err := parseRule(testRule("r", "192.0.2.0/24", 1, tt.mod), ruleT0); err != nil {
+			if _, err := scrubrules.Parse(testRule("r", "192.0.2.0/24", 1, tt.mod), ruleT0); err != nil {
 				t.Fatalf("parseRule: %v", err)
 			}
 		})
@@ -278,9 +279,9 @@ func TestRuleApplyCapacityIsAllOrNothing(t *testing.T) {
 	}
 }
 
-func parsedRule(t *testing.T, id, dst string, prio uint32) *rule {
+func parsedRule(t *testing.T, id, dst string, prio uint32) *scrubrules.Rule {
 	t.Helper()
-	r, err := parseRule(testRule(id, dst, prio), ruleT0)
+	r, err := scrubrules.Parse(testRule(id, dst, prio), ruleT0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -336,18 +337,18 @@ func TestFlattenRules(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var rules []*rule
+			var rules []*scrubrules.Rule
 			for _, r := range tt.rules {
 				rules = append(rules, parsedRule(t, r[0].(string), r[1].(string), uint32(r[2].(int))))
 			}
-			out, err := flattenRules(rules)
+			out, err := scrubrules.Flatten(rules)
 			if err != nil {
 				t.Fatal(err)
 			}
 			got := map[string][]string{}
 			for p, rs := range out {
 				for _, r := range rs {
-					got[p.String()] = append(got[p.String()], r.id)
+					got[p.String()] = append(got[p.String()], r.ID)
 				}
 			}
 			if !reflect.DeepEqual(got, tt.want) {
@@ -358,17 +359,17 @@ func TestFlattenRules(t *testing.T) {
 }
 
 func TestFlattenRulesPerDstLimit(t *testing.T) {
-	build := func(n int) []*rule {
-		var rules []*rule
+	build := func(n int) []*scrubrules.Rule {
+		var rules []*scrubrules.Rule
 		for i := 0; i < n; i++ {
 			rules = append(rules, parsedRule(t, fmt.Sprintf("r%02d", i), "10.0.0.1/32", 1))
 		}
 		return rules
 	}
-	if _, err := flattenRules(build(ebpf.RulesPerDst)); err != nil {
+	if _, err := scrubrules.Flatten(build(ebpf.RulesPerDst)); err != nil {
 		t.Fatalf("%d rules on one destination: %v", ebpf.RulesPerDst, err)
 	}
-	if _, err := flattenRules(build(ebpf.RulesPerDst + 1)); err == nil {
+	if _, err := scrubrules.Flatten(build(ebpf.RulesPerDst + 1)); err == nil {
 		t.Fatalf("%d rules on one destination accepted", ebpf.RulesPerDst+1)
 	}
 }
@@ -668,22 +669,22 @@ func TestRuleParseBody(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			r, err := parseRule(tt.rule, ruleT0)
+			r, err := scrubrules.Parse(tt.rule, ruleT0)
 			if err != nil {
 				t.Fatal(err)
 			}
-			tt.check(t, r.body)
+			tt.check(t, r.Body)
 		})
 	}
 }
 
 func TestRuleParseMasksDst(t *testing.T) {
-	r, err := parseRule(testRule("r", "192.0.2.77/24", 1), ruleT0)
+	r, err := scrubrules.Parse(testRule("r", "192.0.2.77/24", 1), ruleT0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := netip.MustParsePrefix("192.0.2.0/24"); r.dst != want {
-		t.Fatalf("dst = %s, want %s", r.dst, want)
+	if want := netip.MustParsePrefix("192.0.2.0/24"); r.Dst != want {
+		t.Fatalf("dst = %s, want %s", r.Dst, want)
 	}
 }
 
@@ -702,9 +703,9 @@ func TestRateWindow(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(fmt.Sprint(tt.pps), func(t *testing.T) {
-			w, b := rateWindow(tt.pps)
+			w, b := scrubrules.RateWindow(tt.pps)
 			if w != uint64(tt.window) || b != tt.wantBudget {
-				t.Fatalf("rateWindow(%d) = %d, %d; want %d, %d", tt.pps, w, b, tt.window, tt.wantBudget)
+				t.Fatalf("scrubrules.RateWindow(%d) = %d, %d; want %d, %d", tt.pps, w, b, tt.window, tt.wantBudget)
 			}
 			if b == 0 {
 				t.Fatal("zero budget")
@@ -719,11 +720,11 @@ func TestRuleEncodingForBinarySearch(t *testing.T) {
 		r.DstPorts = []*apiv1.PortRange{{From: 500, To: 600}, {From: 80, To: 80}, {From: 550, To: 700}, {From: 81, To: 90}, {From: 1000, To: 1000}}
 		r.SrcPrefixes = []string{"10.0.0.9/32", "10.0.0.3/32", "10.0.0.3/32", "10.0.0.7/32"}
 	})
-	r, err := parseRule(pr, ruleT0)
+	r, err := scrubrules.Parse(pr, ruleT0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	b := r.body
+	b := r.Body
 	wantPorts := []ebpf.RuleRange{{From: 80, To: 90}, {From: 500, To: 700}, {From: 1000, To: 1000}}
 	if got := b.DstPorts[:b.NDstPorts]; !slices.Equal(got, wantPorts) {
 		t.Errorf("dst ports = %v, want sorted and merged %v", got, wantPorts)
@@ -740,23 +741,23 @@ func TestRuleEncodingForBinarySearch(t *testing.T) {
 		t.Errorf("span = %08x-%08x, want 0a000003-0a000009", b.SrcLo, b.SrcHi)
 	}
 
-	mixed, err := parseRule(testRule("m", "192.0.2.0/24", 1, func(r *apiv1.Rule) {
+	mixed, err := scrubrules.Parse(testRule("m", "192.0.2.0/24", 1, func(r *apiv1.Rule) {
 		r.SrcPrefixes = []string{"10.0.1.0/24", "10.0.0.8/29", "0.0.0.0/0"}
 	}), ruleT0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if mb := mixed.body; mb.SrcBsearch != 0 || mb.SrcLo != 0 || mb.SrcHi != math.MaxUint32 {
+	if mb := mixed.Body; mb.SrcBsearch != 0 || mb.SrcLo != 0 || mb.SrcHi != math.MaxUint32 {
 		t.Errorf("mixed lengths: bsearch=%d span=%08x-%08x, want linear walk over the whole space", mb.SrcBsearch, mb.SrcLo, mb.SrcHi)
 	}
 
-	v6, err := parseRule(testRule("v6", "2001:db8::/32", 1, func(r *apiv1.Rule) {
+	v6, err := scrubrules.Parse(testRule("v6", "2001:db8::/32", 1, func(r *apiv1.Rule) {
 		r.SrcPrefixes = []string{"2001:db8:1::/48"}
 	}), ruleT0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if v6.body.SrcBsearch != 0 {
+	if v6.Body.SrcBsearch != 0 {
 		t.Error("IPv6 sources must use the linear walk")
 	}
 }
@@ -776,12 +777,14 @@ func TestPortRangeMergeEdges(t *testing.T) {
 		{"eight disjoint", []*apiv1.PortRange{pr(70, 70), pr(10, 10), pr(30, 30), pr(50, 50), pr(20, 20), pr(60, 60), pr(40, 40), pr(80, 65535)},
 			[]ebpf.RuleRange{{From: 10, To: 10}, {From: 20, To: 20}, {From: 30, To: 30}, {From: 40, To: 40}, {From: 50, To: 50}, {From: 60, To: 60}, {From: 70, To: 70}, {From: 80, To: 65535}}},
 	} {
-		var dst [ebpf.RuleMaxRanges]ebpf.RuleRange
-		n, err := portRanges(dst[:], tc.in)
+		r, err := scrubrules.Parse(testRule("p", "192.0.2.0/24", 1, func(r *apiv1.Rule) {
+			r.Protocols = []uint32{6}
+			r.DstPorts = tc.in
+		}), ruleT0)
 		if err != nil {
 			t.Fatalf("%s: %v", tc.name, err)
 		}
-		if got := dst[:n]; !slices.Equal(got, tc.want) {
+		if got := r.Body.DstPorts[:r.Body.NDstPorts]; !slices.Equal(got, tc.want) {
 			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
 		}
 	}
@@ -797,12 +800,36 @@ func TestSourceSpanEdges(t *testing.T) {
 		{[]string{"10.0.0.1/32"}, 0x0a000001, 0x0a000001},
 		{[]string{"10.0.0.0/8", "9.255.255.255/32"}, 0x09ffffff, 0x0affffff},
 	} {
-		r, err := parseRule(testRule("s", "192.0.2.0/24", 1, func(r *apiv1.Rule) { r.SrcPrefixes = tc.srcs }), ruleT0)
+		r, err := scrubrules.Parse(testRule("s", "192.0.2.0/24", 1, func(r *apiv1.Rule) { r.SrcPrefixes = tc.srcs }), ruleT0)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if b := r.body; b.SrcLo != tc.lo || b.SrcHi != tc.hi {
+		if b := r.Body; b.SrcLo != tc.lo || b.SrcHi != tc.hi {
 			t.Errorf("%v: span %08x-%08x, want %08x-%08x", tc.srcs, b.SrcLo, b.SrcHi, tc.lo, tc.hi)
 		}
+	}
+}
+
+func TestRuleReplaceDelta(t *testing.T) {
+	f := newFakeRuleMaps()
+	e := newRuleEngine(f)
+	mustApply(t, e, upsert(testRule("a", "192.0.2.0/24", 1), testRule("b", "198.51.100.0/24", 1)), ruleT0)
+
+	res, err := e.Apply(&apiv1.RuleSetDelta{Replace: true, Upsert: []*apiv1.Rule{testRule("b", "198.51.100.0/24", 1)}}, ruleT0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ids := ruleIDs(e); !slices.Equal(ids, []string{"b"}) {
+		t.Fatalf("rules after replace = %v, want [b]", ids)
+	}
+	if res.Removed != 1 {
+		t.Errorf("Removed = %d, want 1", res.Removed)
+	}
+
+	if _, err := e.Apply(&apiv1.RuleSetDelta{Replace: true}, ruleT0); err != nil {
+		t.Fatal(err)
+	}
+	if ids := ruleIDs(e); len(ids) != 0 {
+		t.Fatalf("empty replace left %v", ids)
 	}
 }
