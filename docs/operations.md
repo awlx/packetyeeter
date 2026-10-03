@@ -317,6 +317,13 @@ sudo packetyeeter-collector -mode scrub -i eth0 -inside-if eth1 -dry-run
 Requirements, checked at start-up (the collector refuses to start otherwise):
 
 - Linux 5.15 or newer, and native XDP on both ports (`-allow-generic` for labs).
+  At start-up the collector logs one `Scrub port attached` line per port, with
+  its XDP mode and driver XDP features (Linux 6.3+). It warns if the outside
+  driver lacks `XDP_REDIRECT`, or if the inside driver lacks `ndo_xdp_xmit`,
+  which makes the kernel drop every forwarded frame. With `-allow-generic`, a
+  generic inside port forces the outside port to generic too.
+  `yeetctl nic-check` runs the same checks before deployment;
+  [scrub-hardware.md](scrub-hardware.md) covers NIC choice and tuning.
 - `net.ipv4.ip_forward=1` and `net.ipv4.conf.<outside>.forwarding=1`, plus
   `net.ipv6.conf.all.forwarding=1` and `net.ipv6.conf.<outside>.forwarding=1`
   when the node has a global IPv6 address on either port or any IPv6 route
