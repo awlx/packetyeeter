@@ -31,6 +31,10 @@ func TestValidateModeConfig(t *testing.T) {
 			c.ScrubSlowPathPPS = DefaultScrubSlowPathPPS
 			c.FingerprintInterval = DefaultFingerprintInterval
 			c.FingerprintTop = DefaultFingerprintTop
+			c.SynCookies = ebpf.SynCookiesOff
+			c.SynCookieStyle = ebpf.SynCookieStyleOOS
+			c.SynCookieSynPPS = DefaultSynCookieSynPPS
+			c.SynCookieTTL = DefaultSynCookieTTL
 		}, true, 0},
 		"host with fingerprints":    {func(c *Config) { host(c); c.FingerprintInterval = time.Second; c.FingerprintTop = 4 }, true, 2},
 		"host with custom drain":    {func(c *Config) { host(c); c.ReadyzDrain = time.Second }, true, 1},
@@ -48,6 +52,22 @@ func TestValidateModeConfig(t *testing.T) {
 		"fingerprint interval < 1s": {func(c *Config) { c.FingerprintInterval = 500 * time.Millisecond; c.FingerprintTop = 1 }, false, 0},
 		"negative interval":         {func(c *Config) { c.FingerprintInterval = -time.Second; c.FingerprintTop = 1 }, false, 0},
 		"fingerprint top 0":         {func(c *Config) { c.FingerprintInterval = time.Second }, false, 0},
+		"host with syn cookies":     {func(c *Config) { host(c); c.SynCookies = ebpf.SynCookiesOn }, false, 0},
+		"host with cookie tuning": {func(c *Config) {
+			host(c)
+			c.SynCookieStyle = ebpf.SynCookieStyleReset
+			c.SynCookieSynPPS = 5
+			c.SynCookieTTL = time.Second
+		}, true, 3},
+		"syn cookies on": {func(c *Config) { c.SynCookies = ebpf.SynCookiesOn; c.SynCookieTTL = time.Minute }, true, 0},
+		"syn cookies auto": {func(c *Config) {
+			c.SynCookies = ebpf.SynCookiesAuto
+			c.SynCookieSynPPS = 1
+			c.SynCookieTTL = time.Minute
+		}, true, 0},
+		"syn cookies auto, 0pps":  {func(c *Config) { c.SynCookies = ebpf.SynCookiesAuto; c.SynCookieTTL = time.Minute }, false, 0},
+		"syn cookie ttl < 1s":     {func(c *Config) { c.SynCookies = ebpf.SynCookiesOn; c.SynCookieTTL = time.Millisecond }, false, 0},
+		"syn cookies off, no ttl": {func(c *Config) { c.SynCookies = ebpf.SynCookiesOff }, true, 0},
 	} {
 		cfg := scrub
 		tc.mutate(&cfg)

@@ -1,5 +1,28 @@
 # PacketYeeter Changelog
 
+## 2026-10-03 - Scrub-mode SYN cookies
+
+- New collector flag `-scrub-syn-cookies` (`off` by default, `auto`, `on`;
+  scrub mode only, Linux 6.0+, refused with an error on older kernels). While
+  active, `xdp_scrub` answers SYNs from sources it has not verified with a
+  SYN-ACK carrying a SYN cookie instead of forwarding them, so spoofed-source
+  SYN floods no longer reach the protected server. A client's answer verifies
+  its source for `-scrub-syn-cookie-ttl` (default `10m`) and its next SYN is
+  forwarded as before.
+- `-scrub-syn-cookie-style oos` (default) sends an out-of-sequence SYN-ACK:
+  the client answers with a RST and retransmits its SYN, so applications only
+  see a slower first connect (a few ms on Linux, about 1 s on macOS/Windows).
+  `reset` sends a valid SYN-ACK and resets the resulting connection, which
+  applications see as one failed connect.
+- `auto` challenges a destination while it receives more than
+  `-scrub-syn-cookie-syn-pps` (default 10000) SYNs per second, for at least
+  30 s. `-dry-run` only counts would-be challenges.
+- New metrics `packetyeeter_scrub_syncookie_total{family,event}` and
+  `packetyeeter_scrub_syncookie_verified_sources{family}`. Challenged SYNs
+  count as `packetyeeter_scrub_packets_total{verdict="drop"}`.
+- With the flag off the verifier removes the new code and its maps shrink to
+  one entry. See `docs/operations.md#syn-cookies`.
+
 ## 2026-10-02 - Collector map polling performance
 
 - The collector reads its eBPF maps with batch lookups (Linux 5.6+), falling

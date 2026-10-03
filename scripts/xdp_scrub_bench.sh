@@ -23,7 +23,8 @@
 #   sudo ./scripts/xdp_scrub_bench.sh
 # Tunables: DURATION (s, default 10), REPS (default 3), SYN_CPUS (default 3),
 # GEN_CPU_OFFSET (first generator CPU, default 1), SCENARIOS (default
-# "a b b2 b3 b4 c0 c1 c2"; b* are reported against a, c2 against c1).
+# "a b b2 b3 b4 c0 c1 c2"; b* are reported against a, c2 against c1),
+# COLLECTOR_ARGS (extra collector flags, e.g. "-scrub-syn-cookies on").
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -166,6 +167,16 @@ dst tc qdisc add dev dst0 clsact
 dst tc filter add dev dst0 ingress pref 1 protocol ip flower ip_proto udp action drop
 dst tc filter add dev dst0 ingress pref 2 protocol ip flower ip_proto tcp action drop
 
+# SYN cookie challenges leave by XDP_TX, which a veth only delivers when its
+# peer runs XDP; drop them there so the generator's stack never sees them.
+if [[ " ${COLLECTOR_ARGS:-} " == *" -scrub-syn-cookies "* && " ${COLLECTOR_ARGS:-} " != *" -scrub-syn-cookies off "* ]]; then
+  printf '%s\n' '#include <linux/bpf.h>' \
+    '__attribute__((section("xdp"), used)) int xdp_drop(struct xdp_md *ctx) { return XDP_DROP; }' \
+    'char LICENSE[] __attribute__((section("license"), used)) = "GPL";' \
+    | clang -O2 -target bpf -I"/usr/include/$(gcc -dumpmachine)" -x c -c - -o "$WORK/xdp_drop.o"
+  src ip link set dev src0 xdpdrv obj "$WORK/xdp_drop.o" sec xdp
+fi
+
 mkfifo "$CMD_FIFO"
 # Held open read-write so the sink never sees EOF between commands.
 exec 3<>"$CMD_FIFO"
@@ -177,8 +188,9 @@ SINK_PID=$!
 sleep 0.5
 
 METRICS=127.0.0.1:2112
+read -ra EXTRA_ARGS <<<"${COLLECTOR_ARGS:-}"
 ip netns exec "$NS_SCR" "$COLLECTOR_BIN" -mode scrub -i out0 -inside-if in0 -metrics-addr "$METRICS" \
-  -socket "" -analyzer-addr 127.0.0.1:59999 >>"$COLLECTOR_LOG" 2>&1 &
+  -socket "" -analyzer-addr 127.0.0.1:59999 "${EXTRA_ARGS[@]}" >>"$COLLECTOR_LOG" 2>&1 &
 COLLECTOR_PID=$!
 for _ in $(seq 50); do
   [[ "$(scr curl -s -o /dev/null -w '%{http_code}' "http://$METRICS/readyz" || true)" == 200 ]] && break
@@ -240,12 +252,13 @@ tc_pkts() { # PREF
   dst tc -s filter show dev dst0 ingress pref "$1" | awk '/Sent/ {print $4; exit}'
 }
 snapshot() {
-  printf '%s %s %s %s %s\n' "$(date +%s.%N)" "$(tc_pkts 1)" "$(tc_pkts 2)" \
+  printf '%s %s %s %s %s %s\n' "$(date +%s.%N)" "$(tc_pkts 1)" "$(tc_pkts 2)" \
     "$(metric packetyeeter_scrub_packets_total 'family="ipv4",verdict="forward"')" \
-    "$(metric packetyeeter_scrub_packets_total 'family="ipv4",verdict="drop"')"
+    "$(metric packetyeeter_scrub_packets_total 'family="ipv4",verdict="drop"')" \
+    "$(metric packetyeeter_scrub_syncookie_total 'event="challenge",family="ipv4"')"
 }
 
-# run_once CFG CPUS: sets RUN to "udp_pps syn_pps fwd_pps drop_pps". Not run
+# run_once CFG CPUS: sets RUN to "udp_pps syn_pps fwd_pps drop_pps challenge_pps". Not run
 # in a subshell, so cleanup always knows the generator's pid.
 run_once() {
   # Own process group, so stop_gen can signal trafgen's forked workers too.
@@ -266,7 +279,7 @@ run_once() {
   sleep 1
   RUN=$(awk -v a="$a" -v b="$b" 'BEGIN {
     split(a, x, " "); split(b, y, " "); t = y[1] - x[1]
-    printf "%.0f %.0f %.0f %.0f\n", (y[2]-x[2])/t, (y[3]-x[3])/t, (y[4]-x[4])/t, (y[5]-x[5])/t }')
+    printf "%.0f %.0f %.0f %.0f %.0f\n", (y[2]-x[2])/t, (y[3]-x[3])/t, (y[4]-x[4])/t, (y[5]-x[5])/t, (y[6]-x[6])/t }')
 }
 
 declare -A RES
@@ -276,7 +289,7 @@ measure() {
   for i in $(seq "$REPS"); do
     run_once "$2" "$3"
     local r="$RUN"
-    log "  $1 run $i: udp_rx=$(cut -d' ' -f1 <<<"$r") syn_rx=$(cut -d' ' -f2 <<<"$r") fwd=$(cut -d' ' -f3 <<<"$r") drop=$(cut -d' ' -f4 <<<"$r") pps"
+    log "  $1 run $i: udp_rx=$(cut -d' ' -f1 <<<"$r") syn_rx=$(cut -d' ' -f2 <<<"$r") fwd=$(cut -d' ' -f3 <<<"$r") drop=$(cut -d' ' -f4 <<<"$r") challenge=$(cut -d' ' -f5 <<<"$r") pps"
     runs+=("$r")
   done
   RES[$1]=$(printf '%s\n' "${runs[@]}" | python3 -c '
@@ -354,6 +367,7 @@ delta() { awk -v a="$1" -v b="$2" 'BEGIN { if (a > 0) printf "%+.1f%%", (b - a) 
 # A reference scenario left out of SCENARIOS has no result; delta prints n/a.
 col() { cut -d' ' -f"$2" <<<"${RES[$1]:-}"; }
 echo
+echo "Collector flags: ${COLLECTOR_ARGS:-none}"
 echo "Kernel $(uname -r), $(nproc) CPUs ($(lscpu 2>/dev/null | awk -F': *' '/^Vendor ID/ {v = $2} /^Model name/ {m = $2} END {print (m != "" && m != "-") ? m : v}'))," \
   "load $(cut -d' ' -f1-3 /proc/loadavg); veth, native XDP, median of ${REPS}x ${DURATION}s"
 printf '%-4s %-46s %12s %12s %12s %4s %10s %10s\n' scen description "udp rx pps" "syn rx pps" "fwd pps" ref "fwd delta" "udp delta"
@@ -374,4 +388,7 @@ row c1 c0 "UDP + fixed-tuple SYN 1:3, $SYN_CPUS CPUs"
 row c2 c1 "UDP + random-source SYN 1:3, $SYN_CPUS CPUs"
 drops=""
 for n in a b b2 b3 b4 c0 c1 c2; do want "$n" && drops+=" $n=$(col "$n" 4)"; done
-echo "drop verdict pps (should be ~0):$drops"
+echo "drop verdict pps (should be ~0 unless SYN cookies challenge the SYNs):$drops"
+challenges=""
+for n in a b b2 b3 b4 c0 c1 c2; do want "$n" && challenges+=" $n=$(col "$n" 5)"; done
+echo "SYN cookie challenge pps:$challenges"

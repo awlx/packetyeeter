@@ -3,6 +3,7 @@ package collector
 import (
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"net/http"
 	"os"
@@ -22,7 +23,22 @@ import (
 const (
 	DefaultReadyzDrain      = 5 * time.Second
 	DefaultScrubSlowPathPPS = 100000
+	DefaultSynCookieSynPPS  = 10000
+	DefaultSynCookieTTL     = 10 * time.Minute
 )
+
+func (c *Collector) synCookiesEnabled() bool {
+	return c.Config.Mode == ebpf.ModeScrub && c.Config.SynCookies != "" && c.Config.SynCookies != ebpf.SynCookiesOff
+}
+
+func (c *Collector) synCookieConfig() ebpf.SynCookieConfig {
+	return ebpf.SynCookieConfig{
+		Mode:   c.Config.SynCookies,
+		Style:  c.Config.SynCookieStyle,
+		SynPPS: c.Config.SynCookieSynPPS,
+		TTL:    c.Config.SynCookieTTL,
+	}
+}
 
 // validateModeConfig rejects flag combinations that would otherwise be
 // silently ignored. Settings that are harmless but unused yield warnings.
@@ -33,6 +49,8 @@ func validateModeConfig(cfg Config) (warnings []string, err error) {
 			return nil, errors.New("-inside-if is only valid with -mode scrub")
 		case cfg.AllowGeneric:
 			return nil, errors.New("-allow-generic is only valid with -mode scrub")
+		case cfg.SynCookies != "" && cfg.SynCookies != ebpf.SynCookiesOff:
+			return nil, errors.New("-scrub-syn-cookies is only valid with -mode scrub")
 		}
 		if cfg.ReadyzDrain != 0 && cfg.ReadyzDrain != DefaultReadyzDrain {
 			warnings = append(warnings, "-readyz-drain has no effect in host mode")
@@ -45,6 +63,15 @@ func validateModeConfig(cfg Config) (warnings []string, err error) {
 		}
 		if cfg.FingerprintTop != 0 && cfg.FingerprintTop != DefaultFingerprintTop {
 			warnings = append(warnings, "-fingerprint-top has no effect in host mode")
+		}
+		if cfg.SynCookieStyle != "" && cfg.SynCookieStyle != ebpf.SynCookieStyleOOS {
+			warnings = append(warnings, "-scrub-syn-cookie-style has no effect in host mode")
+		}
+		if cfg.SynCookieSynPPS != 0 && cfg.SynCookieSynPPS != DefaultSynCookieSynPPS {
+			warnings = append(warnings, "-scrub-syn-cookie-syn-pps has no effect in host mode")
+		}
+		if cfg.SynCookieTTL != 0 && cfg.SynCookieTTL != DefaultSynCookieTTL {
+			warnings = append(warnings, "-scrub-syn-cookie-ttl has no effect in host mode")
 		}
 		return warnings, nil
 	}
@@ -65,6 +92,11 @@ func validateScrubConfig(cfg Config) error {
 		return fmt.Errorf("-fingerprint-interval must be 0 (off) or at least 1s, got %s", cfg.FingerprintInterval)
 	case cfg.FingerprintInterval > 0 && cfg.FingerprintTop < 1:
 		return fmt.Errorf("-fingerprint-top must be at least 1, got %d", cfg.FingerprintTop)
+	case cfg.SynCookies == ebpf.SynCookiesAuto && cfg.SynCookieSynPPS == 0:
+		return errors.New("-scrub-syn-cookies auto needs -scrub-syn-cookie-syn-pps above 0")
+	case cfg.SynCookies != "" && cfg.SynCookies != ebpf.SynCookiesOff &&
+		(cfg.SynCookieTTL < time.Second || cfg.SynCookieTTL/time.Second > math.MaxUint32):
+		return fmt.Errorf("-scrub-syn-cookie-ttl must be between 1s and %ds, got %s", uint32(math.MaxUint32), cfg.SynCookieTTL)
 	}
 	return nil
 }
@@ -321,6 +353,8 @@ type scrubMetrics struct {
 	ready       func() error
 	ruleMatches func() (map[uint8]uint64, error)
 	ruleCounts  func() (v4, v6 int)
+	synCookies  func() (ebpf.SynCookieStats, error) // nil: SYN cookies off
+	verified    func() (v4, v6 int, err error)
 	logger      *logrus.Logger
 }
 
@@ -333,6 +367,8 @@ func (s *scrubMetrics) Describe(ch chan<- *prometheus.Desc) {
 	ch <- metrics.ScrubReadyDesc
 	ch <- metrics.ScrubRuleMatchesDesc
 	ch <- metrics.ScrubRulesActiveDesc
+	ch <- metrics.ScrubSynCookieDesc
+	ch <- metrics.ScrubSynCookieVerifiedDesc
 }
 
 func (s *scrubMetrics) Collect(ch chan<- prometheus.Metric) {
@@ -357,6 +393,8 @@ func (s *scrubMetrics) Collect(ch chan<- prometheus.Metric) {
 		}
 	}
 
+	s.collectSynCookies(ch)
+
 	st, err := s.stats()
 	if err != nil {
 		s.logger.WithError(err).Warn("Failed to read scrub counters")
@@ -374,4 +412,25 @@ func (s *scrubMetrics) Collect(ch chan<- prometheus.Metric) {
 	}
 	ch <- prometheus.MustNewConstMetric(metrics.ScrubTTLExpiredDesc, prometheus.CounterValue, float64(st.SlowPath[ebpf.ScrubSlowTTL]))
 	ch <- prometheus.MustNewConstMetric(metrics.ScrubSlowPathLimitedDesc, prometheus.CounterValue, float64(st.SlowLimited))
+}
+
+func (s *scrubMetrics) collectSynCookies(ch chan<- prometheus.Metric) {
+	if s.synCookies == nil {
+		return
+	}
+	if st, err := s.synCookies(); err != nil {
+		s.logger.WithError(err).Warn("Failed to read SYN cookie counters")
+	} else {
+		for f, family := range ebpf.ScrubFamilyNames[:len(st)] {
+			for ev, event := range ebpf.SynCookieEventNames {
+				ch <- prometheus.MustNewConstMetric(metrics.ScrubSynCookieDesc, prometheus.CounterValue, float64(st[f][ev]), family, event)
+			}
+		}
+	}
+	if v4, v6, err := s.verified(); err != nil {
+		s.logger.WithError(err).Warn("Failed to count verified sources")
+	} else {
+		ch <- prometheus.MustNewConstMetric(metrics.ScrubSynCookieVerifiedDesc, prometheus.GaugeValue, float64(v4), "ipv4")
+		ch <- prometheus.MustNewConstMetric(metrics.ScrubSynCookieVerifiedDesc, prometheus.GaugeValue, float64(v6), "ipv6")
+	}
 }
