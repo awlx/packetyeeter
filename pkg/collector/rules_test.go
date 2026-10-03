@@ -16,6 +16,7 @@ import (
 
 	apiv1 "PacketYeeter/api/proto/v1"
 	"PacketYeeter/pkg/collector/ebpf"
+	"PacketYeeter/pkg/scrubrules"
 )
 
 var ruleT0 = time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
@@ -210,7 +211,7 @@ func TestRuleValidationAccepts(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if _, err := parseRule(testRule("r", "192.0.2.0/24", 1, tt.mod), ruleT0); err != nil {
+			if _, err := scrubrules.Parse(testRule("r", "192.0.2.0/24", 1, tt.mod), ruleT0); err != nil {
 				t.Fatalf("parseRule: %v", err)
 			}
 		})
@@ -277,9 +278,9 @@ func TestRuleApplyCapacityIsAllOrNothing(t *testing.T) {
 	}
 }
 
-func parsedRule(t *testing.T, id, dst string, prio uint32) *rule {
+func parsedRule(t *testing.T, id, dst string, prio uint32) *scrubrules.Rule {
 	t.Helper()
-	r, err := parseRule(testRule(id, dst, prio), ruleT0)
+	r, err := scrubrules.Parse(testRule(id, dst, prio), ruleT0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -335,18 +336,18 @@ func TestFlattenRules(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var rules []*rule
+			var rules []*scrubrules.Rule
 			for _, r := range tt.rules {
 				rules = append(rules, parsedRule(t, r[0].(string), r[1].(string), uint32(r[2].(int))))
 			}
-			out, err := flattenRules(rules)
+			out, err := scrubrules.Flatten(rules)
 			if err != nil {
 				t.Fatal(err)
 			}
 			got := map[string][]string{}
 			for p, rs := range out {
 				for _, r := range rs {
-					got[p.String()] = append(got[p.String()], r.id)
+					got[p.String()] = append(got[p.String()], r.ID)
 				}
 			}
 			if !reflect.DeepEqual(got, tt.want) {
@@ -357,17 +358,17 @@ func TestFlattenRules(t *testing.T) {
 }
 
 func TestFlattenRulesPerDstLimit(t *testing.T) {
-	build := func(n int) []*rule {
-		var rules []*rule
+	build := func(n int) []*scrubrules.Rule {
+		var rules []*scrubrules.Rule
 		for i := 0; i < n; i++ {
 			rules = append(rules, parsedRule(t, fmt.Sprintf("r%02d", i), "10.0.0.1/32", 1))
 		}
 		return rules
 	}
-	if _, err := flattenRules(build(ebpf.RulesPerDst)); err != nil {
+	if _, err := scrubrules.Flatten(build(ebpf.RulesPerDst)); err != nil {
 		t.Fatalf("%d rules on one destination: %v", ebpf.RulesPerDst, err)
 	}
-	if _, err := flattenRules(build(ebpf.RulesPerDst + 1)); err == nil {
+	if _, err := scrubrules.Flatten(build(ebpf.RulesPerDst + 1)); err == nil {
 		t.Fatalf("%d rules on one destination accepted", ebpf.RulesPerDst+1)
 	}
 }
@@ -667,22 +668,22 @@ func TestRuleParseBody(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			r, err := parseRule(tt.rule, ruleT0)
+			r, err := scrubrules.Parse(tt.rule, ruleT0)
 			if err != nil {
 				t.Fatal(err)
 			}
-			tt.check(t, r.body)
+			tt.check(t, r.Body)
 		})
 	}
 }
 
 func TestRuleParseMasksDst(t *testing.T) {
-	r, err := parseRule(testRule("r", "192.0.2.77/24", 1), ruleT0)
+	r, err := scrubrules.Parse(testRule("r", "192.0.2.77/24", 1), ruleT0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := netip.MustParsePrefix("192.0.2.0/24"); r.dst != want {
-		t.Fatalf("dst = %s, want %s", r.dst, want)
+	if want := netip.MustParsePrefix("192.0.2.0/24"); r.Dst != want {
+		t.Fatalf("dst = %s, want %s", r.Dst, want)
 	}
 }
 
@@ -701,13 +702,37 @@ func TestRateWindow(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(fmt.Sprint(tt.pps), func(t *testing.T) {
-			w, b := rateWindow(tt.pps)
+			w, b := scrubrules.RateWindow(tt.pps)
 			if w != uint64(tt.window) || b != tt.wantBudget {
-				t.Fatalf("rateWindow(%d) = %d, %d; want %d, %d", tt.pps, w, b, tt.window, tt.wantBudget)
+				t.Fatalf("scrubrules.RateWindow(%d) = %d, %d; want %d, %d", tt.pps, w, b, tt.window, tt.wantBudget)
 			}
 			if b == 0 {
 				t.Fatal("zero budget")
 			}
 		})
+	}
+}
+
+func TestRuleReplaceDelta(t *testing.T) {
+	f := newFakeRuleMaps()
+	e := newRuleEngine(f)
+	mustApply(t, e, upsert(testRule("a", "192.0.2.0/24", 1), testRule("b", "198.51.100.0/24", 1)), ruleT0)
+
+	res, err := e.Apply(&apiv1.RuleSetDelta{Replace: true, Upsert: []*apiv1.Rule{testRule("b", "198.51.100.0/24", 1)}}, ruleT0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ids := ruleIDs(e); !slices.Equal(ids, []string{"b"}) {
+		t.Fatalf("rules after replace = %v, want [b]", ids)
+	}
+	if res.Removed != 1 {
+		t.Errorf("Removed = %d, want 1", res.Removed)
+	}
+
+	if _, err := e.Apply(&apiv1.RuleSetDelta{Replace: true}, ruleT0); err != nil {
+		t.Fatal(err)
+	}
+	if ids := ruleIDs(e); len(ids) != 0 {
+		t.Fatalf("empty replace left %v", ids)
 	}
 }

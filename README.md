@@ -350,6 +350,8 @@ sudo ./packetyeeter-collector -i eth0 -analyzer-addr 127.0.0.1:9090
 | `-ai-workers` | `16` | AI detection worker pool size. |
 | `-ai-queue-size` | `10000` | AI detection queue size. |
 | `-max-collectors` | `1024` | Maximum concurrent collector streams. Bounds fan-out and goroutines on the signal plane, which is unauthenticated unless `-tls-client-ca` is set. |
+| `-enable-rule-api` | `false` | Accept `PushRules` and send runtime rules to scrub collectors. The gRPC listener is unauthenticated unless mTLS (`-tls-client-ca`) is configured; restrict `PushRules` with `-control-client-names`, or firewall `-listen-addr` to trusted controllers and collectors. See [runtime rules](docs/operations.md#runtime-rules) and [TLS and mTLS](docs/operations.md#tls-and-mtls). |
+| `-rule-state-dir` | `""` | With `-enable-rule-api`: directory to persist pushed rules in (`scrub-rules.json`), so a restarted analyzer resends them instead of clearing the collectors' rules. Empty disables. |
 | `-ml-model` | `""` | Optional path to an ONNX ML model. When set, reputation-threshold blocks must additionally be confirmed by the model at `-ai-confidence-threshold`. When unset, no ML gate is applied to blocking. |
 | `-ddos-min-incomplete` | `400` | Min incomplete handshakes for a DDoS categorization. |
 | `-ddos-min-pattern` | `800` | Min pattern matches for a DDoS categorization. |

@@ -104,3 +104,37 @@ func TestAnalyzerRejectsInconsistentTLSConfig(t *testing.T) {
 		t.Fatal("analyzer.New accepted -control-client-names without -tls-client-ca")
 	}
 }
+
+// Exercises the real PushRules handler, so a renamed RPC cannot silently
+// escape -control-client-names.
+func TestAnalyzerPushRulesControlClientNames(t *testing.T) {
+	dir := t.TempDir()
+	ca := grpctlstest.NewCA(t, "packetyeeter-ca")
+	caFile := ca.WriteCA(t, dir, "ca")
+	serverCert, serverKey := ca.IssueServer(t, "analyzer", "127.0.0.1").Write(t, dir, "analyzer")
+	ctlCert, ctlKey := ca.IssueClient(t, "controller", "controller").Write(t, dir, "controller")
+	collCert, collKey := ca.IssueClient(t, "collector-1", "collector-1").Write(t, dir, "collector")
+
+	a := startTestAnalyzerWith(t, func(cfg *analyzer.Config) {
+		cfg.TLS = grpctls.ServerConfig{CertFile: serverCert, KeyFile: serverKey, ClientCAFile: caFile}
+		cfg.ControlClientNames = []string{"controller"}
+		cfg.EnableRuleAPI = true
+	})
+	addr := a.Config.ListenAddr
+
+	push := func(client apiv1.AnalyzerServiceClient) error {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		_, err := client.PushRules(ctx, &apiv1.RuleSet{Scope: "ctl", Rules: []*apiv1.Rule{dropRule("ntp", "192.0.2.10/32")}})
+		return err
+	}
+
+	collector := dialAnalyzer(t, addr, grpctls.ClientConfig{CAFile: caFile, CertFile: collCert, KeyFile: collKey})
+	if err := push(collector); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("collector PushRules error = %v, want PermissionDenied", err)
+	}
+	controller := dialAnalyzer(t, addr, grpctls.ClientConfig{CAFile: caFile, CertFile: ctlCert, KeyFile: ctlKey})
+	if err := push(controller); err != nil {
+		t.Fatalf("controller PushRules: %v", err)
+	}
+}

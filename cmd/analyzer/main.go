@@ -46,6 +46,8 @@ func main() {
 		aiWorkers      = flag.Int("ai-workers", 16, "AI engine worker count")
 		aiQueueSize    = flag.Int("ai-queue-size", 10000, "AI engine signal queue size")
 		maxCollectors  = flag.Int("max-collectors", 1024, "Maximum concurrent collector streams (bounds fan-out/goroutines on the unauthenticated signal plane)")
+		ruleStateDir   = flag.String("rule-state-dir", "", "With -enable-rule-api: directory to persist pushed scrub rules in, so they survive an analyzer restart (empty disables)")
+		enableRuleAPI  = flag.Bool("enable-rule-api", false, "Accept PushRules and send runtime rules to scrub collectors. The gRPC listener is unauthenticated unless mTLS (-tls-client-ca) is configured; restrict PushRules with -control-client-names")
 		mlModelPath    = flag.String("ml-model", "", "Path to ONNX ML model file (optional, enables ML-based confidence adjustment)")
 		dryRun         = flag.Bool("dry-run", false, "Monitor mode - log detections but don't send BLOCK commands")
 		tlsCert        = flag.String("tls-cert", "", "PEM certificate for the gRPC listener; enables TLS (requires -tls-key). Re-read on change")
@@ -121,6 +123,8 @@ func main() {
 		MLModelPath:                  *mlModelPath,
 		MaxCollectors:                *maxCollectors,
 		DryRun:                       *dryRun,
+		EnableRuleAPI:                *enableRuleAPI,
+		RuleStateDir:                 *ruleStateDir,
 		TLS: grpctls.ServerConfig{
 			CertFile:     *tlsCert,
 			KeyFile:      *tlsKey,

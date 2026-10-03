@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -547,9 +548,35 @@ func (c *Collector) connectToAnalyzer() error {
 		c.analyzerClient = nil
 		return fmt.Errorf("failed to start signal stream: %w", err)
 	}
+	// The analyzer only sends runtime rules to collectors that announce scrub
+	// mode, so this goes out before any queued signal.
+	if err := c.sendSignalWithTimeout(stream, c.roleSignal(), 5*time.Second); err != nil {
+		conn.Close()
+		c.analyzerConn = nil
+		c.analyzerClient = nil
+		return fmt.Errorf("failed to announce collector role: %w", err)
+	}
 	c.signalStream = stream
 
 	return nil
+}
+
+func (c *Collector) roleSignal() *apiv1.Signal {
+	role := "host"
+	if c.Config.Mode == ebpf.ModeScrub {
+		role = "scrub"
+	}
+	node, err := os.Hostname()
+	if err != nil {
+		node = "unknown"
+	}
+	return &apiv1.Signal{
+		Id:        "collector-role",
+		Timestamp: timestamppb.Now(),
+		Type:      apiv1.SignalType_SIGNAL_UNKNOWN,
+		Source:    apiv1.SignalSource_SOURCE_EBPF,
+		Metadata:  map[string]string{"role": role, "node": node},
+	}
 }
 
 // checkAllowlist checks if an IP is in the allowlist
