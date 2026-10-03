@@ -1935,6 +1935,9 @@ func (a *Analyzer) cleanupTrackingMaps() {
 func (a *Analyzer) Close() {
 	a.cancel()
 
+	if a.BotVerifier != nil {
+		a.BotVerifier.Close()
+	}
 	if a.AIEngine != nil {
 		a.AIEngine.Stop()
 	}
