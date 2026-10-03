@@ -17,7 +17,7 @@ Default listeners are convenient for labs but should be deliberately bound in pr
 
 | Component | Listener | Default | Guidance |
 | :--- | :--- | :--- | :--- |
-| Analyzer gRPC | `-listen-addr` | `0.0.0.0:9090` | Expose only to collectors over trusted networks or firewall rules. |
+| Analyzer gRPC | `-listen-addr` | `0.0.0.0:9090` | Expose only to collectors over trusted networks or firewall rules. With `-enable-watch-api`, anyone who can reach it can also read the decision stream. |
 | Analyzer metrics | `-metrics-addr` | `:9091` | Bind to loopback/management networks or restrict with firewall/VPN. |
 | Analyzer inspector | `-inspect-addr` | `127.0.0.1:9092` | Keep loopback unless placed behind trusted access controls. State-mutating routes are protected by a same-origin/DNS-rebinding guard; behind a reverse proxy, add the proxy hostname to `-inspect-trusted-hosts` so mutating requests are accepted. Read-only GETs are never gated. |
 | Analyzer pprof | `-pprof-addr` | `:6060` when enabled | Enable only temporarily for diagnostics and bind securely. |
@@ -359,6 +359,57 @@ previous rules stay active. `expires_at` is required; expired rules are removed
 within a second. Rules live in memory only: after a collector restart they are
 back once the analyzer resends them.
 
+### Decision stream for controllers
+
+`WatchDecisions` is a server stream on the analyzer's gRPC listener for a
+controller that steers traffic to scrub nodes. It is off unless the analyzer
+runs with `-enable-watch-api`; otherwise calls fail with `PERMISSION_DENIED`.
+At most `-watch-max-subscribers` (16) streams are served at once; more fail
+with `RESOURCE_EXHAUSTED`.
+
+Each `Decision` is one of:
+
+- `command`: every `Command` the analyzer sends to collectors, once per
+  decision however many collectors receive it. Only commands that are actually
+  sent are published: commands suppressed by `-dry-run`, by the enforcement
+  kill switch, or as a duplicate block within the dedup window are not, so the
+  stream reflects enforcement. With `-dry-run` the stream carries no blocks.
+  Today the analyzer issues `BLOCK_IP` (not `BLOCK_CIDR`), unblock and
+  allowlist commands.
+- `campaign`: each campaign observation the campaign engine logs as
+  `attack_campaign_observed`. `vector` and `observed_at` are always set.
+  `protocol` (IP protocol number) and `dst_port_bucket` come from the
+  campaign baseline and are `0`/empty when unknown; `dst_prefix` is the
+  destination /24 (IPv4) or /64 (IPv6) for a single-subnet campaign and
+  empty for cross-subnet and cross-collector rollups; `rate_pps` is the
+  campaign's signal rate over its window, not a packet rate.
+- `fingerprint`: each `SIGNAL_SCRUB_FINGERPRINT` from a scrub collector,
+  passed through unchanged. Fingerprints are never scored and never touch
+  reputation, also when the stream is disabled. `collector_id` is always
+  replaced with the analyzer's id for the collector stream (`peer#n`), since
+  the field is set by the client. Malformed fingerprints (`dst_ip` and
+  `src_net` not both 4 or both 16 bytes, buckets, protocol or port out of
+  range, `interval_seconds` outside 1-3600) are dropped and counted in
+  `packetyeeter_watch_invalid_fingerprints_total`.
+
+Buffering and ordering: each subscriber has its own buffer of
+`-watch-buffer-size` (10000) decisions. Publishing never waits for a
+subscriber, so a slow controller cannot slow signal processing or command
+delivery. When a subscriber's buffer is full, its oldest decision is dropped
+and counted in `packetyeeter_watch_dropped_total`; other subscribers are
+unaffected. Each subscriber receives decisions in publish order, and all
+subscribers see the same order. There is no replay: a controller sees only
+what is published while it is connected, and on reconnect should rebuild its
+view from new decisions.
+
+The analyzer has no notion of a campaign ending. Withdrawing diversion is the
+controller's decision, for example once fingerprint and decision rates for a
+destination have stayed low for a while.
+
+Security: the gRPC listener is unauthenticated today, and the stream exposes
+attacker and target addresses and enforcement decisions. Enable it only when
+`-listen-addr` is reachable from trusted networks alone. mTLS for the
+listener is being added separately.
 ### Fingerprints
 
 Scrub collectors summarise what they see per destination so a controller can
