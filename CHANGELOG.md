@@ -12,6 +12,12 @@
 - Over-cap map eviction uses selection instead of a full sort (~22 ms to
   ~2.5 ms per eviction at a 100k cap), evicting the same entries.
 - `Analyzer.Close` is idempotent.
+## 2026-10-02 - Scrub mode handshake tracking fixes
+
+- An ACK the kernel forwards (slow path, e.g. right after a neighbour
+  expired) now completes a tracked handshake too, so such clients are no longer
+  reported as incomplete handshakes.
+- An RST|ACK no longer counts as completing a handshake.
 
 ## 2026-10-02 - Scrub mode runtime rules
 
