@@ -9,6 +9,19 @@
   forwarding (see `docs/scrub-throughput.md`). No change to which packets
   match.
 
+## 2026-10-02 - Analyzer decision stream
+
+- New `WatchDecisions` gRPC stream for a scrub controller: every command sent
+  to collectors (once per decision, only if actually sent), campaign
+  observations and scrub fingerprints. Off by default behind
+  `-enable-watch-api`; `-watch-max-subscribers` (16) and `-watch-buffer-size`
+  (10000, drop-oldest) bound it. See
+  `docs/operations.md#decision-stream-for-controllers`.
+- `SIGNAL_SCRUB_FINGERPRINT` is validated and passed through, never scored.
+- New metrics `packetyeeter_watch_subscribers`,
+  `packetyeeter_watch_published_total{kind}`,
+  `packetyeeter_watch_dropped_total` and
+  `packetyeeter_watch_invalid_fingerprints_total`.
 ## 2026-10-02 - Scrub mode throughput procedure and loop test
 
 - `docs/scrub-throughput.md`: how to measure a scrub node on real hardware

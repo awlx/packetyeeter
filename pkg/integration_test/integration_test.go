@@ -67,7 +67,7 @@ func TestAnalyzerStreamSignalsAcceptsCollectorSignals(t *testing.T) {
 	})
 }
 
-func startTestAnalyzer(t *testing.T) *analyzer.Analyzer {
+func startTestAnalyzer(t *testing.T, opts ...func(*analyzer.Config)) *analyzer.Analyzer {
 	t.Helper()
 
 	cfg := analyzer.Config{
@@ -87,6 +87,9 @@ func startTestAnalyzer(t *testing.T) *analyzer.Analyzer {
 		DDoSTotalThreshold:         1,
 		DDoSRequireHighFreq:        false,
 		DryRun:                     true,
+	}
+	for _, opt := range opts {
+		opt(&cfg)
 	}
 
 	a, err := analyzer.New(cfg)
