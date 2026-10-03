@@ -16,6 +16,12 @@
 - New metrics `packetyeeter_bot_verification_queue_depth`,
   `packetyeeter_bot_verification_queue_drops_total{reason}` and
   `packetyeeter_bot_verification_pending_total{bot_type}`.
+## 2026-10-02 - Scrub mode handshake tracking fixes
+
+- An ACK the kernel forwards (slow path, e.g. right after a neighbour
+  expired) now completes a tracked handshake too, so such clients are no longer
+  reported as incomplete handshakes.
+- An RST|ACK no longer counts as completing a handshake.
 
 ## 2026-10-02 - Scrub mode runtime rules
 
