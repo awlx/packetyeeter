@@ -10,6 +10,12 @@
 - `make e2e-scrub-test` now also checks that a routing loop shows up in
   `packetyeeter_scrub_ttl_expired_total` and that `-dry-run` forwards traffic a
   DROP rule matches while still counting the match.
+## 2026-10-02 - Scrub mode handshake tracking fixes
+
+- An ACK the kernel forwards (slow path, e.g. right after a neighbour
+  expired) now completes a tracked handshake too, so such clients are no longer
+  reported as incomplete handshakes.
+- An RST|ACK no longer counts as completing a handshake.
 
 ## 2026-10-02 - Scrub mode runtime rules
 
