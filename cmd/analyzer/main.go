@@ -49,6 +49,9 @@ func main() {
 		enableRuleAPI  = flag.Bool("enable-rule-api", false, "Accept PushRules and send runtime rules to scrub collectors. The gRPC listener is unauthenticated: enable only where it is firewalled to trusted controllers")
 		mlModelPath    = flag.String("ml-model", "", "Path to ONNX ML model file (optional, enables ML-based confidence adjustment)")
 		dryRun         = flag.Bool("dry-run", false, "Monitor mode - log detections but don't send BLOCK commands")
+		enableWatch    = flag.Bool("enable-watch-api", false, "Serve the WatchDecisions stream (commands, campaign observations, scrub fingerprints) on the gRPC listener. The listener is unauthenticated: restrict it to trusted networks")
+		watchMaxSubs   = flag.Int("watch-max-subscribers", 16, "Maximum concurrent WatchDecisions subscribers")
+		watchBuffer    = flag.Int("watch-buffer-size", 10000, "Per-subscriber WatchDecisions buffer; the oldest decision is dropped when full")
 
 		sustainedDefaults = sustained.DefaultConfig()
 
@@ -118,6 +121,9 @@ func main() {
 		MLModelPath:                  *mlModelPath,
 		MaxCollectors:                *maxCollectors,
 		DryRun:                       *dryRun,
+		EnableWatchAPI:               *enableWatch,
+		WatchMaxSubscribers:          *watchMaxSubs,
+		WatchBufferSize:              *watchBuffer,
 		EnableRuleAPI:                *enableRuleAPI,
 		RuleStateDir:                 *ruleStateDir,
 		Sustained: sustained.Config{

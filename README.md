@@ -370,6 +370,9 @@ sudo ./packetyeeter-collector -i eth0 -analyzer-addr 127.0.0.1:9090
 | `-sustained-release-factor-percent` | `100` | Percentage of the thresholds a held client must stay above (on requests, resources and sections) to remain held. |
 | `-sustained-reputation-factor` | `4` | Multiplier applied to the request and byte floors for verified good-reputation clients. Resource and section floors are unaffected. |
 | `-dry-run` | `false` | Log detections but do not send BLOCK commands (Monitor Mode). Also suppresses sustained-download blocks. |
+| `-enable-watch-api` | `false` | Serve the `WatchDecisions` stream (commands sent, campaign observations, scrub fingerprints) for a controller on the gRPC listener. The listener is unauthenticated; see [`docs/operations.md`](docs/operations.md#decision-stream-for-controllers). |
+| `-watch-max-subscribers` | `16` | Maximum concurrent `WatchDecisions` subscribers; more are refused with `RESOURCE_EXHAUSTED`. |
+| `-watch-buffer-size` | `10000` | Per-subscriber decision buffer. When full, the oldest decision is dropped and counted. |
 | `-v` | `false` | Verbose logging. |
 
 > Threat intelligence uses the free, **keyless** Shodan InternetDB API — no API key is required.

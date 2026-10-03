@@ -67,6 +67,7 @@ type Engine struct {
 	suspiciousScoreThreshold float64
 	blockScoreThreshold      float64
 	campaigns                *CampaignAggregator
+	onCampaign               func(CampaignDetection)
 
 	// Dependencies
 	geoip           *geoip.Provider
@@ -203,6 +204,11 @@ type Config struct {
 	// Campaign/carpet-bombing aggregation thresholds.
 	Campaign CampaignConfig
 
+	// OnCampaign, if set, is called synchronously for every campaign
+	// detection the engine emits. It must not block: it runs on the campaign
+	// evaluation goroutine.
+	OnCampaign func(CampaignDetection)
+
 	// Feedback loop configuration
 	EnableFeedback bool
 	FeedbackConfig FeedbackConfig
@@ -315,6 +321,7 @@ func New(cfg Config) *Engine {
 		suspiciousScoreThreshold: cfg.SuspiciousScoreThreshold,
 		blockScoreThreshold:      cfg.BlockScoreThreshold,
 		campaigns:                NewCampaignAggregator(cfg.Campaign),
+		onCampaign:               cfg.OnCampaign,
 		geoip:                    cfg.GeoIP,
 		reputation:               cfg.Reputation,
 		asnBaseline:              cfg.ASNBaseline,
@@ -1623,6 +1630,10 @@ func (e *Engine) handleCampaignDetection(detection CampaignDetection) {
 		"total_weight": detection.TotalWeight,
 		"observe_only": true,
 	}).Info("Attack campaign observed")
+
+	if e.onCampaign != nil {
+		e.onCampaign(detection)
+	}
 }
 
 func addCampaignBaselineMetadata(metadata map[string]interface{}, baseline CampaignBaselineObservation) {
