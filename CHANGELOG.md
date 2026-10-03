@@ -13,6 +13,16 @@
   `packetyeeter_watch_published_total{kind}`,
   `packetyeeter_watch_dropped_total` and
   `packetyeeter_watch_invalid_fingerprints_total`.
+## 2026-10-02 - Scrub mode throughput procedure and loop test
+
+- `docs/scrub-throughput.md`: how to measure a scrub node on real hardware
+  (TRex or pktgen), what to read, and veth lab reference numbers.
+- `make bench-scrub-veth` (`scripts/xdp_scrub_bench.sh`): informational veth
+  benchmark for forwarding with and without 4096 rules and under a spoofed
+  SYN flood.
+- `make e2e-scrub-test` now also checks that a routing loop shows up in
+  `packetyeeter_scrub_ttl_expired_total` and that `-dry-run` forwards traffic a
+  DROP rule matches while still counting the match.
 ## 2026-10-02 - Scrub mode fingerprints
 
 - `xdp_scrub` counts packets and bytes per destination, protocol, destination
