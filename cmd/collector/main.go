@@ -30,6 +30,10 @@ func main() {
 		slowPathPPS     = flag.Uint("scrub-slow-path-pps", collector.DefaultScrubSlowPathPPS, "Scrub mode: max packets/s handed to the kernel slow path across all CPUs, excess dropped (0 = unlimited)")
 		fpInterval      = flag.Duration("fingerprint-interval", collector.DefaultFingerprintInterval, "Scrub mode: how often per-destination traffic fingerprints are sent to the analyzer (0 = off)")
 		fpTop           = flag.Int("fingerprint-top", collector.DefaultFingerprintTop, "Scrub mode: fingerprint buckets sent per destination and interval, busiest first")
+		synCookies      = flag.String("scrub-syn-cookies", "off", "Scrub mode: answer SYNs from unverified sources with a SYN cookie instead of forwarding them: off, auto (only destinations over -scrub-syn-cookie-syn-pps) or on. Linux 6.0+")
+		synCookieStyle  = flag.String("scrub-syn-cookie-style", "oos", "Scrub mode: oos (out-of-sequence SYN-ACK; the client's RST verifies it and its SYN retry passes) or reset (valid SYN-ACK; the client's ACK verifies it and the node resets that connection)")
+		synCookiePPS    = flag.Uint("scrub-syn-cookie-syn-pps", collector.DefaultSynCookieSynPPS, "Scrub mode: SYNs per second to one destination, across all CPUs, that start challenges in -scrub-syn-cookies auto (held for 30s)")
+		synCookieTTL    = flag.Duration("scrub-syn-cookie-ttl", collector.DefaultSynCookieTTL, "Scrub mode: how long a source that answered a challenge stays verified")
 		analyzerAddr    = flag.String("analyzer-addr", "127.0.0.1:9090", "Analyzer gRPC address")
 		analyzerTLSCA   = flag.String("analyzer-tls-ca", "", "PEM CA bundle that verifies the analyzer's certificate; enables TLS. Re-read on change")
 		analyzerTLSCert = flag.String("analyzer-tls-cert", "", "PEM client certificate for mTLS to the analyzer (requires -analyzer-tls-key and -analyzer-tls-ca). Re-read on change")
@@ -75,6 +79,14 @@ func main() {
 	if err != nil {
 		logrus.WithError(err).Fatal("Invalid -xdp-mode")
 	}
+	synCookieMode, err := ebpf.ParseSynCookieMode(*synCookies)
+	if err != nil {
+		logrus.WithError(err).Fatal("Invalid -scrub-syn-cookies")
+	}
+	cookieStyle, err := ebpf.ParseSynCookieStyle(*synCookieStyle)
+	if err != nil {
+		logrus.WithError(err).Fatal("Invalid -scrub-syn-cookie-style")
+	}
 
 	cfg := collector.Config{
 		Interface:    *iface,
@@ -112,6 +124,11 @@ func main() {
 
 		FingerprintInterval: *fpInterval,
 		FingerprintTop:      *fpTop,
+
+		SynCookies:      synCookieMode,
+		SynCookieStyle:  cookieStyle,
+		SynCookieSynPPS: uint32(min(*synCookiePPS, math.MaxUint32)),
+		SynCookieTTL:    *synCookieTTL,
 	}
 
 	coll, err := collector.New(cfg, logger)

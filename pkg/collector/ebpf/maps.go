@@ -37,9 +37,12 @@ type Maps struct {
 	RuleMatchCounts     *ebpf.Map // Per-CPU rule matches by action
 	RulesV4             *ebpf.Map // Map-in-map holding the current IPv4 rule trie
 	RulesV6             *ebpf.Map
-	FingerprintsA       *ebpf.Map     // Scrub fingerprints, filled while the generation is odd
-	FingerprintsB       *ebpf.Map     // ... and while it is even
-	FPOverflow          *ebpf.Map     // Per-CPU packets not fingerprinted (map full)
+	FingerprintsA       *ebpf.Map // Scrub fingerprints, filled while the generation is odd
+	FingerprintsB       *ebpf.Map // ... and while it is even
+	FPOverflow          *ebpf.Map // Per-CPU packets not fingerprinted (map full)
+	SynCookieStats      *ebpf.Map // Per-CPU SYN cookie events by family
+	SynCookieVerifiedV4 *ebpf.Map // Sources that answered a SYN cookie challenge
+	SynCookieVerifiedV6 *ebpf.Map
 	RulesTrieSpecV4     *ebpf.MapSpec // Template for replacement tries
 	RulesTrieSpecV6     *ebpf.MapSpec
 	AllowedNets         []*net.IPNet // Userspace check

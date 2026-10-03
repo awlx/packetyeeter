@@ -14,6 +14,7 @@ type LoaderConfig struct {
 	XDPMode      XDPMode
 	AllowGeneric bool
 	Fingerprints bool
+	SynCookies   bool
 }
 
 type Loader struct {

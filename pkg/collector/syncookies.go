@@ -6,7 +6,7 @@ import (
 )
 
 // synCookiesSysctlPath is the standard Linux sysctl file controlling the
-// kernel's own SYN cookie protection. PacketYeeter deliberately does not
+// kernel's own SYN cookie protection. Host mode deliberately does not
 // implement its own SYN cookie challenge/response in XDP: doing so
 // transparently is not achievable without breaking the TCP protocol (the
 // client would end up receiving a second, unexpected SYN-ACK once its
@@ -14,7 +14,8 @@ import (
 // kernel stack). Instead, PacketYeeter's incomplete-handshake detection
 // and blocked_ips enforcement reduce the SYN flood volume that reaches
 // the backend at all, and operators are expected to rely on the kernel's
-// own syncookie implementation for the rest.
+// own syncookie implementation for the rest. Scrub nodes can instead verify
+// sources before forwarding their SYNs (-scrub-syn-cookies).
 const synCookiesSysctlPath = "/proc/sys/net/ipv4/tcp_syncookies"
 
 // checkKernelSynCookies reads the kernel's tcp_syncookies sysctl and logs a
