@@ -36,6 +36,11 @@ service AnalyzerService {
   
   // Health check
   rpc Health(google.protobuf.Empty) returns (HealthResponse);
+
+  // Replace the runtime rules of one scope (a controller identity) and send
+  // the resulting changes to scrub collectors. Disabled unless the analyzer
+  // runs with -enable-rule-api.
+  rpc PushRules(RuleSet) returns (PushRulesAck);
 }
 
 // Signal represents a detection signal from the collector
@@ -253,11 +258,26 @@ enum RuleAction {
   RULE_ACTION_PASS = 3;
 }
 
+// RuleSet is the complete desired rule set of one scope; an empty set removes
+// the scope's rules. Scopes never overwrite each other.
+message RuleSet {
+  string scope = 1;
+  repeated Rule rules = 2;
+}
+
+message PushRulesAck {
+  uint32 collectors = 1; // scrub collectors that received the resulting changes
+}
+
 // RuleSetDelta is applied atomically: either every change takes effect or
 // none does.
 message RuleSetDelta {
   repeated Rule upsert = 1;
   repeated string remove = 2;
+  // replace: upsert is the complete rule set; every other rule is removed.
+  // The analyzer always sends replacements: collectors do not acknowledge
+  // rules, so resending the whole set is how a missed or rejected one heals.
+  bool replace = 3;
 }
 
 // JA4H Lookup
