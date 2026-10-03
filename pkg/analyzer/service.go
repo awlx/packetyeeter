@@ -92,6 +92,9 @@ type Config struct {
 	MaxCollectors                int      // Max concurrent collector streams (default 1024)
 	InspectorTrustedHosts        []string // Extra Host/Origin hostnames the inspector trusts for mutating requests (in addition to loopback), e.g. a reverse-proxy hostname
 	DryRun                       bool     // Monitor mode - log detections but don't block
+	EnableWatchAPI               bool     // Serve WatchDecisions (off by default)
+	WatchMaxSubscribers          int      // Max concurrent WatchDecisions subscribers (default 16)
+	WatchBufferSize              int      // Per-subscriber decision buffer, drop-oldest (default 10000)
 	EnableRuleAPI                bool     // Accept PushRules; off because the gRPC listener is unauthenticated without mTLS
 	RuleStateDir                 string   // Persist pushed rules here across restarts; empty disables
 	Sustained                    sustained.Config
@@ -107,7 +110,7 @@ type Config struct {
 // ControlMethods are the control-plane RPCs gated by ControlClientNames.
 var ControlMethods = []string{
 	apiv1.AnalyzerService_PushRules_FullMethodName,
-	"/packetyeeter.v1.AnalyzerService/WatchDecisions",
+	apiv1.AnalyzerService_WatchDecisions_FullMethodName,
 }
 
 // Analyzer is the AI/ML analysis daemon that receives signals from collectors
@@ -250,6 +253,8 @@ type Analyzer struct {
 	httpErrorWindows map[string]*httpErrorWindow
 	httpErrorMu      sync.Mutex
 
+	// WatchDecisions subscribers; nil when the API is disabled.
+	watch *watchHub
 	// Desired scrub-mode runtime rules, by scope
 	rules         ruleStore
 	rulePersister *ruleStatePersister // nil unless -rule-state-dir is set
@@ -377,6 +382,11 @@ func New(cfg Config) (*Analyzer, error) {
 		cancel:                 cancel,
 		startTime:              time.Now(),
 	}
+	if cfg.EnableWatchAPI {
+		a.watch = newWatchHub(cfg.WatchMaxSubscribers, cfg.WatchBufferSize)
+		a.Config.WatchMaxSubscribers = a.watch.maxSubscribers
+		a.Config.WatchBufferSize = a.watch.bufferSize
+	}
 	a.ReputationHelper = NewReputationHelper(nil) // Will be set during Start()
 	if len(cfg.ControlClientNames) > 0 {
 		a.controlAuthz = grpctls.NewMethodAuthorizer(ControlMethods, cfg.ControlClientNames, logrus.StandardLogger())
@@ -477,6 +487,9 @@ func (a *Analyzer) Start() error {
 	aiCfg.DDoSTotalThreshold = a.Config.DDoSTotalThreshold
 	aiCfg.DDoSRequireHighFreq = a.Config.DDoSRequireHighFreq
 	aiCfg.EnableDDoSCategory = !a.Config.DisableDDoSCategory
+	if a.watch != nil {
+		aiCfg.OnCampaign = a.publishCampaign
+	}
 	stateDir := a.Config.StateDir
 	if stateDir == "" {
 		stateDir = "/var/cache/packetyeeter"
@@ -618,6 +631,18 @@ func (a *Analyzer) Start() error {
 
 	a.grpcServer = grpc.NewServer(opts...)
 	apiv1.RegisterAnalyzerServiceServer(a.grpcServer, a)
+	if a.watch != nil {
+		log := logrus.WithFields(logrus.Fields{
+			"addr":            a.Config.ListenAddr,
+			"max_subscribers": a.watch.maxSubscribers,
+			"buffer":          a.watch.bufferSize,
+		})
+		if len(a.Config.ControlClientNames) > 0 {
+			log.Info("WatchDecisions enabled for -control-client-names")
+		} else {
+			log.Warn("WatchDecisions enabled for any client that can connect; restrict it with mTLS (-tls-client-ca) and -control-client-names")
+		}
+	}
 
 	// Start background tasks
 	a.wg.Add(1)
@@ -815,6 +840,11 @@ func (a *Analyzer) StreamSignals(stream apiv1.AnalyzerService_StreamSignalsServe
 		}
 
 		signalCounts[sig.Type.String()]++
+
+		if sig.GetType() == apiv1.SignalType_SIGNAL_SCRUB_FINGERPRINT {
+			a.handleFingerprintSignal(collectorID, sig)
+			continue
+		}
 
 		logrus.WithFields(logrus.Fields{
 			"collector":   collectorID,
@@ -1112,6 +1142,7 @@ func (a *Analyzer) sendCommand(cs *collectorStream, cmd *apiv1.Command) {
 		return
 	}
 
+	a.publishCommand(cmd)
 	a.sendToStream(cs, cmd)
 }
 
@@ -1202,6 +1233,7 @@ func (a *Analyzer) Broadcast(cmd *apiv1.Command) {
 		return
 	}
 
+	a.publishCommand(cmd)
 	// Fan-out is bounded by Config.MaxCollectors (see registerCollector).
 	for _, cs := range recipients {
 		go a.sendToStream(cs, cmd)
