@@ -16,6 +16,18 @@
   JA4T event, so SYNs past the budget skip the event work. Handshake tracking
   still runs for every SYN.
 - No verdict changes; enforcement and telemetry are unaffected.
+## 2026-10-02 - Analyzer hot-path performance
+
+- Rate-limit and block-dedup tracking sweep expired entries at most once per
+  second instead of on every call; a 40k-unique-IP enforce-mode flood replay
+  drops from ~37-51 s to ~25 ms. Dedup TTL semantics are unchanged.
+- `packetyeeter_rate_limit_currently_blocked_{ips,asns}` now saturate at
+  100,000 and may lag expiry by up to 1 s.
+- Disabled Debug logs on the signal path no longer build fields or format
+  IPs (SYN `processSignal` ~1.3 us/13 allocs to ~0.14 us/1 alloc).
+- Over-cap map eviction uses selection instead of a full sort (~22 ms to
+  ~2.5 ms per eviction at a 100k cap), evicting the same entries.
+- `Analyzer.Close` is idempotent.
 ## 2026-10-02 - Faster scrub rule matching
 
 - Port ranges are merged and sorted when a rule is installed, and IPv4 source
