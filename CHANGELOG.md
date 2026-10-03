@@ -1,5 +1,15 @@
 # PacketYeeter Changelog
 
+## 2026-10-02 - Collector map polling performance
+
+- The collector reads its eBPF maps with batch lookups (Linux 5.6+), falling
+  back to per-key iteration on older kernels (logged once). One poll of a full
+  3M-entry `icmp_rates` map drops from ~3.0 s to ~0.38 s, and walks no longer
+  abort under flood churn. Map walk errors are now logged instead of ignored.
+- Rate-map shadow state keeps only sources at or above the flood threshold, so
+  spoofed-source floods no longer grow it to millions of entries. Signals are
+  unchanged.
+- Expired pending handshakes are consumed with batch deletes.
 ## 2026-10-02 - Optional TLS and mTLS for the analyzer gRPC API (SCR-20)
 
 - Analyzer `-tls-cert`/`-tls-key` enable TLS on the gRPC listener;

@@ -131,6 +131,14 @@ type Collector struct {
 	prevUDPRates    map[uint32]prevRate
 	prevICMPRatesV6 map[[16]byte]prevRate
 	prevUDPRatesV6  map[[16]byte]prevRate
+	// Newest kernel timestamp seen in any rate map. The prev* maps above only
+	// hold flooding sources, so pruneStaleState cannot derive "now" from them
+	// alone.
+	rateClock uint64
+
+	mapWalker ebpf.MapWalker
+	// Per-message rate limit for map walk failures; pollMaps goroutine only.
+	walkErrLogged map[string]walkErrLog
 
 	// Last-alerted timestamps for bad TCP flag scans, so repeated polls
 	// don't re-emit a signal for the same kernel-observed event.
@@ -209,6 +217,7 @@ func New(cfg Config, logger *logrus.Logger) (*Collector, error) {
 		prevEgressBytes:    make(map[uint32]prevEgress),
 		prevEgressBytesV6:  make(map[[16]byte]prevEgress),
 	}
+	c.mapWalker.Logger = logger
 
 	// Load GeoIP database
 	if cfg.GeoIPASNPath != "" {
@@ -883,10 +892,12 @@ func (c *Collector) processPerfEvent(data []byte) {
 	// TCP flags: SYN=0x02, check if SYN is set and ACK is not (to distinguish from SYN-ACK)
 	if meta.Type == 1 && (meta.TcpFlags&0x02) != 0 && (meta.TcpFlags&0x10) == 0 {
 		c.storeSynTimestamp(ip)
-		c.Logger.WithFields(logrus.Fields{
-			"ip":        ip.String(),
-			"tcp_flags": fmt.Sprintf("0x%02x", meta.TcpFlags),
-		}).Debug("Stored SYN timestamp for eBPF-SPOE correlation")
+		if c.Logger.IsLevelEnabled(logrus.DebugLevel) {
+			c.Logger.WithFields(logrus.Fields{
+				"ip":        ip.String(),
+				"tcp_flags": fmt.Sprintf("0x%02x", meta.TcpFlags),
+			}).Debug("Stored SYN timestamp for eBPF-SPOE correlation")
+		}
 	}
 
 	// Only process events with timestamp or entropy data
@@ -1134,55 +1145,55 @@ func (c *Collector) sendPendingHandshakes() {
 		totalRTT int64
 		ports    map[uint16]bool
 	}
-	type pendingIPv4 struct {
-		key ebpf.TcpSessionKey
-		val ebpf.HandshakeStatusGeneric
-	}
-	type pendingIPv6 struct {
-		key ebpf.TcpSessionKeyV6
-		val ebpf.HandshakeStatusGeneric
-	}
-	ipv4Stats := make(map[uint32]*ipStats)
-	const maxBatchSize = 1000 // Limit signals per poll to prevent overwhelming analyzer
-	expiredIPv4 := make([]pendingIPv4, 0)
-	selectedIPv4 := make(map[uint32]struct{})
-
-	var key ebpf.TcpSessionKey
-	var val ebpf.HandshakeStatusGeneric
-
-	iter := c.Maps.PendingHandshakes.Iterate()
-	for iter.Next(&key, &val) {
-		if !pendingHandshakeExpired(nowNS, val.BeginTime, timeout) {
-			continue
-		}
-		if _, ok := selectedIPv4[key.Saddr]; !ok {
-			if len(selectedIPv4) >= maxBatchSize {
-				continue
-			}
-			selectedIPv4[key.Saddr] = struct{}{}
-		}
-		expiredIPv4 = append(expiredIPv4, pendingIPv4{key: key, val: val})
-	}
-	if err := iter.Err(); err != nil {
-		c.Logger.WithError(err).Warn("Failed to iterate IPv4 pending handshakes")
-	}
-
-	for _, pending := range expiredIPv4 {
-		if err := c.Maps.PendingHandshakes.Delete(&pending.key); err != nil {
-			c.Logger.WithError(err).Debug("Failed to consume expired IPv4 pending handshake")
-			continue
-		}
-		stats, ok := ipv4Stats[pending.key.Saddr]
-		if !ok {
-			stats = &ipStats{ports: make(map[uint16]bool)}
-			ipv4Stats[pending.key.Saddr] = stats
-		}
+	addPending := func(stats *ipStats, val ebpf.HandshakeStatusGeneric, dport uint16) {
 		stats.count++
-		if rtt, ok := handshakeRTTNanos(pending.val.SynAckTime, pending.val.BeginTime); ok {
+		if rtt, ok := handshakeRTTNanos(val.SynAckTime, val.BeginTime); ok {
 			stats.totalRTT += rtt
 			stats.rttCount++
 		}
-		stats.ports[pending.key.Dport] = true
+		stats.ports[dport] = true
+	}
+	ipv4Stats := make(map[uint32]*ipStats)
+	const maxBatchSize = 1000 // Limit signals per poll to prevent overwhelming analyzer
+	var expiredKeys []ebpf.TcpSessionKey
+	var expiredVals []ebpf.HandshakeStatusGeneric
+	selectedIPv4 := make(map[uint32]struct{})
+
+	err = ebpf.Walk(&c.mapWalker, c.Maps.PendingHandshakes, func(key ebpf.TcpSessionKey, val ebpf.HandshakeStatusGeneric) bool {
+		if !pendingHandshakeExpired(nowNS, val.BeginTime, timeout) {
+			return true
+		}
+		if _, ok := selectedIPv4[key.Saddr]; !ok {
+			if len(selectedIPv4) >= maxBatchSize {
+				return true
+			}
+			selectedIPv4[key.Saddr] = struct{}{}
+		}
+		expiredKeys = append(expiredKeys, key)
+		expiredVals = append(expiredVals, val)
+		return true
+	})
+	if err != nil {
+		c.warnMapWalk("Failed to iterate IPv4 pending handshakes", err)
+	}
+
+	// Only entries this poll actually deleted are counted: a key that vanished
+	// in between was completed (or evicted) by the kernel and must not be
+	// reported as incomplete.
+	missing, err := ebpf.DeleteKeys(&c.mapWalker, c.Maps.PendingHandshakes, expiredKeys, func(i int) {
+		saddr := expiredKeys[i].Saddr
+		stats, ok := ipv4Stats[saddr]
+		if !ok {
+			stats = &ipStats{ports: make(map[uint16]bool)}
+			ipv4Stats[saddr] = stats
+		}
+		addPending(stats, expiredVals[i], expiredKeys[i].Dport)
+	})
+	if err != nil {
+		c.warnMapWalk("Failed to consume expired IPv4 pending handshakes", err)
+	}
+	if missing > 0 {
+		c.Logger.WithField("count", missing).Debug("Expired IPv4 pending handshakes already gone before consume")
 	}
 
 	// Send aggregated signals (one per IP)
@@ -1245,45 +1256,43 @@ func (c *Collector) sendPendingHandshakes() {
 
 	type ipv6Key [16]byte
 	ipv6Stats := make(map[ipv6Key]*ipStats)
-	expiredIPv6 := make([]pendingIPv6, 0)
+	var expiredKeys6 []ebpf.TcpSessionKeyV6
+	var expiredVals6 []ebpf.HandshakeStatusGeneric
 	selectedIPv6 := make(map[ipv6Key]struct{})
 
-	var key6 ebpf.TcpSessionKeyV6
-	iter6 := c.Maps.PendingHandshakesV6.Iterate()
-	for iter6.Next(&key6, &val) {
+	err = ebpf.Walk(&c.mapWalker, c.Maps.PendingHandshakesV6, func(key ebpf.TcpSessionKeyV6, val ebpf.HandshakeStatusGeneric) bool {
 		if !pendingHandshakeExpired(nowNS, val.BeginTime, timeout) {
-			continue
+			return true
 		}
-		k := ipv6Key(key6.Saddr)
+		k := ipv6Key(key.Saddr)
 		if _, ok := selectedIPv6[k]; !ok {
 			if len(selectedIPv6) >= maxBatchSize {
-				continue
+				return true
 			}
 			selectedIPv6[k] = struct{}{}
 		}
-		expiredIPv6 = append(expiredIPv6, pendingIPv6{key: key6, val: val})
-	}
-	if err := iter6.Err(); err != nil {
-		c.Logger.WithError(err).Warn("Failed to iterate IPv6 pending handshakes")
+		expiredKeys6 = append(expiredKeys6, key)
+		expiredVals6 = append(expiredVals6, val)
+		return true
+	})
+	if err != nil {
+		c.warnMapWalk("Failed to iterate IPv6 pending handshakes", err)
 	}
 
-	for _, pending := range expiredIPv6 {
-		if err := c.Maps.PendingHandshakesV6.Delete(&pending.key); err != nil {
-			c.Logger.WithError(err).Debug("Failed to consume expired IPv6 pending handshake")
-			continue
-		}
-		k := ipv6Key(pending.key.Saddr)
+	missing, err = ebpf.DeleteKeys(&c.mapWalker, c.Maps.PendingHandshakesV6, expiredKeys6, func(i int) {
+		k := ipv6Key(expiredKeys6[i].Saddr)
 		stats, ok := ipv6Stats[k]
 		if !ok {
 			stats = &ipStats{ports: make(map[uint16]bool)}
 			ipv6Stats[k] = stats
 		}
-		stats.count++
-		if rtt, ok := handshakeRTTNanos(pending.val.SynAckTime, pending.val.BeginTime); ok {
-			stats.totalRTT += rtt
-			stats.rttCount++
-		}
-		stats.ports[pending.key.Dport] = true
+		addPending(stats, expiredVals6[i], expiredKeys6[i].Dport)
+	})
+	if err != nil {
+		c.warnMapWalk("Failed to consume expired IPv6 pending handshakes", err)
+	}
+	if missing > 0 {
+		c.Logger.WithField("count", missing).Debug("Expired IPv6 pending handshakes already gone before consume")
 	}
 
 	for saddr, stats := range ipv6Stats {
@@ -1345,24 +1354,27 @@ func (c *Collector) sendICMPRates() {
 	totalPPS := 0.0
 
 	if c.Maps.ICMPRates != nil {
-		var ip uint32
-		var rate ebpf.ICMPRate
-		iter := c.Maps.ICMPRates.Iterate()
-		for iter.Next(&ip, &rate) {
+		err := ebpf.Walk(&c.mapWalker, c.Maps.ICMPRates, func(ip uint32, rate ebpf.ICMPRate) bool {
 			if sentCount >= rateMaxBatchSize {
-				break
+				return false
 			}
 			if rate.Count == 0 {
-				continue
+				return true
 			}
-			ipBytes := make([]byte, 4)
-			binary.LittleEndian.PutUint32(ipBytes, ip)
+			c.observeRateClock(rate.LastTime)
 			pps := computePPS(c.prevICMPRates, ip, rate)
-			if p, sent := c.emitFloodSignal(net.IP(ipBytes), pps, rate,
+			if pps < rateMinFloodPPS {
+				return true
+			}
+			if p, sent := c.emitFloodSignal(ipv4FromKey(ip), pps, rate,
 				apiv1.SignalType_SIGNAL_ICMP_FLOOD, "icmp"); sent {
 				totalPPS += p
 				sentCount++
 			}
+			return true
+		})
+		if err != nil {
+			c.warnMapWalk("Failed to walk IPv4 ICMP rate map", err)
 		}
 	}
 
@@ -1372,22 +1384,27 @@ func (c *Collector) sendICMPRates() {
 	// IPv4 flood that fills the v4 batch cannot starve IPv6 emission this poll.
 	sentCountV6 := 0
 	if c.Maps.ICMPRatesV6 != nil {
-		var key [16]byte
-		var rate ebpf.ICMPRate
-		iter := c.Maps.ICMPRatesV6.Iterate()
-		for iter.Next(&key, &rate) {
+		err := ebpf.Walk(&c.mapWalker, c.Maps.ICMPRatesV6, func(key [16]byte, rate ebpf.ICMPRate) bool {
 			if sentCountV6 >= rateMaxBatchSize {
-				break
+				return false
 			}
 			if rate.Count == 0 {
-				continue
+				return true
 			}
+			c.observeRateClock(rate.LastTime)
 			pps := computePPSV6(c.prevICMPRatesV6, key, rate)
+			if pps < rateMinFloodPPS {
+				return true
+			}
 			if p, sent := c.emitFloodSignal(net.IP(key[:]), pps, rate,
 				apiv1.SignalType_SIGNAL_ICMP_FLOOD, "icmp6"); sent {
 				totalPPS += p
 				sentCountV6++
 			}
+			return true
+		})
+		if err != nil {
+			c.warnMapWalk("Failed to walk IPv6 ICMP rate map", err)
 		}
 	}
 
@@ -1409,24 +1426,27 @@ func (c *Collector) sendUDPRates() {
 	totalPPS := 0.0
 
 	if c.Maps.UDPRates != nil {
-		var ip uint32
-		var rate ebpf.ICMPRate // Same struct for UDP
-		iter := c.Maps.UDPRates.Iterate()
-		for iter.Next(&ip, &rate) {
+		err := ebpf.Walk(&c.mapWalker, c.Maps.UDPRates, func(ip uint32, rate ebpf.ICMPRate) bool {
 			if sentCount >= rateMaxBatchSize {
-				break
+				return false
 			}
 			if rate.Count == 0 {
-				continue
+				return true
 			}
-			ipBytes := make([]byte, 4)
-			binary.LittleEndian.PutUint32(ipBytes, ip)
+			c.observeRateClock(rate.LastTime)
 			pps := computePPS(c.prevUDPRates, ip, rate)
-			if p, sent := c.emitFloodSignal(net.IP(ipBytes), pps, rate,
+			if pps < rateMinFloodPPS {
+				return true
+			}
+			if p, sent := c.emitFloodSignal(ipv4FromKey(ip), pps, rate,
 				apiv1.SignalType_SIGNAL_UDP_FLOOD, "udp"); sent {
 				totalPPS += p
 				sentCount++
 			}
+			return true
+		})
+		if err != nil {
+			c.warnMapWalk("Failed to walk IPv4 UDP rate map", err)
 		}
 	}
 
@@ -1436,22 +1456,27 @@ func (c *Collector) sendUDPRates() {
 	// IPv4 flood from starving IPv6 emission this poll.
 	sentCountV6 := 0
 	if c.Maps.UDPRatesV6 != nil {
-		var key [16]byte
-		var rate ebpf.ICMPRate
-		iter := c.Maps.UDPRatesV6.Iterate()
-		for iter.Next(&key, &rate) {
+		err := ebpf.Walk(&c.mapWalker, c.Maps.UDPRatesV6, func(key [16]byte, rate ebpf.ICMPRate) bool {
 			if sentCountV6 >= rateMaxBatchSize {
-				break
+				return false
 			}
 			if rate.Count == 0 {
-				continue
+				return true
 			}
+			c.observeRateClock(rate.LastTime)
 			pps := computePPSV6(c.prevUDPRatesV6, key, rate)
+			if pps < rateMinFloodPPS {
+				return true
+			}
 			if p, sent := c.emitFloodSignal(net.IP(key[:]), pps, rate,
 				apiv1.SignalType_SIGNAL_UDP_FLOOD, "udp6"); sent {
 				totalPPS += p
 				sentCountV6++
 			}
+			return true
+		})
+		if err != nil {
+			c.warnMapWalk("Failed to walk IPv6 UDP rate map", err)
 		}
 	}
 
@@ -1478,26 +1503,21 @@ func (c *Collector) sendBadFlagsAlerts() {
 	sentCount := 0
 
 	if c.Maps.BadFlags != nil {
-		var ip uint32
-		var info ebpf.BadFlagsInfo
-		iter := c.Maps.BadFlags.Iterate()
-		for iter.Next(&ip, &info) {
+		err := ebpf.Walk(&c.mapWalker, c.Maps.BadFlags, func(ip uint32, info ebpf.BadFlagsInfo) bool {
 			if sentCount >= maxBatchSize {
-				break
+				return false
 			}
 			if info.LastSeen == 0 {
-				continue
+				return true
 			}
 			if prev, ok := c.prevBadFlagsSeen[ip]; ok && info.LastSeen <= prev {
-				continue
+				return true
 			}
 			c.prevBadFlagsSeen[ip] = info.LastSeen
 
-			ipBytes := make([]byte, 4)
-			binary.LittleEndian.PutUint32(ipBytes, ip)
-			ipAddr := net.IP(ipBytes)
+			ipAddr := ipv4FromKey(ip)
 			if c.checkAllowlist(ipAddr) {
-				continue
+				return true
 			}
 
 			asn, org := "", ""
@@ -1510,7 +1530,7 @@ func (c *Collector) sendBadFlagsAlerts() {
 				Timestamp: timestamppb.Now(),
 				Type:      apiv1.SignalType_SIGNAL_BAD_FLAGS,
 				Source:    apiv1.SignalSource_SOURCE_EBPF,
-				Ip:        ipBytes,
+				Ip:        ipAddr,
 				Asn:       asn,
 				Org:       org,
 				Weight:    10,
@@ -1520,29 +1540,30 @@ func (c *Collector) sendBadFlagsAlerts() {
 				},
 			})
 			sentCount++
+			return true
+		})
+		if err != nil {
+			c.warnMapWalk("Failed to walk IPv4 bad flags map", err)
 		}
 	}
 
 	if c.Maps.BadFlagsV6 != nil {
-		type ipv6Key [16]byte
-		var saddr ipv6Key
-		var info ebpf.BadFlagsInfo
-		iter := c.Maps.BadFlagsV6.Iterate()
-		for iter.Next(&saddr, &info) {
+		err := ebpf.Walk(&c.mapWalker, c.Maps.BadFlagsV6, func(saddr [16]byte, info ebpf.BadFlagsInfo) bool {
 			if sentCount >= maxBatchSize {
-				break
+				return false
 			}
 			if info.LastSeen == 0 {
-				continue
+				return true
 			}
 			if prev, ok := c.prevBadFlagsSeenV6[saddr]; ok && info.LastSeen <= prev {
-				continue
+				return true
 			}
 			c.prevBadFlagsSeenV6[saddr] = info.LastSeen
 
-			ipAddr := net.IP(saddr[:])
+			addr := saddr // escapes; copy only past the dedupe gate
+			ipAddr := net.IP(addr[:])
 			if c.checkAllowlist(ipAddr) {
-				continue
+				return true
 			}
 
 			asn, org := "", ""
@@ -1565,6 +1586,10 @@ func (c *Collector) sendBadFlagsAlerts() {
 				},
 			})
 			sentCount++
+			return true
+		})
+		if err != nil {
+			c.warnMapWalk("Failed to walk IPv6 bad flags map", err)
 		}
 	}
 
@@ -1578,7 +1603,7 @@ func computePPS(prev map[uint32]prevRate, ip uint32, rate ebpf.ICMPRate) float64
 		return float64(rate.Count)
 	}
 	pr, ok := prev[ip]
-	prev[ip] = prevRate{lastTime: rate.LastTime, count: rate.Count}
+	storePrevRate(prev, ip, rate)
 	return ppsFromWindow(pr, ok, rate)
 }
 
@@ -1588,8 +1613,62 @@ func computePPSV6(prev map[[16]byte]prevRate, ip [16]byte, rate ebpf.ICMPRate) f
 		return float64(rate.Count)
 	}
 	pr, ok := prev[ip]
-	prev[ip] = prevRate{lastTime: rate.LastTime, count: rate.Count}
+	storePrevRate(prev, ip, rate)
 	return ppsFromWindow(pr, ok, rate)
+}
+
+// storePrevRate keeps a sample only when it could matter next poll. A stored
+// sample changes ppsFromWindow's answer only on a window roll, and then yields
+// the stored count; a sub-threshold count can never pass the flood gate, and
+// without it the current count (smaller still, since the window rolled) is
+// used instead. Dropping it is therefore invisible to signalling, and keeps a
+// spoofed-source flood from filling these maps with millions of sources.
+func storePrevRate[K comparable](prev map[K]prevRate, ip K, rate ebpf.ICMPRate) {
+	if float64(rate.Count) >= rateMinFloodPPS {
+		prev[ip] = prevRate{lastTime: rate.LastTime, count: rate.Count}
+	} else {
+		delete(prev, ip)
+	}
+}
+
+type walkErrLog struct {
+	at         time.Time
+	suppressed int
+}
+
+const walkErrLogInterval = time.Minute
+
+// warnMapWalk rate-limits per message: on pre-5.6 kernels the per-key
+// fallback can abort on every poll while a flood churns the LRU maps.
+func (c *Collector) warnMapWalk(msg string, err error) {
+	now := time.Now()
+	if c.walkErrLogged == nil {
+		c.walkErrLogged = make(map[string]walkErrLog)
+	}
+	l, seen := c.walkErrLogged[msg]
+	if seen && now.Sub(l.at) < walkErrLogInterval {
+		l.suppressed++
+		c.walkErrLogged[msg] = l
+		return
+	}
+	entry := c.Logger.WithError(err)
+	if l.suppressed > 0 {
+		entry = entry.WithField("suppressed", l.suppressed)
+	}
+	entry.Warn(msg)
+	c.walkErrLogged[msg] = walkErrLog{at: now}
+}
+
+func (c *Collector) observeRateClock(t uint64) {
+	if t > c.rateClock {
+		c.rateClock = t
+	}
+}
+
+func ipv4FromKey(k uint32) net.IP {
+	b := make(net.IP, 4)
+	binary.LittleEndian.PutUint32(b, k)
+	return b
 }
 
 // ppsFromWindow derives a pps estimate from the current and previous window
@@ -1629,7 +1708,7 @@ const (
 )
 
 func (c *Collector) pruneStaleState() {
-	maxClock := uint64(0)
+	maxClock := c.rateClock
 	for _, v := range c.prevICMPRates {
 		if v.lastTime > maxClock {
 			maxClock = v.lastTime
@@ -1738,10 +1817,12 @@ const (
 // contributed (0 when skipped) and whether a signal was sent, so v4 and v6
 // callers share identical gating and cannot drift apart.
 func (c *Collector) emitFloodSignal(ipAddr net.IP, pps float64, rate ebpf.ICMPRate, sigType apiv1.SignalType, idPrefix string) (float64, bool) {
-	if c.checkAllowlist(ipAddr) {
+	// Threshold first: it is a float compare, the allowlist is a locked CIDR
+	// scan, and nearly every entry fails the threshold during a spoofed flood.
+	if pps < rateMinFloodPPS {
 		return 0, false
 	}
-	if pps < rateMinFloodPPS {
+	if c.checkAllowlist(ipAddr) {
 		return 0, false
 	}
 	// The rate-map iterators reuse a single key buffer across iterations and
@@ -1926,7 +2007,7 @@ func (c *Collector) signalSender() {
 					// instead of silently backlogging the queue.
 					c.resetAnalyzerConnection()
 				}
-			} else {
+			} else if c.Logger.IsLevelEnabled(logrus.DebugLevel) {
 				c.Logger.WithFields(logrus.Fields{
 					"type": signal.Type.String(),
 					"ip":   net.IP(signal.Ip).String(),
