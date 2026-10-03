@@ -178,6 +178,26 @@ struct {
     __type(value, struct handshake_status);
 } pending_handshakes_v6 SEC(".maps");
 
+// Scrub-mode twins of pending_handshakes(_v6): a SYN flood from random sources
+// inserts (and, once full, evicts) on every packet, and the common LRU list
+// lock serialised that across CPUs. Per-CPU LRU lists keep the shared hash
+// table, so an ACK on another CPU still finds the SYN's entry.
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(map_flags, BPF_F_NO_COMMON_LRU);
+    __uint(max_entries, HANDSHAKES_MAP_SIZE);
+    __type(key, struct tcp_session_key);
+    __type(value, struct handshake_status);
+} scrub_handshakes SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(map_flags, BPF_F_NO_COMMON_LRU);
+    __uint(max_entries, HANDSHAKES_MAP_SIZE);
+    __type(key, struct tcp_session_key_v6);
+    __type(value, struct handshake_status);
+} scrub_handshakes_v6 SEC(".maps");
+
 struct {
     __uint(type, BPF_MAP_TYPE_LRU_HASH);
     __uint(max_entries, BLOCK_MAP_SIZE);
@@ -1429,9 +1449,9 @@ static __always_inline int scrub_redirect(struct xdp_md *ctx, struct ethhdr *eth
     if (action != XDP_REDIRECT)
         return scrub_verdict(ctx, SCRUB_VERDICT_DROP, family, action);
     if (family == SCRUB_FAMILY_V4)
-        scrub_hs_open(&pending_handshakes, hs);
+        scrub_hs_open(&scrub_handshakes, hs);
     else
-        scrub_hs_open(&pending_handshakes_v6, hs);
+        scrub_hs_open(&scrub_handshakes_v6, hs);
     return scrub_verdict(ctx, SCRUB_VERDICT_FORWARD, family, action);
 }
 
@@ -1879,7 +1899,7 @@ static __always_inline int scrub_ipv4(struct xdp_md *ctx, struct ethhdr *eth, vo
              check_l4_v4(ctx, ip, data_end, saddr, now, is_monitor) == CHECK_DROP))
             return scrub_verdict(ctx, SCRUB_VERDICT_DROP, SCRUB_FAMILY_V4, XDP_DROP);
         scrub_hs_prepare_v4(&hs, ip, data_end, now);
-        scrub_hs_close(&pending_handshakes, &hs);
+        scrub_hs_close(&scrub_handshakes, &hs);
     }
 
     return scrub_forward_v4(ctx, eth, ip, tagged, is_monitor, &hs);
@@ -1935,7 +1955,7 @@ static __always_inline int scrub_ipv6(struct xdp_md *ctx, struct ethhdr *eth, vo
         }
         if (l4_proto == IPPROTO_TCP) {
             scrub_hs_prepare_v6(&hs, ip6, l4_hdr, data_end, now);
-            scrub_hs_close(&pending_handshakes_v6, &hs);
+            scrub_hs_close(&scrub_handshakes_v6, &hs);
         }
     }
 
