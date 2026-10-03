@@ -10,6 +10,22 @@
   spoofed-source floods no longer grow it to millions of entries. Signals are
   unchanged.
 - Expired pending handshakes are consumed with batch deletes.
+## 2026-10-02 - XDP hot-path performance
+
+- Fix: dropping a packet from an IPv4 `blocked_ips` source no longer adds 1 to
+  the entry's value. That value is the block's start time, so every drop
+  pushed expiry back by 1 ns (about 1 ms per million drops) and `yeetctl`
+  showed a TTL that grew under attack. IPv4 blocks now expire on time, as IPv6
+  blocks already did; dropping blocked IPv4 sources from several CPUs is also
+  much cheaper.
+- A repeat of the same bad TCP flag scan refreshes `last_seen` on the existing
+  `bad_flags`/`bad_flags_v6` entry in place instead of re-inserting it per
+  packet; a different scan from the same source still replaces the whole
+  entry. Contents and alerting are unchanged.
+- `tc_ingress_syn_monitor` checks the per-CPU event budget before building a
+  JA4T event, so SYNs past the budget skip the event work. Handshake tracking
+  still runs for every SYN.
+- No verdict changes; enforcement and telemetry are unaffected.
 ## 2026-10-02 - Analyzer hot-path performance
 
 - Rate-limit and block-dedup tracking sweep expired entries at most once per
