@@ -594,6 +594,21 @@ func campaignKey(vector SignalType, source SignalSource, collector, destSubnet s
 	return fmt.Sprintf("vector=%s|source=%s|collector=%s|dest_subnet=%s", vector, source, collector, destSubnet)
 }
 
+// DstPrefix returns the destination subnet a specific-scope campaign is keyed
+// on, or "" for the cross-subnet rollups and signals without a destination.
+func (d CampaignDetection) DstPrefix() string {
+	const marker = "|dest_subnet="
+	i := strings.LastIndex(d.Key, marker)
+	if i < 0 {
+		return ""
+	}
+	prefix := d.Key[i+len(marker):]
+	if prefix == "any" || prefix == "unknown" {
+		return ""
+	}
+	return prefix
+}
+
 // stableCampaignID derives an ID from the campaign's stable key AND its episode
 // token. It must NOT incorporate firstSeen: pruneCampaignLocked slides firstSeen
 // forward as old events age out of the window, so hashing it would mint a new ID
