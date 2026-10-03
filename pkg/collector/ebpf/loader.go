@@ -26,6 +26,7 @@ type LoaderConfig struct {
 	InsideIface  string // scrub mode only
 	XDPMode      XDPMode
 	AllowGeneric bool // scrub mode only
+	Fingerprints bool // scrub mode only
 }
 
 type Loader struct {
@@ -93,6 +94,16 @@ func (l *Loader) Load() error {
 		delete(spec.Maps, name)
 	}
 
+	// The fingerprint maps preallocate per-CPU values (2 MiB per CPU for
+	// both); shrink them when nothing reads them.
+	if l.cfg.Mode != ModeScrub || !l.cfg.Fingerprints {
+		for _, name := range []string{"fingerprints_a", "fingerprints_b"} {
+			if m, ok := spec.Maps[name]; ok {
+				m.MaxEntries = 1
+			}
+		}
+	}
+
 	l.coll, err = ebpf.NewCollection(spec)
 	if err != nil {
 		return fmt.Errorf("failed to create BPF collection: %v", err)
@@ -129,6 +140,9 @@ func (l *Loader) Load() error {
 		RuleMatchCounts:     l.coll.Maps["rule_matches"],
 		RulesV4:             l.coll.Maps["rules_v4"],
 		RulesV6:             l.coll.Maps["rules_v6"],
+		FingerprintsA:       l.coll.Maps["fingerprints_a"],
+		FingerprintsB:       l.coll.Maps["fingerprints_b"],
+		FPOverflow:          l.coll.Maps["fingerprint_overflow"],
 		RulesTrieSpecV4:     innerSpec(spec, "rules_v4"),
 		RulesTrieSpecV6:     innerSpec(spec, "rules_v6"),
 	}
@@ -322,7 +336,7 @@ func (l *Loader) Close() {
 	}
 }
 
-// Program returns a loaded program by name, for tests that run it directly.
+// Program returns a loaded program by name, e.g. for BPF_PROG_TEST_RUN.
 func (l *Loader) Program(name string) *ebpf.Program {
 	if l.coll == nil {
 		return nil
