@@ -369,6 +369,10 @@ Labs on veth pairs: the veth receiving redirected frames needs GRO enabled
 needs tx checksum offload disabled on the sender. `make e2e-scrub-test` sets
 this up.
 
+Throughput: measure on the target hardware before relying on a node; see
+[docs/scrub-throughput.md](scrub-throughput.md) for the procedure and the veth
+reference numbers (`make bench-scrub-veth`).
+
 ### Runtime rules
 
 A controller pushes rules with the analyzer's `PushRules(RuleSet)` RPC, which
