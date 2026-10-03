@@ -82,6 +82,17 @@ func (l *Loader) Load() error {
 			delete(spec.Programs, name)
 		}
 	}
+	// Each mode tracks handshakes in its own map pair; the other pair is
+	// preallocated and large, so it is not created at all.
+	handshakes, handshakesV6 := "pending_handshakes", "pending_handshakes_v6"
+	unused := []string{"scrub_handshakes", "scrub_handshakes_v6"}
+	if l.cfg.Mode == ModeScrub {
+		handshakes, handshakesV6 = "scrub_handshakes", "scrub_handshakes_v6"
+		unused = []string{"pending_handshakes", "pending_handshakes_v6"}
+	}
+	for _, name := range unused {
+		delete(spec.Maps, name)
+	}
 
 	// The fingerprint maps preallocate per-CPU values (2 MiB per CPU for
 	// both); shrink them when nothing reads them.
@@ -101,8 +112,8 @@ func (l *Loader) Load() error {
 	l.maps = &Maps{
 		BlockedIPs:          l.coll.Maps["blocked_ips"],
 		BlockedIPsV6:        l.coll.Maps["blocked_ips_v6"],
-		PendingHandshakes:   l.coll.Maps["pending_handshakes"],
-		PendingHandshakesV6: l.coll.Maps["pending_handshakes_v6"],
+		PendingHandshakes:   l.coll.Maps[handshakes],
+		PendingHandshakesV6: l.coll.Maps[handshakesV6],
 		ICMPRates:           l.coll.Maps["icmp_rates"],
 		ICMPRatesV6:         l.coll.Maps["icmp_rates_v6"],
 		BadFlags:            l.coll.Maps["bad_flags"],

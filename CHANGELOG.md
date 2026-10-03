@@ -13,6 +13,23 @@
   `packetyeeter_scrub_fingerprint_overflow_total` and
   `packetyeeter_scrub_fingerprint_capped_total{kind}`.
 - The collector warns in host mode about non-default fingerprint flags.
+## 2026-10-02 - Scrub mode handshake map per-CPU LRU
+
+- `xdp_scrub` tracks handshakes in its own `scrub_handshakes(_v6)` maps, LRU
+  hashes with per-CPU LRU lists (`BPF_F_NO_COMMON_LRU`), instead of sharing
+  `pending_handshakes(_v6)` with host mode. A random-source SYN flood no longer
+  contends on one LRU lock across CPUs. Host mode is unchanged, and each mode
+  only creates its own pair of maps.
+- The 500k-entry capacity is now split evenly across the kernel's possible
+  CPUs for eviction, so under a flood hitting few RX queues, or on a host with
+  far fewer online than possible CPUs, old entries are evicted earlier.
+
+## 2026-10-02 - Scrub mode handshake tracking fixes
+
+- An ACK the kernel forwards (slow path, e.g. right after a neighbour
+  expired) now completes a tracked handshake too, so such clients are no longer
+  reported as incomplete handshakes.
+- An RST|ACK no longer counts as completing a handshake.
 
 ## 2026-10-02 - Scrub mode runtime rules
 

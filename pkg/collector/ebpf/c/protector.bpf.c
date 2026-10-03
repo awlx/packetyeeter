@@ -178,6 +178,26 @@ struct {
     __type(value, struct handshake_status);
 } pending_handshakes_v6 SEC(".maps");
 
+// Scrub-mode twins of pending_handshakes(_v6): a SYN flood from random sources
+// inserts (and, once full, evicts) on every packet, and the common LRU list
+// lock serialised that across CPUs. Per-CPU LRU lists keep the shared hash
+// table, so an ACK on another CPU still finds the SYN's entry.
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(map_flags, BPF_F_NO_COMMON_LRU);
+    __uint(max_entries, HANDSHAKES_MAP_SIZE);
+    __type(key, struct tcp_session_key);
+    __type(value, struct handshake_status);
+} scrub_handshakes SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(map_flags, BPF_F_NO_COMMON_LRU);
+    __uint(max_entries, HANDSHAKES_MAP_SIZE);
+    __type(key, struct tcp_session_key_v6);
+    __type(value, struct handshake_status);
+} scrub_handshakes_v6 SEC(".maps");
+
 struct {
     __uint(type, BPF_MAP_TYPE_LRU_HASH);
     __uint(max_entries, BLOCK_MAP_SIZE);
@@ -1352,8 +1372,6 @@ static __always_inline int scrub_fib_slow_path(struct xdp_md *ctx, int rc, __u32
 // Replies bypass scrub nodes, so the SYN-ACK is never seen: a handshake counts
 // as complete once the client's first ACK for the 4-tuple passes. Userspace
 // reports entries left open past -handshake-timeout, as in host mode.
-// The update is applied only once the packet is redirected, so a SYN the node
-// itself dropped or left to the kernel is never blamed on the client.
 #define SCRUB_HS_NONE  0
 #define SCRUB_HS_OPEN  1
 #define SCRUB_HS_CLOSE 2
@@ -1370,7 +1388,9 @@ struct scrub_hs {
 static __always_inline __u32 scrub_hs_op(struct tcphdr *tcp) {
     if (tcp->syn && !tcp->ack)
         return SCRUB_HS_OPEN;
-    if (tcp->ack && !tcp->syn)
+    // An RST|ACK aborts the connection; only a plain ACK counts as the
+    // client completing the handshake.
+    if (tcp->ack && !tcp->syn && !tcp->rst)
         return SCRUB_HS_CLOSE;
     return SCRUB_HS_NONE;
 }
@@ -1403,19 +1423,23 @@ static __always_inline void scrub_hs_prepare_v6(struct scrub_hs *hs, struct ipv6
     hs->key.v6.dport = tcp->dest;
 }
 
-static __always_inline void scrub_hs_commit(void *map, struct scrub_hs *hs) {
-    if (hs->op == SCRUB_HS_OPEN) {
-        if (!bpf_map_lookup_elem(map, &hs->key)) {
-            struct handshake_status status = {};
-            status.begin_time = hs->now;
-            bpf_map_update_elem(map, &hs->key, &status, BPF_NOEXIST);
-        }
-    } else if (hs->op == SCRUB_HS_CLOSE) {
-        // Lookup first: the lockless lookup misses for almost every ACK,
-        // while an LRU delete takes a bucket lock on each call.
-        if (bpf_map_lookup_elem(map, &hs->key))
-            bpf_map_delete_elem(map, &hs->key);
-    }
+// Opening waits for the redirect so a SYN the node dropped or left to the
+// kernel is never blamed on the client; closing happens for every ACK that
+// passed the checks, including ones the kernel forwards, since a close can
+// never blame anyone.
+static __always_inline void scrub_hs_open(void *map, struct scrub_hs *hs) {
+    if (hs->op != SCRUB_HS_OPEN || bpf_map_lookup_elem(map, &hs->key))
+        return;
+    struct handshake_status status = {};
+    status.begin_time = hs->now;
+    bpf_map_update_elem(map, &hs->key, &status, BPF_NOEXIST);
+}
+
+static __always_inline void scrub_hs_close(void *map, struct scrub_hs *hs) {
+    // Lookup first: the lockless lookup misses for almost every ACK, while an
+    // LRU delete takes a bucket lock on each call.
+    if (hs->op == SCRUB_HS_CLOSE && bpf_map_lookup_elem(map, &hs->key))
+        bpf_map_delete_elem(map, &hs->key);
 }
 
 static __always_inline int scrub_redirect(struct xdp_md *ctx, struct ethhdr *eth,
@@ -1426,9 +1450,9 @@ static __always_inline int scrub_redirect(struct xdp_md *ctx, struct ethhdr *eth
     if (action != XDP_REDIRECT)
         return scrub_verdict(ctx, SCRUB_VERDICT_DROP, family, action);
     if (family == SCRUB_FAMILY_V4)
-        scrub_hs_commit(&pending_handshakes, hs);
+        scrub_hs_open(&scrub_handshakes, hs);
     else
-        scrub_hs_commit(&pending_handshakes_v6, hs);
+        scrub_hs_open(&scrub_handshakes_v6, hs);
     return scrub_verdict(ctx, SCRUB_VERDICT_FORWARD, family, action);
 }
 
@@ -2007,6 +2031,7 @@ static __always_inline int scrub_ipv4(struct xdp_md *ctx, struct ethhdr *eth, vo
              check_l4_v4(ctx, ip, data_end, saddr, now, is_monitor) == CHECK_DROP))
             return scrub_drop(ctx, &rp, SCRUB_FAMILY_V4, 1);
         scrub_hs_prepare_v4(&hs, ip, data_end, now);
+        scrub_hs_close(&scrub_handshakes, &hs);
     }
 
     scrub_fingerprint(&rp, 0);
@@ -2062,8 +2087,10 @@ static __always_inline int scrub_ipv6(struct xdp_md *ctx, struct ethhdr *eth, vo
             if (check_l4_v6(ctx, l4_proto, l4_hdr, data_end, &saddr, now, is_monitor) == CHECK_DROP)
                 return scrub_drop(ctx, &rp, SCRUB_FAMILY_V6, 1);
         }
-        if (l4_proto == IPPROTO_TCP)
+        if (l4_proto == IPPROTO_TCP) {
             scrub_hs_prepare_v6(&hs, ip6, l4_hdr, data_end, now);
+            scrub_hs_close(&scrub_handshakes_v6, &hs);
+        }
     }
 
     if (l4_ok)

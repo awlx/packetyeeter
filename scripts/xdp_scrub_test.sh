@@ -30,6 +30,9 @@ SRC6=fd01:1::2; OUT6=fd01:1::1; IN6=fd01:2::1; DST6=fd01:2::2
 # (routed to it, but it does not forward).
 HS4=10.201.1.5; HS6=fd01:1::5; HOLE4=10.201.3.9; HOLE6=fd01:3::9
 TTL1_4=10.201.1.6  # its SYNs expire on the scrub node and must not be reported
+SLOWACK4=10.201.1.7  # SYN forwarded in XDP, ACK left to the kernel: not reported
+RSTACK4=10.201.1.8   # SYN then RST|ACK, which does not complete a handshake
+SLOWACK6=fd01:1::7; RSTACK6=fd01:1::8
 
 log()  { printf '\033[1;36m[test]\033[0m %s\n' "$*"; }
 pass() { printf '\033[1;32m[pass]\033[0m %s\n' "$*"; }
@@ -73,8 +76,12 @@ src ip addr add "$BLOCKED4/24" dev src0
 src ip addr add "$POLICY4/24" dev src0
 src ip addr add "$HS4/24" dev src0
 src ip addr add "$TTL1_4/24" dev src0
+src ip addr add "$SLOWACK4/24" dev src0
+src ip addr add "$RSTACK4/24" dev src0
 src ip -6 addr add "$SRC6/64" dev src0 nodad
 src ip -6 addr add "$HS6/64" dev src0 nodad
+src ip -6 addr add "$SLOWACK6/64" dev src0 nodad
+src ip -6 addr add "$RSTACK6/64" dev src0 nodad
 scr ip addr add "$OUT4/24" dev out0
 scr ip -6 addr add "$OUT6/64" dev out0 nodad
 scr ip addr add "$IN4/24" dev in0
@@ -241,6 +248,14 @@ ip netns exec "$NS_SCR" "$SINK_BIN" 127.0.0.1:59999 "$CMD_FIFO" >"$SINK_LOG" 2>&
 SINK_PID=$!
 sleep 0.5
 start_collector -analyzer-addr 127.0.0.1:59999 -handshake-timeout 1s
+# Kernel map names stop at 15 characters, so both families share this name.
+hs_flags=$(for id in $(scrub_map_id scrub_handshake); do
+  bpftool -j map show id "$id" | python3 -c 'import json, sys; print(json.load(sys.stdin)["flags"])'
+done | sort | uniq -c | awk '{print $1 "x" $2}')
+# BPF_F_NO_COMMON_LRU is 2.
+[[ "$hs_flags" == 2x2 && -z "$(scrub_map_id pending_handsha)" ]] \
+  && pass "xdp_scrub tracks handshakes in its own per-CPU LRU maps" \
+  || bad "scrub handshake maps: flags ${hs_flags:-none}, host maps: $(scrub_map_id pending_handsha | xargs)"
 # Resolve the inside neighbours first: a SYN that takes the kernel path is not
 # tracked, which would make the check below vacuous. Bind the sources, since
 # Linux would otherwise pick the newest address (HS6).
@@ -263,13 +278,59 @@ syn_only "$HS4" "$HOLE4" & syn4=$!
 syn_only "$HS6" "$HOLE6" & syn6=$!
 syn_only "$TTL1_4" "$DST4" 1 & synttl=$!
 wait "$syn4" "$syn6" "$synttl"
+raw_tcp() { # SRC DST then FLAGS:TTL pairs, sent in order on one 4-tuple
+  src python3 -c '
+import socket, struct, sys
+src, dst = sys.argv[1], sys.argv[2]
+v6 = ":" in dst
+def csum(b):
+    if len(b) % 2:
+        b += b"\0"
+    s = sum(struct.unpack("!%dH" % (len(b) // 2), b))
+    s = (s >> 16) + (s & 0xFFFF)
+    return ~(s + (s >> 16)) & 0xFFFF
+if v6:
+    sock = socket.socket(socket.AF_INET6, socket.SOCK_RAW, socket.IPPROTO_TCP)
+    sock.bind((src, 0))
+else:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_RAW)
+for pair in sys.argv[3:]:
+    flags, ttl = (int(x, 0) for x in pair.split(":"))
+    tcp = struct.pack("!HHIIBBHHH", 40001, 80, 1000, 1, 5 << 4, flags, 64240, 0, 0)
+    if v6:
+        pseudo = (socket.inet_pton(socket.AF_INET6, src) + socket.inet_pton(socket.AF_INET6, dst)
+                  + struct.pack("!I3xB", len(tcp), 6))
+    else:
+        pseudo = socket.inet_aton(src) + socket.inet_aton(dst) + struct.pack("!BBH", 0, 6, len(tcp))
+    tcp = tcp[:16] + struct.pack("!H", csum(pseudo + tcp)) + tcp[18:]
+    if v6:
+        sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_UNICAST_HOPS, ttl)
+        sock.sendto(tcp, (dst, 0))
+        continue
+    ip = struct.pack("!BBHHHBBH4s4s", 0x45, 0, 20 + len(tcp), 0, 0, ttl, 6, 0,
+                     socket.inet_aton(src), socket.inet_aton(dst))
+    sock.sendto(ip + tcp, (dst, 0))' "$@"
+}
+raw_tcp "$SLOWACK4" "$HOLE4" 0x02:64 0x10:1
+raw_tcp "$RSTACK4" "$HOLE4" 0x02:64 0x14:64
+raw_tcp "$SLOWACK6" "$HOLE6" 0x02:64 0x10:1
+raw_tcp "$RSTACK6" "$HOLE6" 0x02:64 0x14:64
 reported() { grep -q "type=SIGNAL_INCOMPLETE_HANDSHAKE .*ip=$1\$" "$SINK_LOG"; }
-for _ in $(seq 30); do reported "$HS4" && reported "$HS6" && break; sleep 0.2; done
+# The RST|ACK sources are sent last; waiting only for HS4/HS6 left them less
+# than one poll of slack.
+for _ in $(seq 30); do
+  reported "$HS4" && reported "$HS6" && reported "$RSTACK4" && reported "$RSTACK6" && break
+  sleep 0.2
+done
 sleep 2 # two more polls, so an expired entry for a completed handshake would have surfaced
 reported "$HS4" && pass "unanswered IPv4 SYN reported as incomplete handshake" || bad "no incomplete handshake signal for $HS4"
 reported "$HS6" && pass "unanswered IPv6 SYN reported as incomplete handshake" || bad "no incomplete handshake signal for $HS6"
 reported "$SRC4" || reported "$SRC6" && bad "completed handshake reported as incomplete" || pass "completed handshakes not reported"
 reported "$TTL1_4" && bad "SYN the node did not forward was reported" || pass "SYNs left to the kernel not reported"
+reported "$SLOWACK4" && bad "handshake whose ACK took the kernel path was reported" || pass "ACKs left to the kernel still complete a handshake"
+reported "$RSTACK4" && pass "RST|ACK does not count as a completed handshake" || bad "RST|ACK closed the handshake"
+reported "$SLOWACK6" && bad "IPv6 handshake whose ACK took the kernel path was reported" || pass "IPv6 ACKs left to the kernel still complete a handshake"
+reported "$RSTACK6" && pass "IPv6 RST|ACK does not count as a completed handshake" || bad "IPv6 RST|ACK closed the handshake"
 
 log "runtime rules"
 EXPIRES=$(date -u -d '+10 min' +%FT%TZ)
