@@ -16,6 +16,15 @@
   JA4T event, so SYNs past the budget skip the event work. Handshake tracking
   still runs for every SYN.
 - No verdict changes; enforcement and telemetry are unaffected.
+## 2026-10-02 - Faster scrub rule matching
+
+- Port ranges are merged and sorted when a rule is installed, and IPv4 source
+  prefixes are sorted with their span recorded, so XDP binary-searches them
+  and rejects most packets on the source span. With 4096 rules and 32 covering
+  one destination, the veth bench's worst case improves from -53% to -28%
+  forwarding (see `docs/scrub-throughput.md`). No change to which packets
+  match.
+
 ## 2026-10-02 - Asynchronous bot verification
 
 - Crawler DNS verification no longer runs on the collector's signal stream.

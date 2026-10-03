@@ -154,19 +154,23 @@ destination counts and drops with a tc flower filter. Median of 3 runs of 10s.
 
 | Scenario | Sender CPUs | Clean UDP rx pps | SYN rx pps | Forward pps | Delta |
 | --- | --- | --- | --- | --- | --- |
-| a: no rules | 1 | 1,936,506 | 0 | 1,936,601 | reference |
-| b: 4096 rules, 32 on destination, worst-case miss (8+8 port ranges pass, 8 source prefixes miss) | 1 | 907,801 | 0 | 907,683 | -53.1% vs a |
-| b2: 4096 rules, 32 on destination, each misses on its destination port | 1 | 1,458,229 | 0 | 1,457,748 | -24.7% vs a |
-| c0: clean UDP only | 3 | 4,871,918 | 0 | 4,870,966 | reference |
-| c1: UDP + SYN flood from one 4-tuple, 1:3 | 3 | 1,162,136 | 3,487,148 | 4,649,174 | -4.6% vs c0 |
-| c2: UDP + random-source SYN flood, 1:3 | 3 | 687,149 | 2,061,752 | 2,748,301 | -40.9% vs c1 |
+| a: no rules | 1 | 1,969,924 | 0 | 1,969,935 | reference |
+| b: 4096 rules, 32 on destination, worst-case miss (8+8 port ranges pass, 8 source prefixes miss) | 1 | 1,419,685 | 0 | 1,419,233 | -28.0% vs a |
+| b2: 4096 rules, 32 on destination, each misses on its destination port | 1 | 1,571,687 | 0 | 1,571,645 | -20.2% vs a |
+| b3: as b, sources surround the sender (same length) | 1 | 1,221,336 | 0 | 1,220,965 | -38.0% vs a |
+| b4: as b3, mixed source prefix lengths | 1 | 1,177,896 | 0 | 1,178,277 | -40.2% vs a |
+| c0: clean UDP only | 3 | 5,046,497 | 0 | 5,044,348 | reference |
+| c1: UDP + SYN flood from one 4-tuple, 1:3 | 3 | 1,187,925 | 3,563,543 | 4,751,480 | -5.8% vs c0 |
+| c2: UDP + random-source SYN flood, 1:3 | 3 | 699,437 | 2,098,404 | 2,798,474 | -41.1% vs c1 |
 
 Reading them:
 
 - The sender, `xdp_scrub`, the redirect and the receiver all run on the same
   CPU, so a delta here understates how much slower `xdp_scrub` itself got.
-  With 32 rules covering the destination, rules that pass most checks halve
-  the rate; rules that fail on an early check cost about a quarter.
+  With 32 rules covering the destination, rules cost 20-28% when their
+  sources are away from the sender (rejected on the source span) and up to
+  40% when the sender sits among their sources, the most work a
+  non-matching rule can cause.
 - c1 vs c2 has the same packet mix; the only difference is that every SYN in c2
   is a new 4-tuple and inserts into the shared LRU `pending_handshakes` map
   (full at 500k entries within a second, so each insert also evicts). That
