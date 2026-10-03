@@ -16,6 +16,12 @@
   JA4T event, so SYNs past the budget skip the event work. Handshake tracking
   still runs for every SYN.
 - No verdict changes; enforcement and telemetry are unaffected.
+## 2026-10-02 - Scrub mode handshake tracking fixes
+
+- An ACK the kernel forwards (slow path, e.g. right after a neighbour
+  expired) now completes a tracked handshake too, so such clients are no longer
+  reported as incomplete handshakes.
+- An RST|ACK no longer counts as completing a handshake.
 
 ## 2026-10-02 - Scrub mode runtime rules
 
