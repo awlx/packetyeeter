@@ -313,6 +313,19 @@ time:
   `rule_match`, sampled like all incidents.
 - `packetyeeter_scrub_rules_active{family}` (gauge): rules installed, `ipv4`
   or `ipv6`.
+- `packetyeeter_scrub_fingerprint_buckets` (gauge): fingerprint buckets read
+  in the last `-fingerprint-interval`, before the caps.
+- `packetyeeter_scrub_fingerprint_overflow_total` (counter): packets not
+  fingerprinted because the map was full (a new bucket that did not fit). A
+  rising rate is expected under spoofed-source floods; the sent top buckets
+  then reflect the earliest traffic of each interval.
+- `packetyeeter_scrub_fingerprint_capped_total{kind}` (counter): buckets
+  (`kind="bucket"`) and destinations (`kind="destination"`) not sent because of
+  `-fingerprint-top` or the 256-destination cap per interval. Buckets of cut
+  destinations count as cut buckets too.
+
+The fingerprint metrics are only exported when `-fingerprint-interval` is
+non-zero.
 
 ## Collector perf-ring health
 
