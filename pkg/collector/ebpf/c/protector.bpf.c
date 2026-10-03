@@ -1459,18 +1459,17 @@ static __always_inline void scrub_hs_close(void *map, struct scrub_hs *hs) {
         bpf_map_delete_elem(map, &hs->key);
 }
 
+// Called once bpf_redirect_map has accepted fib->ifindex: the helper only
+// records the target, so the frame can still be rewritten before returning.
 static __always_inline int scrub_redirect(struct xdp_md *ctx, struct ethhdr *eth,
                                           struct bpf_fib_lookup *fib, __u32 family, struct scrub_hs *hs) {
     __builtin_memcpy(eth->h_dest, fib->dmac, ETH_ALEN);
     __builtin_memcpy(eth->h_source, fib->smac, ETH_ALEN);
-    int action = bpf_redirect_map(&tx_ports, fib->ifindex, 0);
-    if (action != XDP_REDIRECT)
-        return scrub_verdict(ctx, SCRUB_VERDICT_DROP, family, action);
     if (family == SCRUB_FAMILY_V4)
         scrub_hs_open(&scrub_handshakes, hs);
     else
         scrub_hs_open(&scrub_handshakes_v6, hs);
-    return scrub_verdict(ctx, SCRUB_VERDICT_FORWARD, family, action);
+    return scrub_verdict(ctx, SCRUB_VERDICT_FORWARD, family, XDP_REDIRECT);
 }
 
 static __always_inline void ip_decrease_ttl(struct iphdr *ip) {
@@ -1501,7 +1500,9 @@ static __always_inline int scrub_forward_v4(struct xdp_md *ctx, struct ethhdr *e
     int rc = bpf_fib_lookup(ctx, &fib, sizeof(fib), 0);
     if (rc != BPF_FIB_LKUP_RET_SUCCESS)
         return scrub_fib_slow_path(ctx, rc, SCRUB_FAMILY_V4, is_monitor);
-    if (!bpf_map_lookup_elem(&tx_ports, &fib.ifindex))
+    // XDP_PASS on a miss, so a route out of any other port is checked before
+    // the frame is rewritten, with one devmap lookup instead of two.
+    if (bpf_redirect_map(&tx_ports, fib.ifindex, XDP_PASS) != XDP_REDIRECT)
         return scrub_slow_path(ctx, SCRUB_SLOW_EGRESS_OTHER, SCRUB_FAMILY_V4, is_monitor);
 
     ip_decrease_ttl(ip);
@@ -1527,7 +1528,9 @@ static __always_inline int scrub_forward_v6(struct xdp_md *ctx, struct ethhdr *e
     int rc = bpf_fib_lookup(ctx, &fib, sizeof(fib), 0);
     if (rc != BPF_FIB_LKUP_RET_SUCCESS)
         return scrub_fib_slow_path(ctx, rc, SCRUB_FAMILY_V6, is_monitor);
-    if (!bpf_map_lookup_elem(&tx_ports, &fib.ifindex))
+    // XDP_PASS on a miss, so a route out of any other port is checked before
+    // the frame is rewritten, with one devmap lookup instead of two.
+    if (bpf_redirect_map(&tx_ports, fib.ifindex, XDP_PASS) != XDP_REDIRECT)
         return scrub_slow_path(ctx, SCRUB_SLOW_EGRESS_OTHER, SCRUB_FAMILY_V6, is_monitor);
 
     ip6->hop_limit--;
