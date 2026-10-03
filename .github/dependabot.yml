@@ -7,6 +7,15 @@ updates:
     groups:
       go-minor-patch:
         update-types: [minor, patch]
+    ignore:
+      # GO-2026-6443: 1.84.0 regressed the fix shipped in 1.83.2. Drop once
+      # a patched 1.84.x/1.85 release exists.
+      - dependency-name: google.golang.org/grpc
+        versions: ["1.84.0"]
+      # Newer releases need ONNX Runtime >= 1.29 on analyzers using
+      # -ml-model; hold until deployed hosts are checked.
+      - dependency-name: github.com/yalue/onnxruntime_go
+        versions: [">=1.26.0"]
   - package-ecosystem: github-actions
     directory: /
     schedule:
