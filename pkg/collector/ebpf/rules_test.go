@@ -12,7 +12,7 @@ func TestRuleLayout(t *testing.T) {
 		v    any
 		want int
 	}{
-		{"scrub_rule", ScrubRule{}, 384},
+		{"scrub_rule", ScrubRule{}, 392},
 		{"rule_list", ruleList{}, 68},
 		{"rule_bucket", ruleBucket{}, 16},
 	}
