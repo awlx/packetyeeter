@@ -357,15 +357,16 @@ except socket.timeout:
     pass
 print(n)' "$1" "$2"
 }
-udp_send() { # SRC SPORT DST DPORT COUNT PPS
+udp_send() { # SRC SPORT DST DPORT COUNT PPS [PAYLOAD_BYTES]
   src python3 -c '
 import socket, sys, time
 src, sport, dst, dport, count, pps = sys.argv[1], int(sys.argv[2]), sys.argv[3], int(sys.argv[4]), int(sys.argv[5]), float(sys.argv[6])
+size = int(sys.argv[7]) if len(sys.argv) > 7 else 64
 s = socket.socket(socket.AF_INET6 if ":" in dst else socket.AF_INET, socket.SOCK_DGRAM)
 s.bind((src, sport))
 start = time.monotonic()
 for i in range(count):
-    s.sendto(b"x" * 64, (dst, dport))
+    s.sendto(b"x" * size, (dst, dport))
     delay = start + (i + 1) / pps - time.monotonic()
     if delay > 0:
         time.sleep(delay)
@@ -446,6 +447,59 @@ t1=$(date +%s.%N)
   && pass "4096 IPv4 rules installed in $(awk -v a="$t0" -v b="$t1" 'BEGIN{printf "%.1f", b-a}')s" || bad "rules_active=$(metric packetyeeter_scrub_rules_active 'family="ipv4"') after loading 4096"
 http_ok "http://$DST4:8080/" && pass "forwarding unaffected with 4096 rules" || bad "forwarding broken with 4096 rules"
 send_rules "$(python3 -c 'import json; print(json.dumps({"remove": [f"c{i}" for i in range(31)] + [f"r{i}" for i in range(4065)]}))')"
+
+log "fingerprints"
+stop_collector
+connects() { grep -c "Connected to analyzer" "$COLLECTOR_LOG" || true; }
+start_fp_collector() { # extra collector flags; waits for the analyzer stream
+  local before
+  before=$(connects)
+  start_collector -analyzer-addr 127.0.0.1:59999 "$@"
+  for _ in $(seq 50); do (( $(connects) > before )) && return 0; sleep 0.1; done
+  bad "collector did not connect to the analyzer sink"
+}
+# fp_seen DST DPORT SIZE SRC_NET DROPPED: a matching bucket arrived whose
+# bytes are 516/496 per packet (468-byte payload over IPv6/IPv4).
+fp_seen() {
+  local per=496; [[ "$1" == *:* ]] && per=516
+  awk -v d="dst=$1" -v p="dport=$2" -v z="size=$3" -v n="src_net=$4" -v x="dropped=$5" -v per="$per" '
+    $1 == "FINGERPRINT" && $3 == d && $4 == "proto=17" && $5 == p && $6 == z && $7 == "ttl=2" && $8 == n && $9 == x {
+      split($10, a, "="); split($11, b, "=")
+      if (a[2] > 0 && b[2] == a[2] * per) found = 1
+    } END { exit !found }' "$SINK_LOG"
+}
+wait_fp() { for _ in $(seq 60); do fp_seen "$@" && return 0; sleep 0.1; done; return 1; }
+start_fp_collector -fingerprint-interval 2s
+# NTP-like reflection traffic: source port 123, 468-byte payload.
+udp_send "$SRC4" 123 "$DST4" 5410 20 200 468 >/dev/null
+udp_send "$SRC6" 123 "$DST6" 5410 20 200 468 >/dev/null
+wait_fp "$DST4" 5410 2 10.201.1.0 false && pass "IPv4 fingerprint: UDP, size bucket 2, forwarded" \
+  || bad "no IPv4 fingerprint for $DST4:5410: $(grep FINGERPRINT "$SINK_LOG" | tail -3)"
+wait_fp "$DST6" 5410 3 fd01:1:: false && pass "IPv6 fingerprint: UDP, size bucket 3, source /48" \
+  || bad "no IPv6 fingerprint for [$DST6]:5410: $(grep FINGERPRINT "$SINK_LOG" | tail -3)"
+grep -q "^FINGERPRINT collector=$(scr hostname) " "$SINK_LOG" && pass "fingerprints carry the collector's hostname" \
+  || bad "fingerprint collector_id is not $(scr hostname)"
+send_rules '{"upsert":[
+  {"id":"fp-ntp-v4","dstPrefix":"'"$DST4"'/32","protocols":[17],"srcPorts":[{"from":123,"to":123}],"action":"RULE_ACTION_DROP","expiresAt":"'"$EXPIRES"'"},
+  {"id":"fp-ntp-v6","dstPrefix":"'"$DST6"'/128","protocols":[17],"srcPorts":[{"from":123,"to":123}],"action":"RULE_ACTION_DROP","expiresAt":"'"$EXPIRES"'"}]}'
+udp_send "$SRC4" 123 "$DST4" 5410 20 200 468 >/dev/null
+udp_send "$SRC6" 123 "$DST6" 5410 20 200 468 >/dev/null
+wait_fp "$DST4" 5410 2 10.201.1.0 true && pass "IPv4 fingerprint of rule-dropped traffic has dropped=true" \
+  || bad "no dropped IPv4 fingerprint: $(grep FINGERPRINT "$SINK_LOG" | tail -3)"
+wait_fp "$DST6" 5410 3 fd01:1:: true && pass "IPv6 fingerprint of rule-dropped traffic has dropped=true" \
+  || bad "no dropped IPv6 fingerprint: $(grep FINGERPRINT "$SINK_LOG" | tail -3)"
+increased 0 "$(metric packetyeeter_scrub_fingerprint_buckets)" && pass "fingerprint_buckets exported" \
+  || bad "packetyeeter_scrub_fingerprint_buckets is $(metric packetyeeter_scrub_fingerprint_buckets)"
+[[ "$(metric packetyeeter_scrub_fingerprint_overflow_total)" == 0 ]] && pass "no fingerprint overflow" \
+  || bad "fingerprint overflow: $(metric packetyeeter_scrub_fingerprint_overflow_total)"
+
+stop_collector
+start_fp_collector -fingerprint-interval 0
+seen=$(grep -c "^FINGERPRINT" "$SINK_LOG" || true)
+udp_send "$SRC4" 123 "$DST4" 5411 20 200 468 >/dev/null
+sleep 3
+[[ "$(grep -c "^FINGERPRINT" "$SINK_LOG" || true)" == "$seen" ]] && pass "-fingerprint-interval 0 sends no fingerprints" \
+  || bad "fingerprints sent with -fingerprint-interval 0"
 
 log "IPv6 transit with forwarding disabled is visible"
 nf=$(metric packetyeeter_scrub_slow_path_total 'reason="not_fwded"')

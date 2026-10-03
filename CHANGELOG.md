@@ -12,6 +12,19 @@
 - Over-cap map eviction uses selection instead of a full sort (~22 ms to
   ~2.5 ms per eviction at a 100k cap), evicting the same entries.
 - `Analyzer.Close` is idempotent.
+## 2026-10-02 - Scrub mode fingerprints
+
+- `xdp_scrub` counts packets and bytes per destination, protocol, destination
+  port, size bucket, TTL bucket, source /24 or /48 and verdict in two
+  alternating per-CPU maps (65,536 buckets each). Every
+  `-fingerprint-interval` (default `10s`, `0` = off) the collector sends the
+  busiest `-fingerprint-top` (default 32) buckets of up to 256 destinations as
+  `SIGNAL_SCRUB_FINGERPRINT`, without an IP so current analyzers ignore them.
+  See `docs/operations.md#fingerprints`.
+- New metrics `packetyeeter_scrub_fingerprint_buckets`,
+  `packetyeeter_scrub_fingerprint_overflow_total` and
+  `packetyeeter_scrub_fingerprint_capped_total{kind}`.
+- The collector warns in host mode about non-default fingerprint flags.
 ## 2026-10-02 - Analyzer PushRules for scrub collectors
 
 - New `PushRules(RuleSet)` RPC: a controller sets the complete rule set of its
