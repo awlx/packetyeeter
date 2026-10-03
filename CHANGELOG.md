@@ -15,6 +15,12 @@
   combinations and unreadable files fail at startup. The analyzer now logs a
   warning at startup when the listener is plaintext. See
   `docs/operations.md#tls-and-mtls`.
+## 2026-10-02 - Scrub mode handshake tracking fixes
+
+- An ACK the kernel forwards (slow path, e.g. right after a neighbour
+  expired) now completes a tracked handshake too, so such clients are no longer
+  reported as incomplete handshakes.
+- An RST|ACK no longer counts as completing a handshake.
 
 ## 2026-10-02 - Scrub mode runtime rules
 
