@@ -150,6 +150,8 @@ func (a *Analyzer) PushRules(ctx context.Context, rs *apiv1.RuleSet) (*apiv1.Pus
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 	a.persistRules()
+	// Once per push, not per collector or resync: the stream reports decisions.
+	a.publishCommand(a.ruleSetCommand())
 
 	n := a.syncScrubCollectors(ctx)
 	logrus.WithFields(logrus.Fields{
@@ -215,20 +217,7 @@ func (a *Analyzer) syncRules(cs *collectorStream) error {
 	cs.rulesMu.Lock()
 	defer cs.rulesMu.Unlock()
 
-	want := a.rules.desired(time.Now(), a.Enforcing())
-	delta := &apiv1.RuleSetDelta{Replace: true, Upsert: make([]*apiv1.Rule, 0, len(want))}
-	for _, r := range want {
-		delta.Upsert = append(delta.Upsert, r)
-	}
-	slices.SortFunc(delta.Upsert, func(x, y *apiv1.Rule) int { return strings.Compare(x.GetId(), y.GetId()) })
-
-	cmd := &apiv1.Command{
-		Id:        fmt.Sprintf("rules-%d", time.Now().UnixNano()),
-		Timestamp: timestamppb.Now(),
-		Type:      apiv1.CommandType_COMMAND_SET_RULES,
-		Rules:     delta,
-		Source:    "analyzer",
-	}
+	cmd := a.ruleSetCommand()
 	cs.sendMu.Lock()
 	err := cs.stream.Send(cmd)
 	cs.sendMu.Unlock()
@@ -237,6 +226,24 @@ func (a *Analyzer) syncRules(cs *collectorStream) error {
 	}
 	metrics.RuleDeltasSent.Inc()
 	return nil
+}
+
+// ruleSetCommand builds the full replacement rule set every scrub collector
+// should hold now.
+func (a *Analyzer) ruleSetCommand() *apiv1.Command {
+	want := a.rules.desired(time.Now(), a.Enforcing())
+	delta := &apiv1.RuleSetDelta{Replace: true, Upsert: make([]*apiv1.Rule, 0, len(want))}
+	for _, r := range want {
+		delta.Upsert = append(delta.Upsert, r)
+	}
+	slices.SortFunc(delta.Upsert, func(x, y *apiv1.Rule) int { return strings.Compare(x.GetId(), y.GetId()) })
+	return &apiv1.Command{
+		Id:        fmt.Sprintf("rules-%d", time.Now().UnixNano()),
+		Timestamp: timestamppb.Now(),
+		Type:      apiv1.CommandType_COMMAND_SET_RULES,
+		Rules:     delta,
+		Source:    "analyzer",
+	}
 }
 
 // ruleResyncInterval bounds how long a scrub collector can stay out of sync
