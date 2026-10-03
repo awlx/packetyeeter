@@ -64,6 +64,8 @@ const (
 	SignalType_SIGNAL_CLOCK_SKEW_ANOMALY SignalType = 50
 	SignalType_SIGNAL_ENTROPY_ANOMALY    SignalType = 51
 	SignalType_SIGNAL_BASELINE_ANOMALY   SignalType = 52
+	// Scrub-mode signals
+	SignalType_SIGNAL_SCRUB_FINGERPRINT SignalType = 60 // per-destination traffic buckets, not scored
 )
 
 // Enum value maps for SignalType.
@@ -103,6 +105,7 @@ var (
 		50: "SIGNAL_CLOCK_SKEW_ANOMALY",
 		51: "SIGNAL_ENTROPY_ANOMALY",
 		52: "SIGNAL_BASELINE_ANOMALY",
+		60: "SIGNAL_SCRUB_FINGERPRINT",
 	}
 	SignalType_value = map[string]int32{
 		"SIGNAL_UNKNOWN":                0,
@@ -139,6 +142,7 @@ var (
 		"SIGNAL_CLOCK_SKEW_ANOMALY":     50,
 		"SIGNAL_ENTROPY_ANOMALY":        51,
 		"SIGNAL_BASELINE_ANOMALY":       52,
+		"SIGNAL_SCRUB_FINGERPRINT":      60,
 	}
 )
 
@@ -486,6 +490,8 @@ type Signal struct {
 	Ja4 string `protobuf:"bytes,15,opt,name=ja4,proto3" json:"ja4,omitempty"`
 	// Egress volume context (from the eBPF TC egress byte counters)
 	EgressContext *EgressContext `protobuf:"bytes,16,opt,name=egress_context,json=egressContext,proto3" json:"egress_context,omitempty"`
+	// SIGNAL_SCRUB_FINGERPRINT: traffic seen by a scrub collector, per bucket.
+	Fingerprint   *ScrubFingerprint `protobuf:"bytes,17,opt,name=fingerprint,proto3" json:"fingerprint,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -628,6 +634,13 @@ func (x *Signal) GetJa4() string {
 func (x *Signal) GetEgressContext() *EgressContext {
 	if x != nil {
 		return x.EgressContext
+	}
+	return nil
+}
+
+func (x *Signal) GetFingerprint() *ScrubFingerprint {
+	if x != nil {
+		return x.Fingerprint
 	}
 	return nil
 }
@@ -2497,11 +2510,363 @@ func (x *HealthResponse) GetComponents() map[string]string {
 	return nil
 }
 
+// ScrubFingerprint counts the packets a scrub collector saw for one
+// destination and traffic shape over one interval.
+type ScrubFingerprint struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	CollectorId     string                 `protobuf:"bytes,1,opt,name=collector_id,json=collectorId,proto3" json:"collector_id,omitempty"`
+	DstIp           []byte                 `protobuf:"bytes,2,opt,name=dst_ip,json=dstIp,proto3" json:"dst_ip,omitempty"`
+	Protocol        uint32                 `protobuf:"varint,3,opt,name=protocol,proto3" json:"protocol,omitempty"`
+	DstPort         uint32                 `protobuf:"varint,4,opt,name=dst_port,json=dstPort,proto3" json:"dst_port,omitempty"`          // 0 when not TCP/UDP
+	SizeBucket      uint32                 `protobuf:"varint,5,opt,name=size_bucket,json=sizeBucket,proto3" json:"size_bucket,omitempty"` // IP total length: 0 <128, 1 <256, 2 <512, 3 <1024, 4 >=1024
+	TtlBucket       uint32                 `protobuf:"varint,6,opt,name=ttl_bucket,json=ttlBucket,proto3" json:"ttl_bucket,omitempty"`    // TTL / 32 (0-7)
+	SrcNet          []byte                 `protobuf:"bytes,7,opt,name=src_net,json=srcNet,proto3" json:"src_net,omitempty"`              // source /24 or /48 network address
+	Dropped         bool                   `protobuf:"varint,8,opt,name=dropped,proto3" json:"dropped,omitempty"`
+	Packets         uint64                 `protobuf:"varint,9,opt,name=packets,proto3" json:"packets,omitempty"`
+	IntervalSeconds uint32                 `protobuf:"varint,10,opt,name=interval_seconds,json=intervalSeconds,proto3" json:"interval_seconds,omitempty"`
+	Bytes           uint64                 `protobuf:"varint,11,opt,name=bytes,proto3" json:"bytes,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *ScrubFingerprint) Reset() {
+	*x = ScrubFingerprint{}
+	mi := &file_v1_packetyeeter_proto_msgTypes[24]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ScrubFingerprint) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ScrubFingerprint) ProtoMessage() {}
+
+func (x *ScrubFingerprint) ProtoReflect() protoreflect.Message {
+	mi := &file_v1_packetyeeter_proto_msgTypes[24]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ScrubFingerprint.ProtoReflect.Descriptor instead.
+func (*ScrubFingerprint) Descriptor() ([]byte, []int) {
+	return file_v1_packetyeeter_proto_rawDescGZIP(), []int{24}
+}
+
+func (x *ScrubFingerprint) GetCollectorId() string {
+	if x != nil {
+		return x.CollectorId
+	}
+	return ""
+}
+
+func (x *ScrubFingerprint) GetDstIp() []byte {
+	if x != nil {
+		return x.DstIp
+	}
+	return nil
+}
+
+func (x *ScrubFingerprint) GetProtocol() uint32 {
+	if x != nil {
+		return x.Protocol
+	}
+	return 0
+}
+
+func (x *ScrubFingerprint) GetDstPort() uint32 {
+	if x != nil {
+		return x.DstPort
+	}
+	return 0
+}
+
+func (x *ScrubFingerprint) GetSizeBucket() uint32 {
+	if x != nil {
+		return x.SizeBucket
+	}
+	return 0
+}
+
+func (x *ScrubFingerprint) GetTtlBucket() uint32 {
+	if x != nil {
+		return x.TtlBucket
+	}
+	return 0
+}
+
+func (x *ScrubFingerprint) GetSrcNet() []byte {
+	if x != nil {
+		return x.SrcNet
+	}
+	return nil
+}
+
+func (x *ScrubFingerprint) GetDropped() bool {
+	if x != nil {
+		return x.Dropped
+	}
+	return false
+}
+
+func (x *ScrubFingerprint) GetPackets() uint64 {
+	if x != nil {
+		return x.Packets
+	}
+	return 0
+}
+
+func (x *ScrubFingerprint) GetIntervalSeconds() uint32 {
+	if x != nil {
+		return x.IntervalSeconds
+	}
+	return 0
+}
+
+func (x *ScrubFingerprint) GetBytes() uint64 {
+	if x != nil {
+		return x.Bytes
+	}
+	return 0
+}
+
+type WatchRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Subscriber    string                 `protobuf:"bytes,1,opt,name=subscriber,proto3" json:"subscriber,omitempty"` // name for logs and metrics
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WatchRequest) Reset() {
+	*x = WatchRequest{}
+	mi := &file_v1_packetyeeter_proto_msgTypes[25]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WatchRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WatchRequest) ProtoMessage() {}
+
+func (x *WatchRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_v1_packetyeeter_proto_msgTypes[25]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WatchRequest.ProtoReflect.Descriptor instead.
+func (*WatchRequest) Descriptor() ([]byte, []int) {
+	return file_v1_packetyeeter_proto_rawDescGZIP(), []int{25}
+}
+
+func (x *WatchRequest) GetSubscriber() string {
+	if x != nil {
+		return x.Subscriber
+	}
+	return ""
+}
+
+type Decision struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Types that are valid to be assigned to Kind:
+	//
+	//	*Decision_Command
+	//	*Decision_Campaign
+	//	*Decision_Fingerprint
+	Kind          isDecision_Kind `protobuf_oneof:"kind"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Decision) Reset() {
+	*x = Decision{}
+	mi := &file_v1_packetyeeter_proto_msgTypes[26]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Decision) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Decision) ProtoMessage() {}
+
+func (x *Decision) ProtoReflect() protoreflect.Message {
+	mi := &file_v1_packetyeeter_proto_msgTypes[26]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Decision.ProtoReflect.Descriptor instead.
+func (*Decision) Descriptor() ([]byte, []int) {
+	return file_v1_packetyeeter_proto_rawDescGZIP(), []int{26}
+}
+
+func (x *Decision) GetKind() isDecision_Kind {
+	if x != nil {
+		return x.Kind
+	}
+	return nil
+}
+
+func (x *Decision) GetCommand() *Command {
+	if x != nil {
+		if x, ok := x.Kind.(*Decision_Command); ok {
+			return x.Command
+		}
+	}
+	return nil
+}
+
+func (x *Decision) GetCampaign() *CampaignObservation {
+	if x != nil {
+		if x, ok := x.Kind.(*Decision_Campaign); ok {
+			return x.Campaign
+		}
+	}
+	return nil
+}
+
+func (x *Decision) GetFingerprint() *ScrubFingerprint {
+	if x != nil {
+		if x, ok := x.Kind.(*Decision_Fingerprint); ok {
+			return x.Fingerprint
+		}
+	}
+	return nil
+}
+
+type isDecision_Kind interface {
+	isDecision_Kind()
+}
+
+type Decision_Command struct {
+	Command *Command `protobuf:"bytes,1,opt,name=command,proto3,oneof"`
+}
+
+type Decision_Campaign struct {
+	Campaign *CampaignObservation `protobuf:"bytes,2,opt,name=campaign,proto3,oneof"`
+}
+
+type Decision_Fingerprint struct {
+	Fingerprint *ScrubFingerprint `protobuf:"bytes,3,opt,name=fingerprint,proto3,oneof"`
+}
+
+func (*Decision_Command) isDecision_Kind() {}
+
+func (*Decision_Campaign) isDecision_Kind() {}
+
+func (*Decision_Fingerprint) isDecision_Kind() {}
+
+type CampaignObservation struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Vector        string                 `protobuf:"bytes,1,opt,name=vector,proto3" json:"vector,omitempty"`
+	Protocol      uint32                 `protobuf:"varint,2,opt,name=protocol,proto3" json:"protocol,omitempty"`
+	DstPortBucket string                 `protobuf:"bytes,3,opt,name=dst_port_bucket,json=dstPortBucket,proto3" json:"dst_port_bucket,omitempty"`
+	DstPrefix     string                 `protobuf:"bytes,4,opt,name=dst_prefix,json=dstPrefix,proto3" json:"dst_prefix,omitempty"`
+	RatePps       float64                `protobuf:"fixed64,5,opt,name=rate_pps,json=ratePps,proto3" json:"rate_pps,omitempty"`
+	ObservedAt    *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=observed_at,json=observedAt,proto3" json:"observed_at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CampaignObservation) Reset() {
+	*x = CampaignObservation{}
+	mi := &file_v1_packetyeeter_proto_msgTypes[27]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CampaignObservation) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CampaignObservation) ProtoMessage() {}
+
+func (x *CampaignObservation) ProtoReflect() protoreflect.Message {
+	mi := &file_v1_packetyeeter_proto_msgTypes[27]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CampaignObservation.ProtoReflect.Descriptor instead.
+func (*CampaignObservation) Descriptor() ([]byte, []int) {
+	return file_v1_packetyeeter_proto_rawDescGZIP(), []int{27}
+}
+
+func (x *CampaignObservation) GetVector() string {
+	if x != nil {
+		return x.Vector
+	}
+	return ""
+}
+
+func (x *CampaignObservation) GetProtocol() uint32 {
+	if x != nil {
+		return x.Protocol
+	}
+	return 0
+}
+
+func (x *CampaignObservation) GetDstPortBucket() string {
+	if x != nil {
+		return x.DstPortBucket
+	}
+	return ""
+}
+
+func (x *CampaignObservation) GetDstPrefix() string {
+	if x != nil {
+		return x.DstPrefix
+	}
+	return ""
+}
+
+func (x *CampaignObservation) GetRatePps() float64 {
+	if x != nil {
+		return x.RatePps
+	}
+	return 0
+}
+
+func (x *CampaignObservation) GetObservedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.ObservedAt
+	}
+	return nil
+}
+
 var File_v1_packetyeeter_proto protoreflect.FileDescriptor
 
 const file_v1_packetyeeter_proto_rawDesc = "" +
 	"\n" +
-	"\x15v1/packetyeeter.proto\x12\x0fpacketyeeter.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1bgoogle/protobuf/empty.proto\"\x9a\x05\n" +
+	"\x15v1/packetyeeter.proto\x12\x0fpacketyeeter.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1bgoogle/protobuf/empty.proto\"\xdf\x05\n" +
 	"\x06Signal\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x128\n" +
 	"\ttimestamp\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\ttimestamp\x12/\n" +
@@ -2520,7 +2885,8 @@ const file_v1_packetyeeter_proto_rawDesc = "" +
 	"\vtcp_context\x18\x0e \x01(\v2\x1b.packetyeeter.v1.TCPContextR\n" +
 	"tcpContext\x12\x10\n" +
 	"\x03ja4\x18\x0f \x01(\tR\x03ja4\x12E\n" +
-	"\x0eegress_context\x18\x10 \x01(\v2\x1e.packetyeeter.v1.EgressContextR\regressContext\x1a;\n" +
+	"\x0eegress_context\x18\x10 \x01(\v2\x1e.packetyeeter.v1.EgressContextR\regressContext\x12C\n" +
+	"\vfingerprint\x18\x11 \x01(\v2!.packetyeeter.v1.ScrubFingerprintR\vfingerprint\x1a;\n" +
 	"\rMetadataEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xb2\x05\n" +
@@ -2706,7 +3072,40 @@ const file_v1_packetyeeter_proto_rawDesc = "" +
 	"components\x1a=\n" +
 	"\x0fComponentsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01*\x85\a\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xd1\x02\n" +
+	"\x10ScrubFingerprint\x12!\n" +
+	"\fcollector_id\x18\x01 \x01(\tR\vcollectorId\x12\x15\n" +
+	"\x06dst_ip\x18\x02 \x01(\fR\x05dstIp\x12\x1a\n" +
+	"\bprotocol\x18\x03 \x01(\rR\bprotocol\x12\x19\n" +
+	"\bdst_port\x18\x04 \x01(\rR\adstPort\x12\x1f\n" +
+	"\vsize_bucket\x18\x05 \x01(\rR\n" +
+	"sizeBucket\x12\x1d\n" +
+	"\n" +
+	"ttl_bucket\x18\x06 \x01(\rR\tttlBucket\x12\x17\n" +
+	"\asrc_net\x18\a \x01(\fR\x06srcNet\x12\x18\n" +
+	"\adropped\x18\b \x01(\bR\adropped\x12\x18\n" +
+	"\apackets\x18\t \x01(\x04R\apackets\x12)\n" +
+	"\x10interval_seconds\x18\n" +
+	" \x01(\rR\x0fintervalSeconds\x12\x14\n" +
+	"\x05bytes\x18\v \x01(\x04R\x05bytes\".\n" +
+	"\fWatchRequest\x12\x1e\n" +
+	"\n" +
+	"subscriber\x18\x01 \x01(\tR\n" +
+	"subscriber\"\xd3\x01\n" +
+	"\bDecision\x124\n" +
+	"\acommand\x18\x01 \x01(\v2\x18.packetyeeter.v1.CommandH\x00R\acommand\x12B\n" +
+	"\bcampaign\x18\x02 \x01(\v2$.packetyeeter.v1.CampaignObservationH\x00R\bcampaign\x12E\n" +
+	"\vfingerprint\x18\x03 \x01(\v2!.packetyeeter.v1.ScrubFingerprintH\x00R\vfingerprintB\x06\n" +
+	"\x04kind\"\xe8\x01\n" +
+	"\x13CampaignObservation\x12\x16\n" +
+	"\x06vector\x18\x01 \x01(\tR\x06vector\x12\x1a\n" +
+	"\bprotocol\x18\x02 \x01(\rR\bprotocol\x12&\n" +
+	"\x0fdst_port_bucket\x18\x03 \x01(\tR\rdstPortBucket\x12\x1d\n" +
+	"\n" +
+	"dst_prefix\x18\x04 \x01(\tR\tdstPrefix\x12\x19\n" +
+	"\brate_pps\x18\x05 \x01(\x01R\aratePps\x12;\n" +
+	"\vobserved_at\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
+	"observedAt*\xa3\a\n" +
 	"\n" +
 	"SignalType\x12\x12\n" +
 	"\x0eSIGNAL_UNKNOWN\x10\x00\x12\x14\n" +
@@ -2743,7 +3142,8 @@ const file_v1_packetyeeter_proto_rawDesc = "" +
 	"\x19SIGNAL_CONNECTION_PATTERN\x10,\x12\x1d\n" +
 	"\x19SIGNAL_CLOCK_SKEW_ANOMALY\x102\x12\x1a\n" +
 	"\x16SIGNAL_ENTROPY_ANOMALY\x103\x12\x1b\n" +
-	"\x17SIGNAL_BASELINE_ANOMALY\x104*\x87\x01\n" +
+	"\x17SIGNAL_BASELINE_ANOMALY\x104\x12\x1c\n" +
+	"\x18SIGNAL_SCRUB_FINGERPRINT\x10<*\x87\x01\n" +
 	"\fSignalSource\x12\x12\n" +
 	"\x0eSOURCE_UNKNOWN\x10\x00\x12\x0f\n" +
 	"\vSOURCE_EBPF\x10\x01\x12\x0f\n" +
@@ -2781,7 +3181,7 @@ const file_v1_packetyeeter_proto_rawDesc = "" +
 	"\n" +
 	"ENTITY_ASN\x10\x02\x12\x0f\n" +
 	"\vENTITY_JA4H\x10\x03\x12\x0f\n" +
-	"\vENTITY_JA4T\x10\x042\xc6\x06\n" +
+	"\vENTITY_JA4T\x10\x042\x94\a\n" +
 	"\x0fAnalyzerService\x12F\n" +
 	"\rStreamSignals\x12\x17.packetyeeter.v1.Signal\x1a\x18.packetyeeter.v1.Command(\x010\x01\x12U\n" +
 	"\n" +
@@ -2794,7 +3194,8 @@ const file_v1_packetyeeter_proto_rawDesc = "" +
 	"\rGetReputation\x12\".packetyeeter.v1.ReputationRequest\x1a#.packetyeeter.v1.ReputationResponse\x12C\n" +
 	"\vReportBlock\x12\x1c.packetyeeter.v1.BlockReport\x1a\x16.google.protobuf.Empty\x12A\n" +
 	"\x06Health\x12\x16.google.protobuf.Empty\x1a\x1f.packetyeeter.v1.HealthResponse\x12D\n" +
-	"\tPushRules\x12\x18.packetyeeter.v1.RuleSet\x1a\x1d.packetyeeter.v1.PushRulesAckB!Z\x1fPacketYeeter/api/proto/v1;apiv1b\x06proto3"
+	"\tPushRules\x12\x18.packetyeeter.v1.RuleSet\x1a\x1d.packetyeeter.v1.PushRulesAck\x12L\n" +
+	"\x0eWatchDecisions\x12\x1d.packetyeeter.v1.WatchRequest\x1a\x19.packetyeeter.v1.Decision0\x01B!Z\x1fPacketYeeter/api/proto/v1;apiv1b\x06proto3"
 
 var (
 	file_v1_packetyeeter_proto_rawDescOnce sync.Once
@@ -2809,7 +3210,7 @@ func file_v1_packetyeeter_proto_rawDescGZIP() []byte {
 }
 
 var file_v1_packetyeeter_proto_enumTypes = make([]protoimpl.EnumInfo, 6)
-var file_v1_packetyeeter_proto_msgTypes = make([]protoimpl.MessageInfo, 26)
+var file_v1_packetyeeter_proto_msgTypes = make([]protoimpl.MessageInfo, 30)
 var file_v1_packetyeeter_proto_goTypes = []any{
 	(SignalType)(0),                 // 0: packetyeeter.v1.SignalType
 	(SignalSource)(0),               // 1: packetyeeter.v1.SignalSource
@@ -2841,59 +3242,70 @@ var file_v1_packetyeeter_proto_goTypes = []any{
 	(*ReputationResponse)(nil),      // 27: packetyeeter.v1.ReputationResponse
 	(*BlockReport)(nil),             // 28: packetyeeter.v1.BlockReport
 	(*HealthResponse)(nil),          // 29: packetyeeter.v1.HealthResponse
-	nil,                             // 30: packetyeeter.v1.Signal.MetadataEntry
-	nil,                             // 31: packetyeeter.v1.HealthResponse.ComponentsEntry
-	(*timestamppb.Timestamp)(nil),   // 32: google.protobuf.Timestamp
-	(*emptypb.Empty)(nil),           // 33: google.protobuf.Empty
+	(*ScrubFingerprint)(nil),        // 30: packetyeeter.v1.ScrubFingerprint
+	(*WatchRequest)(nil),            // 31: packetyeeter.v1.WatchRequest
+	(*Decision)(nil),                // 32: packetyeeter.v1.Decision
+	(*CampaignObservation)(nil),     // 33: packetyeeter.v1.CampaignObservation
+	nil,                             // 34: packetyeeter.v1.Signal.MetadataEntry
+	nil,                             // 35: packetyeeter.v1.HealthResponse.ComponentsEntry
+	(*timestamppb.Timestamp)(nil),   // 36: google.protobuf.Timestamp
+	(*emptypb.Empty)(nil),           // 37: google.protobuf.Empty
 }
 var file_v1_packetyeeter_proto_depIdxs = []int32{
-	32, // 0: packetyeeter.v1.Signal.timestamp:type_name -> google.protobuf.Timestamp
+	36, // 0: packetyeeter.v1.Signal.timestamp:type_name -> google.protobuf.Timestamp
 	0,  // 1: packetyeeter.v1.Signal.type:type_name -> packetyeeter.v1.SignalType
 	1,  // 2: packetyeeter.v1.Signal.source:type_name -> packetyeeter.v1.SignalSource
-	30, // 3: packetyeeter.v1.Signal.metadata:type_name -> packetyeeter.v1.Signal.MetadataEntry
+	34, // 3: packetyeeter.v1.Signal.metadata:type_name -> packetyeeter.v1.Signal.MetadataEntry
 	7,  // 4: packetyeeter.v1.Signal.http_context:type_name -> packetyeeter.v1.HTTPContext
 	8,  // 5: packetyeeter.v1.Signal.tcp_context:type_name -> packetyeeter.v1.TCPContext
 	9,  // 6: packetyeeter.v1.Signal.egress_context:type_name -> packetyeeter.v1.EgressContext
-	32, // 7: packetyeeter.v1.Command.timestamp:type_name -> google.protobuf.Timestamp
-	2,  // 8: packetyeeter.v1.Command.type:type_name -> packetyeeter.v1.CommandType
-	15, // 9: packetyeeter.v1.Command.rules:type_name -> packetyeeter.v1.RuleSetDelta
-	12, // 10: packetyeeter.v1.Rule.src_ports:type_name -> packetyeeter.v1.PortRange
-	12, // 11: packetyeeter.v1.Rule.dst_ports:type_name -> packetyeeter.v1.PortRange
-	12, // 12: packetyeeter.v1.Rule.pkt_len:type_name -> packetyeeter.v1.PortRange
-	3,  // 13: packetyeeter.v1.Rule.action:type_name -> packetyeeter.v1.RuleAction
-	32, // 14: packetyeeter.v1.Rule.expires_at:type_name -> google.protobuf.Timestamp
-	11, // 15: packetyeeter.v1.RuleSet.rules:type_name -> packetyeeter.v1.Rule
-	11, // 16: packetyeeter.v1.RuleSetDelta.upsert:type_name -> packetyeeter.v1.Rule
-	4,  // 17: packetyeeter.v1.BotVerifyResponse.category:type_name -> packetyeeter.v1.BotCategory
-	32, // 18: packetyeeter.v1.ReputationResponse.last_seen:type_name -> google.protobuf.Timestamp
-	32, // 19: packetyeeter.v1.BlockReport.timestamp:type_name -> google.protobuf.Timestamp
-	32, // 20: packetyeeter.v1.HealthResponse.uptime_since:type_name -> google.protobuf.Timestamp
-	31, // 21: packetyeeter.v1.HealthResponse.components:type_name -> packetyeeter.v1.HealthResponse.ComponentsEntry
-	6,  // 22: packetyeeter.v1.AnalyzerService.StreamSignals:input_type -> packetyeeter.v1.Signal
-	16, // 23: packetyeeter.v1.AnalyzerService.LookupJA4H:input_type -> packetyeeter.v1.JA4HLookupRequest
-	18, // 24: packetyeeter.v1.AnalyzerService.LookupJA4T:input_type -> packetyeeter.v1.JA4TLookupRequest
-	20, // 25: packetyeeter.v1.AnalyzerService.VerifyBot:input_type -> packetyeeter.v1.BotVerifyRequest
-	22, // 26: packetyeeter.v1.AnalyzerService.VerifyAICrawler:input_type -> packetyeeter.v1.AICrawlerVerifyRequest
-	24, // 27: packetyeeter.v1.AnalyzerService.GetThreatIntel:input_type -> packetyeeter.v1.ThreatIntelRequest
-	26, // 28: packetyeeter.v1.AnalyzerService.GetReputation:input_type -> packetyeeter.v1.ReputationRequest
-	28, // 29: packetyeeter.v1.AnalyzerService.ReportBlock:input_type -> packetyeeter.v1.BlockReport
-	33, // 30: packetyeeter.v1.AnalyzerService.Health:input_type -> google.protobuf.Empty
-	13, // 31: packetyeeter.v1.AnalyzerService.PushRules:input_type -> packetyeeter.v1.RuleSet
-	10, // 32: packetyeeter.v1.AnalyzerService.StreamSignals:output_type -> packetyeeter.v1.Command
-	17, // 33: packetyeeter.v1.AnalyzerService.LookupJA4H:output_type -> packetyeeter.v1.JA4HLookupResponse
-	19, // 34: packetyeeter.v1.AnalyzerService.LookupJA4T:output_type -> packetyeeter.v1.JA4TLookupResponse
-	21, // 35: packetyeeter.v1.AnalyzerService.VerifyBot:output_type -> packetyeeter.v1.BotVerifyResponse
-	23, // 36: packetyeeter.v1.AnalyzerService.VerifyAICrawler:output_type -> packetyeeter.v1.AICrawlerVerifyResponse
-	25, // 37: packetyeeter.v1.AnalyzerService.GetThreatIntel:output_type -> packetyeeter.v1.ThreatIntelResponse
-	27, // 38: packetyeeter.v1.AnalyzerService.GetReputation:output_type -> packetyeeter.v1.ReputationResponse
-	33, // 39: packetyeeter.v1.AnalyzerService.ReportBlock:output_type -> google.protobuf.Empty
-	29, // 40: packetyeeter.v1.AnalyzerService.Health:output_type -> packetyeeter.v1.HealthResponse
-	14, // 41: packetyeeter.v1.AnalyzerService.PushRules:output_type -> packetyeeter.v1.PushRulesAck
-	32, // [32:42] is the sub-list for method output_type
-	22, // [22:32] is the sub-list for method input_type
-	22, // [22:22] is the sub-list for extension type_name
-	22, // [22:22] is the sub-list for extension extendee
-	0,  // [0:22] is the sub-list for field type_name
+	30, // 7: packetyeeter.v1.Signal.fingerprint:type_name -> packetyeeter.v1.ScrubFingerprint
+	36, // 8: packetyeeter.v1.Command.timestamp:type_name -> google.protobuf.Timestamp
+	2,  // 9: packetyeeter.v1.Command.type:type_name -> packetyeeter.v1.CommandType
+	15, // 10: packetyeeter.v1.Command.rules:type_name -> packetyeeter.v1.RuleSetDelta
+	12, // 11: packetyeeter.v1.Rule.src_ports:type_name -> packetyeeter.v1.PortRange
+	12, // 12: packetyeeter.v1.Rule.dst_ports:type_name -> packetyeeter.v1.PortRange
+	12, // 13: packetyeeter.v1.Rule.pkt_len:type_name -> packetyeeter.v1.PortRange
+	3,  // 14: packetyeeter.v1.Rule.action:type_name -> packetyeeter.v1.RuleAction
+	36, // 15: packetyeeter.v1.Rule.expires_at:type_name -> google.protobuf.Timestamp
+	11, // 16: packetyeeter.v1.RuleSet.rules:type_name -> packetyeeter.v1.Rule
+	11, // 17: packetyeeter.v1.RuleSetDelta.upsert:type_name -> packetyeeter.v1.Rule
+	4,  // 18: packetyeeter.v1.BotVerifyResponse.category:type_name -> packetyeeter.v1.BotCategory
+	36, // 19: packetyeeter.v1.ReputationResponse.last_seen:type_name -> google.protobuf.Timestamp
+	36, // 20: packetyeeter.v1.BlockReport.timestamp:type_name -> google.protobuf.Timestamp
+	36, // 21: packetyeeter.v1.HealthResponse.uptime_since:type_name -> google.protobuf.Timestamp
+	35, // 22: packetyeeter.v1.HealthResponse.components:type_name -> packetyeeter.v1.HealthResponse.ComponentsEntry
+	10, // 23: packetyeeter.v1.Decision.command:type_name -> packetyeeter.v1.Command
+	33, // 24: packetyeeter.v1.Decision.campaign:type_name -> packetyeeter.v1.CampaignObservation
+	30, // 25: packetyeeter.v1.Decision.fingerprint:type_name -> packetyeeter.v1.ScrubFingerprint
+	36, // 26: packetyeeter.v1.CampaignObservation.observed_at:type_name -> google.protobuf.Timestamp
+	6,  // 27: packetyeeter.v1.AnalyzerService.StreamSignals:input_type -> packetyeeter.v1.Signal
+	16, // 28: packetyeeter.v1.AnalyzerService.LookupJA4H:input_type -> packetyeeter.v1.JA4HLookupRequest
+	18, // 29: packetyeeter.v1.AnalyzerService.LookupJA4T:input_type -> packetyeeter.v1.JA4TLookupRequest
+	20, // 30: packetyeeter.v1.AnalyzerService.VerifyBot:input_type -> packetyeeter.v1.BotVerifyRequest
+	22, // 31: packetyeeter.v1.AnalyzerService.VerifyAICrawler:input_type -> packetyeeter.v1.AICrawlerVerifyRequest
+	24, // 32: packetyeeter.v1.AnalyzerService.GetThreatIntel:input_type -> packetyeeter.v1.ThreatIntelRequest
+	26, // 33: packetyeeter.v1.AnalyzerService.GetReputation:input_type -> packetyeeter.v1.ReputationRequest
+	28, // 34: packetyeeter.v1.AnalyzerService.ReportBlock:input_type -> packetyeeter.v1.BlockReport
+	37, // 35: packetyeeter.v1.AnalyzerService.Health:input_type -> google.protobuf.Empty
+	13, // 36: packetyeeter.v1.AnalyzerService.PushRules:input_type -> packetyeeter.v1.RuleSet
+	31, // 37: packetyeeter.v1.AnalyzerService.WatchDecisions:input_type -> packetyeeter.v1.WatchRequest
+	10, // 38: packetyeeter.v1.AnalyzerService.StreamSignals:output_type -> packetyeeter.v1.Command
+	17, // 39: packetyeeter.v1.AnalyzerService.LookupJA4H:output_type -> packetyeeter.v1.JA4HLookupResponse
+	19, // 40: packetyeeter.v1.AnalyzerService.LookupJA4T:output_type -> packetyeeter.v1.JA4TLookupResponse
+	21, // 41: packetyeeter.v1.AnalyzerService.VerifyBot:output_type -> packetyeeter.v1.BotVerifyResponse
+	23, // 42: packetyeeter.v1.AnalyzerService.VerifyAICrawler:output_type -> packetyeeter.v1.AICrawlerVerifyResponse
+	25, // 43: packetyeeter.v1.AnalyzerService.GetThreatIntel:output_type -> packetyeeter.v1.ThreatIntelResponse
+	27, // 44: packetyeeter.v1.AnalyzerService.GetReputation:output_type -> packetyeeter.v1.ReputationResponse
+	37, // 45: packetyeeter.v1.AnalyzerService.ReportBlock:output_type -> google.protobuf.Empty
+	29, // 46: packetyeeter.v1.AnalyzerService.Health:output_type -> packetyeeter.v1.HealthResponse
+	14, // 47: packetyeeter.v1.AnalyzerService.PushRules:output_type -> packetyeeter.v1.PushRulesAck
+	32, // 48: packetyeeter.v1.AnalyzerService.WatchDecisions:output_type -> packetyeeter.v1.Decision
+	38, // [38:49] is the sub-list for method output_type
+	27, // [27:38] is the sub-list for method input_type
+	27, // [27:27] is the sub-list for extension type_name
+	27, // [27:27] is the sub-list for extension extendee
+	0,  // [0:27] is the sub-list for field type_name
 }
 
 func init() { file_v1_packetyeeter_proto_init() }
@@ -2902,13 +3314,18 @@ func file_v1_packetyeeter_proto_init() {
 		return
 	}
 	file_v1_packetyeeter_proto_msgTypes[5].OneofWrappers = []any{}
+	file_v1_packetyeeter_proto_msgTypes[26].OneofWrappers = []any{
+		(*Decision_Command)(nil),
+		(*Decision_Campaign)(nil),
+		(*Decision_Fingerprint)(nil),
+	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_v1_packetyeeter_proto_rawDesc), len(file_v1_packetyeeter_proto_rawDesc)),
 			NumEnums:      6,
-			NumMessages:   26,
+			NumMessages:   30,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
