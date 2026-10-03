@@ -92,9 +92,11 @@ e2e-test: proto
 # Run the Linux/eBPF kernel-enforcement e2e test. Requires root (to
 # load/attach the real XDP program) and a Linux kernel with BPF support;
 # not runnable on macOS/portable environments. See pkg/collector/ebpf_e2e_test.go
-# for exactly what this does and does not verify.
+# for exactly what this does and does not verify. PATH is passed through
+# because sudo's secure_path would otherwise pick the system go, not the
+# toolchain setup-go installed.
 e2e-ebpf-test: proto bpf
-	sudo -E $(GO) test -tags e2e_ebpf -run TestKernelBlockEnforcement -v ./pkg/collector/...
+	sudo -E env "PATH=$$PATH" $(GO) test -tags e2e_ebpf -run TestKernelBlockEnforcement -v ./pkg/collector/...
 
 # Run the scrub-mode end-to-end test across three network namespaces. Requires
 # root, Linux 5.15+, curl, python3, ethtool and bpftool; the SYN cookie checks
