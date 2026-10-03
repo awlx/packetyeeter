@@ -568,6 +568,141 @@ increased "$drops" "$(metric packetyeeter_scrub_rule_matches_total 'action="drop
 [[ "$(metric packetyeeter_scrub_packets_total 'family="ipv4",verdict="drop"')" == 0 ]] \
   && pass "monitor mode dropped nothing" || bad "drop{ipv4} non-zero in monitor mode"
 
+log "SYN cookies"
+stop_collector
+# Kernels without the XDP SYN cookie helpers (< 6.0) must refuse the flag.
+if [[ "$(printf '%s\n' 6.0 "$(uname -r)" | sort -V | head -1)" != 6.0 ]]; then
+  if scr "$COLLECTOR_BIN" -mode scrub -i out0 -inside-if in0 -socket "" -scrub-syn-cookies on \
+       -metrics-addr 127.0.0.1:2113 -analyzer-addr 127.0.0.1:1 >/dev/null 2>&1; then
+    bad "-scrub-syn-cookies accepted on kernel $(uname -r)"
+  else
+    pass "-scrub-syn-cookies refused on kernel $(uname -r)"
+  fi
+  start_collector
+else
+# Challenges leave by XDP_TX, which a veth only delivers promptly when its
+# peer runs an XDP program too.
+XDP_PASS_OBJ="$(mktemp /tmp/yeet-xdp-pass.XXXXXX.o)"
+printf '%s\n' '#include <linux/bpf.h>' \
+  '__attribute__((section("xdp"), used)) int xdp_pass(struct xdp_md *ctx) { return XDP_PASS; }' \
+  'char LICENSE[] __attribute__((section("license"), used)) = "GPL";' \
+  | clang -O2 -target bpf -I"/usr/include/$(gcc -dumpmachine)" -x c -c - -o "$XDP_PASS_OBJ"
+src ip link set dev src0 xdpdrv obj "$XDP_PASS_OBJ" sec xdp
+SC_PORT=9
+# Spoofed-source SYNs go to port 9; tc counts what reaches the destination
+# and the SYN-ACKs the node sends back, and drops both.
+dst tc qdisc add dev dst0 clsact
+dst tc filter add dev dst0 ingress pref 10 protocol ip flower ip_proto tcp dst_port "$SC_PORT" action drop
+dst tc filter add dev dst0 ingress pref 11 protocol ipv6 flower ip_proto tcp dst_port "$SC_PORT" action drop
+src tc qdisc add dev src0 clsact
+src tc filter add dev src0 ingress pref 10 protocol ip flower ip_proto tcp src_port "$SC_PORT" action drop
+src tc filter add dev src0 ingress pref 11 protocol ipv6 flower ip_proto tcp src_port "$SC_PORT" action drop
+tc_count() { # NS PREF
+  ip netns exec "$1" tc -s filter show dev "$([[ $1 == "$NS_DST" ]] && echo dst0 || echo src0)" ingress pref "$2" \
+    | awk '/Sent/ {print $4; exit}'
+}
+OUT_MAC=$(scr cat /sys/class/net/out0/address)
+SRC_MAC=$(src cat /sys/class/net/src0/address)
+FLOOD_CFG="$(mktemp /tmp/yeet-scrub-flood.XXXXXX.cfg)"
+printf '%s\n' \
+  "{ eth(da=$OUT_MAC, sa=$SRC_MAC), ipv4(saddr=drnd(), daddr=$DST4, ttl=64), tcp(sp=drnd(), dp=$SC_PORT, syn, seq=drnd(), win=64240) }" \
+  "{ eth(da=$OUT_MAC, sa=$SRC_MAC), ipv6(sa=drnd(), da=$DST6, hl=64), tcp(sp=drnd(), dp=$SC_PORT, syn, seq=drnd(), win=64240) }" \
+  >"$FLOOD_CFG"
+FLOOD=2000
+# flood COUNT: COUNT spoofed SYNs per family; sets F4/F6 (SYNs the
+# destination got) and A4/A6 (SYN-ACKs back to the sources).
+flood() {
+  local d4 d6 a4 a6
+  d4=$(tc_count "$NS_DST" 10); d6=$(tc_count "$NS_DST" 11)
+  a4=$(tc_count "$NS_SRC" 10); a6=$(tc_count "$NS_SRC" 11)
+  src trafgen -o src0 -i "$FLOOD_CFG" -n "$((2 * $1))" -P 1 >/dev/null 2>&1 || bad "trafgen failed"
+  sleep 0.5
+  F4=$(( $(tc_count "$NS_DST" 10) - d4 )); F6=$(( $(tc_count "$NS_DST" 11) - d6 ))
+  A4=$(( $(tc_count "$NS_SRC" 10) - a4 )); A6=$(( $(tc_count "$NS_SRC" 11) - a6 ))
+}
+sc() { metric packetyeeter_scrub_syncookie_total "event=\"$2\",family=\"$1\""; }
+connect_time() { # curl args: prints the TCP connect time in ms, fails if curl does
+  src curl -sS -o /dev/null --max-time 5 -w '%{time_connect}' "$@" | awk '{printf "%.0f", $1 * 1000}'
+}
+
+if command -v trafgen >/dev/null; then
+  start_collector
+  http_ok "http://$DST4:8080/" && http_ok -6 "http://[$DST6]:8080/" || bad "clean traffic failed before the flood"
+  flood "$FLOOD"
+  (( F4 >= FLOOD * 9 / 10 && F6 >= FLOOD * 9 / 10 )) && pass "cookies off: spoofed SYNs forwarded (v4 $F4, v6 $F6 of $FLOOD)" \
+    || bad "cookies off: destination got v4 $F4, v6 $F6 of $FLOOD spoofed SYNs"
+  stop_collector
+else
+  log "trafgen not installed: skipping the spoofed-flood checks"
+fi
+
+start_collector -scrub-syn-cookies on
+for fam in ipv4 ipv6; do
+  url="http://$DST4:8080/"; [[ $fam == ipv6 ]] && url="http://[$DST6]:8080/"
+  ms=$(connect_time "$url") && pass "$fam client connects through a challenge (connect ${ms} ms)" || bad "$fam client failed with cookies on"
+  increased 0 "$(sc $fam challenge)" && increased 0 "$(sc $fam valid)" \
+    && pass "$fam challenge answered (challenge=$(sc $fam challenge) valid=$(sc $fam valid))" \
+    || bad "$fam: challenge=$(sc $fam challenge) valid=$(sc $fam valid)"
+  [[ "$(metric packetyeeter_scrub_syncookie_verified_sources "family=\"$fam\"")" -ge 1 ]] \
+    && pass "$fam verified source counted" || bad "$fam verified_sources=$(metric packetyeeter_scrub_syncookie_verified_sources "family=\"$fam\"")"
+  ch=$(sc $fam challenge); pa=$(sc $fam passed)
+  http_ok "$url" && [[ "$(sc $fam challenge)" == "$ch" ]] && increased "$pa" "$(sc $fam passed)" \
+    && pass "$fam verified source is not challenged again" || bad "$fam second connection challenged or failed"
+done
+if command -v trafgen >/dev/null; then
+  ch4=$(sc ipv4 challenge); ch6=$(sc ipv6 challenge)
+  flood "$FLOOD"
+  (( F4 <= FLOOD / 100 && F6 <= FLOOD / 100 )) && pass "cookies on: spoofed SYNs not forwarded (v4 $F4, v6 $F6 of $FLOOD)" \
+    || bad "cookies on: destination got v4 $F4, v6 $F6 of $FLOOD spoofed SYNs"
+  (( A4 >= FLOOD * 9 / 10 && A6 >= FLOOD * 9 / 10 )) && pass "challenges sent back (v4 $A4, v6 $A6)" \
+    || bad "SYN-ACKs back to the spoofed sources: v4 $A4, v6 $A6 of $FLOOD"
+  (( $(sc ipv4 challenge) - ch4 >= FLOOD * 9 / 10 && $(sc ipv6 challenge) - ch6 >= FLOOD * 9 / 10 )) \
+    && pass "challenge counters follow the flood" || bad "challenge counters rose by $(( $(sc ipv4 challenge) - ch4 )) / $(( $(sc ipv6 challenge) - ch6 ))"
+  http_ok "http://$DST4:8080/" && http_ok -6 "http://[$DST6]:8080/" && pass "clean traffic unaffected by the flood" \
+    || bad "clean traffic failed after the flood"
+fi
+
+stop_collector
+start_collector -scrub-syn-cookies on -scrub-syn-cookie-style reset
+for fam in ipv4 ipv6; do
+  url="http://$DST4:8080/"; [[ $fam == ipv6 ]] && url="http://[$DST6]:8080/"
+  # The first connection completes against the node, which resets it.
+  http_ok "$url" 2>/dev/null && bad "$fam reset style: first connection succeeded" || pass "$fam reset style: first connection reset"
+  increased 0 "$(sc $fam valid)" && http_ok "$url" && pass "$fam reset style: reconnect passes" \
+    || bad "$fam reset style: valid=$(sc $fam valid), reconnect failed"
+done
+
+if command -v trafgen >/dev/null; then
+  stop_collector
+  start_collector -scrub-syn-cookies on -dry-run
+  flood "$FLOOD"
+  (( F4 >= FLOOD * 9 / 10 && F6 >= FLOOD * 9 / 10 )) && pass "dry run forwards spoofed SYNs (v4 $F4, v6 $F6)" \
+    || bad "dry run: destination got v4 $F4, v6 $F6 of $FLOOD"
+  (( A4 == 0 && A6 == 0 )) && [[ "$(sc ipv4 challenge)" == 0 && "$(sc ipv6 challenge)" == 0 ]] \
+    && pass "dry run sends no challenges" || bad "dry run challenged: SYN-ACKs v4 $A4, v6 $A6"
+  (( $(sc ipv4 dry_run) >= FLOOD * 9 / 10 && $(sc ipv6 dry_run) >= FLOOD * 9 / 10 )) \
+    && pass "dry run counts would-be challenges (v4 $(sc ipv4 dry_run), v6 $(sc ipv6 dry_run))" \
+    || bad "dry_run counters: v4 $(sc ipv4 dry_run), v6 $(sc ipv6 dry_run)"
+
+  stop_collector
+  start_collector -scrub-syn-cookies auto -scrub-syn-cookie-syn-pps 500
+  http_ok "http://$DST4:8080/" && [[ "$(sc ipv4 challenge)" == 0 ]] \
+    && pass "auto: no challenges below the threshold" || bad "auto: challenged without a flood ($(sc ipv4 challenge))"
+  flood 20000
+  (( F4 <= 1000 && F6 <= 1000 )) && pass "auto: flood challenged once over the threshold (v4 $F4, v6 $F6 of 20000 forwarded)" \
+    || bad "auto: destination got v4 $F4, v6 $F6 of 20000"
+  increased 0 "$(sc ipv4 activated)" && increased 0 "$(sc ipv6 activated)" \
+    && pass "auto: activation counted" || bad "auto: activated v4 $(sc ipv4 activated), v6 $(sc ipv6 activated)"
+  ch=$(sc ipv4 challenge)
+  http_ok "http://$DST4:8080/" && increased "$ch" "$(sc ipv4 challenge)" \
+    && pass "auto: clean client challenged during the flood and connects" || bad "auto: clean client not challenged or failed"
+fi
+rm -f "$FLOOD_CFG" "$XDP_PASS_OBJ"
+src ip link set dev src0 xdpdrv off
+stop_collector
+start_collector
+fi
+
 log "fail open on crash"
 stop_collector
 scr ip link show out0 | grep -q xdp && bad "xdp_scrub still attached after kill -9" || pass "XDP detached with the process"

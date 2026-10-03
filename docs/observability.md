@@ -354,6 +354,30 @@ time:
 The fingerprint metrics are only exported when `-fingerprint-interval` is
 non-zero.
 
+With `-scrub-syn-cookies` on or auto (see
+[SYN cookies](operations.md#syn-cookies)):
+
+- `packetyeeter_scrub_syncookie_total{family,event}` (counter), `family`
+  `ipv4` or `ipv6`. `event`:
+  - `challenge`: SYN answered with a cookie SYN-ACK instead of being forwarded.
+  - `dry_run`: SYN that would have been challenged (`-dry-run`, or a
+    `-policy` monitor source); it was forwarded.
+  - `valid`: answer with a valid cookie; its source is now verified.
+  - `invalid`: answer candidate (a RST in `oos` style, a bare ACK in `reset`
+    style) from an unverified source without a valid cookie; forwarded. Mostly
+    ordinary connections that were open before challenges started.
+  - `passed`: SYN from a verified source to a challenged destination,
+    forwarded.
+  - `unsupported`: SYN that cannot be answered (IPv4 options, IPv6 extension
+    headers, fragments), dropped.
+  - `error`: the kernel could not generate a cookie; the SYN was forwarded.
+    Should stay 0.
+  - `activated`: auto mode started challenging a destination slot.
+  Challenged and unsupported SYNs and consumed answers also count as
+  `packetyeeter_scrub_packets_total{verdict="drop"}`.
+- `packetyeeter_scrub_syncookie_verified_sources{family}` (gauge): sources
+  verified less than `-scrub-syn-cookie-ttl` ago, counted at scrape time.
+
 ## Collector perf-ring health
 
 `packetyeeter_perf_lost_samples_total{reader}` counts records the kernel could

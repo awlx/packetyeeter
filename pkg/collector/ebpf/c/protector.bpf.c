@@ -329,9 +329,10 @@ struct {
 //   4 = UDP/IPv6 fragment mode (see CONFIG_KEY_UDP_FRAG_MODE)
 //   5 = scrub mode: per-CPU slow-path packets per second (0 = unlimited)
 //   6 = scrub mode: fingerprint generation (0 = off; parity selects the map)
+//   7-10 = scrub mode: SYN cookies (see CONFIG_KEY_SC_*)
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
-    __uint(max_entries, 7);
+    __uint(max_entries, 11);
     __type(key, __u32);
     __type(value, __u32);
 } config_map SEC(".maps");
@@ -2055,8 +2056,380 @@ static __always_inline int scrub_eval_rules(struct xdp_md *ctx, struct rule_pkt 
     return is_monitor ? RULE_VERDICT_NONE : RULE_VERDICT_DROP;
 }
 
+// --- Scrub SYN cookies ---
+//
+// Replies bypass the node, so it cannot proxy handshakes. Instead it checks
+// that a source receives packets sent to its address: an unverified source's
+// SYN is answered from XDP with a SYN-ACK carrying a SYN cookie and is not
+// forwarded, the client's answer to that SYN-ACK verifies the source, and the
+// client's next SYN is forwarded as usual. Layouts are mirrored in
+// pkg/collector/ebpf/syncookie.go.
+
+// Set by the loader. While 0 the verifier prunes every SYN cookie helper call,
+// so kernels without them (< 6.0) still load xdp_scrub.
+volatile const __u32 scrub_syncookies = 0;
+
+#define CONFIG_KEY_SC_MODE    7
+#define CONFIG_KEY_SC_SYN_PPS 8   // auto mode: SYNs per second, per CPU and destination
+#define CONFIG_KEY_SC_TTL     9   // seconds a source stays verified
+#define CONFIG_KEY_SC_STYLE   10
+
+#define SC_MODE_AUTO 1
+#define SC_MODE_ON   2
+
+// OOS: the SYN-ACK acknowledges a sequence number the client never sent, so
+// the client answers with a RST carrying the cookie and stays in SYN-SENT;
+// its SYN retransmission then passes. RESET: a valid SYN-ACK, so the client
+// completes the handshake with an ACK carrying the cookie; the node resets
+// that connection and the application has to reconnect.
+#define SC_STYLE_OOS   0
+#define SC_STYLE_RESET 1
+
+#define SC_EV_CHALLENGE   0
+#define SC_EV_DRY_RUN     1
+#define SC_EV_VALID       2
+#define SC_EV_INVALID     3
+#define SC_EV_PASSED      4
+#define SC_EV_UNSUPPORTED 5
+#define SC_EV_ERROR       6
+#define SC_EV_ACTIVATED   7
+#define SC_EVENTS         8
+
+#define SC_VERIFIED_SIZE  262144
+#define SC_DST_SLOT_BITS  13
+#define SC_DST_SLOTS      (1 << SC_DST_SLOT_BITS)
+#define SC_HOLD_NS        (30ULL * 1000000000ULL)
+#define SC_SEC_NS         1000000000ULL
+
+#define SC_CONTINUE 0
+#define SC_DROP     -1
+
+#define SC_TCP_FIN 0x01
+#define SC_TCP_SYN 0x02
+#define SC_TCP_RST 0x04
+#define SC_TCP_ACK 0x10
+
+// Value: when the source was verified (bpf_ktime_get_ns).
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, SC_VERIFIED_SIZE);
+    __type(key, __u32);
+    __type(value, __u64);
+} syncookie_verified_v4 SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, SC_VERIFIED_SIZE);
+    __type(key, struct in6_addr);
+    __type(value, __u64);
+} syncookie_verified_v6 SEC(".maps");
+
+struct sc_rate {
+    __u64 window;
+    __u64 count;
+};
+
+// Destinations hash into fixed slots rather than an LRU, which a flood
+// spread over many destinations would insert into on every SYN. A collision
+// only makes a destination share its neighbour's flood state.
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, SC_DST_SLOTS);
+    __type(key, __u32);
+    __type(value, struct sc_rate);
+} syncookie_syn_rate SEC(".maps");
+
+// Until when (bpf_ktime_get_ns) a slot is challenged in auto mode. Shared so
+// a flood counted on one CPU protects the destination on all of them.
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, SC_DST_SLOTS);
+    __type(key, __u32);
+    __type(value, __u64);
+} syncookie_active SEC(".maps");
+
+// Indexed family * SC_EVENTS + event.
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, 2 * SC_EVENTS);
+    __type(key, __u32);
+    __type(value, __u64);
+} syncookie_stats SEC(".maps");
+
+static __always_inline void sc_count(__u32 family, __u32 ev) {
+    __u32 idx = family * SC_EVENTS + ev;
+    __u64 *c = bpf_map_lookup_elem(&syncookie_stats, &idx);
+    if (c)
+        (*c)++;
+}
+
+static __always_inline __u32 sc_cfg(__u32 key) {
+    __u32 *v = bpf_map_lookup_elem(&config_map, &key);
+    return v ? *v : 0;
+}
+
+static __always_inline int sc_active(struct rule_pkt *p, int syn, __u64 now) {
+    __u32 mode = sc_cfg(CONFIG_KEY_SC_MODE);
+    if (mode == SC_MODE_ON)
+        return 1;
+    if (mode != SC_MODE_AUTO)
+        return 0;
+    __u32 slot = ((p->dst[0] ^ p->dst[1] ^ p->dst[2] ^ p->dst[3]) * 0x9E3779B1u) >> (32 - SC_DST_SLOT_BITS);
+    __u64 *until = bpf_map_lookup_elem(&syncookie_active, &slot);
+    if (!until)
+        return 0;
+    if (syn) {
+        struct sc_rate *r = bpf_map_lookup_elem(&syncookie_syn_rate, &slot);
+        if (r) {
+            __u64 window = now / SC_SEC_NS;
+            if (r->window != window) {
+                r->window = window;
+                r->count = 0;
+            }
+            // Extended at most once a second, since every CPU writes the slot.
+            if (++r->count > sc_cfg(CONFIG_KEY_SC_SYN_PPS) && *until + SC_SEC_NS < now + SC_HOLD_NS) {
+                if (*until <= now)
+                    sc_count(p->v6, SC_EV_ACTIVATED);
+                *until = now + SC_HOLD_NS;
+            }
+        }
+    }
+    return *until > now;
+}
+
+static __always_inline int sc_verified(struct rule_pkt *p, __u64 now) {
+    __u64 *t;
+    if (p->v6)
+        t = bpf_map_lookup_elem(&syncookie_verified_v6, p->src);
+    else
+        t = bpf_map_lookup_elem(&syncookie_verified_v4, &p->src[0]);
+    return t && now - *t < (__u64)sc_cfg(CONFIG_KEY_SC_TTL) * SC_SEC_NS;
+}
+
+static __always_inline __u16 sc_csum_fold(__s64 sum) {
+    __u32 s = (__u32)sum;
+    s = (s & 0xFFFF) + (s >> 16);
+    s = (s & 0xFFFF) + (s >> 16);
+    return (__u16)~s;
+}
+
+static __always_inline void sc_reply_tcp(struct tcphdr *tcp, __u32 seq, __u32 ack_seq, __u8 flags) {
+    __be16 port = tcp->source;
+    tcp->source = tcp->dest;
+    tcp->dest = port;
+    tcp->seq = bpf_htonl(seq);
+    tcp->ack_seq = bpf_htonl(ack_seq);
+    ((__u8 *)tcp)[12] = 5 << 4;
+    ((__u8 *)tcp)[13] = flags;
+    tcp->window = 0;
+    tcp->check = 0;
+    tcp->urg_ptr = 0;
+}
+
+static __always_inline void sc_swap_eth(struct ethhdr *eth) {
+    __u8 mac[ETH_ALEN];
+    __builtin_memcpy(mac, eth->h_source, ETH_ALEN);
+    __builtin_memcpy(eth->h_source, eth->h_dest, ETH_ALEN);
+    __builtin_memcpy(eth->h_dest, mac, ETH_ALEN);
+}
+
+static __always_inline void sc_reply_v4(struct ethhdr *eth, struct iphdr *ip, struct tcphdr *tcp,
+                                        __u32 seq, __u32 ack_seq, __u8 flags) {
+    sc_swap_eth(eth);
+    __be32 addr = ip->saddr;
+    ip->saddr = ip->daddr;
+    ip->daddr = addr;
+    ip->tos = 0;
+    ip->tot_len = bpf_htons(sizeof(struct iphdr) + sizeof(struct tcphdr));
+    ip->id = 0;
+    ip->frag_off = bpf_htons(0x4000); // DF
+    ip->ttl = 64;
+    ip->check = 0;
+    ip->check = sc_csum_fold(bpf_csum_diff(0, 0, (__be32 *)ip, sizeof(*ip), 0));
+
+    sc_reply_tcp(tcp, seq, ack_seq, flags);
+    __be32 pseudo[3] = { ip->saddr, ip->daddr, bpf_htonl((IPPROTO_TCP << 16) | sizeof(*tcp)) };
+    __s64 sum = bpf_csum_diff(0, 0, pseudo, sizeof(pseudo), 0);
+    tcp->check = sc_csum_fold(bpf_csum_diff(0, 0, (__be32 *)tcp, sizeof(*tcp), (__u32)sum));
+}
+
+static __always_inline void sc_reply_v6(struct ethhdr *eth, struct ipv6hdr *ip6, struct tcphdr *tcp,
+                                        __u32 seq, __u32 ack_seq, __u8 flags) {
+    sc_swap_eth(eth);
+    struct in6_addr addr = ip6->saddr;
+    ip6->saddr = ip6->daddr;
+    ip6->daddr = addr;
+    *(__be32 *)ip6 = bpf_htonl(0x60000000);
+    ip6->payload_len = bpf_htons(sizeof(*tcp));
+    ip6->nexthdr = IPPROTO_TCP;
+    ip6->hop_limit = 64;
+
+    sc_reply_tcp(tcp, seq, ack_seq, flags);
+    __be32 pseudo[2] = { bpf_htonl(sizeof(*tcp)), bpf_htonl(IPPROTO_TCP) };
+    __s64 sum = bpf_csum_diff(0, 0, (__be32 *)&ip6->saddr, 2 * sizeof(struct in6_addr), 0);
+    sum = bpf_csum_diff(0, 0, pseudo, sizeof(pseudo), (__u32)sum);
+    tcp->check = sc_csum_fold(bpf_csum_diff(0, 0, (__be32 *)tcp, sizeof(*tcp), (__u32)sum));
+}
+
+// The cookie covers addresses, ports and, in RESET style, the client's ISN.
+// OOS cannot use the ISN: the client's RST echoes only the acknowledgment
+// number. Options are left out, so the cookie always encodes the default MSS;
+// no connection ever uses it.
+static __always_inline __s64 sc_gen_cookie(void *ip, struct tcphdr *tcp, const int v6, __u32 style) {
+    struct tcphdr th;
+    __builtin_memcpy(&th, tcp, sizeof(th));
+    th.doff = 5;
+    if (style == SC_STYLE_OOS)
+        th.seq = 0;
+    if (v6) {
+        struct ipv6hdr iph;
+        __builtin_memcpy(&iph, ip, sizeof(iph));
+        return bpf_tcp_raw_gen_syncookie_ipv6(&iph, &th, sizeof(th));
+    }
+    struct iphdr iph;
+    __builtin_memcpy(&iph, ip, sizeof(iph));
+    return bpf_tcp_raw_gen_syncookie_ipv4(&iph, &th, sizeof(th));
+}
+
+static __always_inline int sc_check_cookie(void *ip, struct tcphdr *tcp, const int v6, __u32 style) {
+    struct tcphdr th;
+    __builtin_memcpy(&th, tcp, sizeof(th));
+    // The check takes seq - 1 as the ISN and ack_seq - 1 as the cookie.
+    if (style == SC_STYLE_OOS) {
+        th.seq = bpf_htonl(1);
+        th.ack_seq = bpf_htonl(bpf_ntohl(tcp->seq) + 1);
+    }
+    if (v6) {
+        struct ipv6hdr iph;
+        __builtin_memcpy(&iph, ip, sizeof(iph));
+        return bpf_tcp_raw_check_syncookie_ipv6(&iph, &th) == 0;
+    }
+    struct iphdr iph;
+    __builtin_memcpy(&iph, ip, sizeof(iph));
+    return bpf_tcp_raw_check_syncookie_ipv4(&iph, &th) == 0;
+}
+
+static __always_inline void sc_reply(struct ethhdr *eth, void *ip, struct tcphdr *tcp, const int v6,
+                                     __u32 seq, __u32 ack_seq, __u8 flags) {
+    if (v6)
+        sc_reply_v6(eth, ip, tcp, seq, ack_seq, flags);
+    else
+        sc_reply_v4(eth, ip, tcp, seq, ack_seq, flags);
+}
+
+// Inlined once per family so every header offset is a constant.
+static __always_inline int sc_handle(struct rule_pkt *p, struct ethhdr *eth, void *ip, struct tcphdr *tcp,
+                                     const int v6, int reply_len, int syn, __u32 style, __u64 now) {
+    if (syn) {
+        __s64 cookie = sc_gen_cookie(ip, tcp, v6, style);
+        if (cookie < 0) {
+            sc_count(v6, SC_EV_ERROR);
+            return SC_CONTINUE;
+        }
+        __u32 ack_seq = style == SC_STYLE_OOS ? (__u32)cookie : bpf_ntohl(tcp->seq) + 1;
+        sc_reply(eth, ip, tcp, v6, (__u32)cookie, ack_seq, SC_TCP_SYN | SC_TCP_ACK);
+        sc_count(v6, SC_EV_CHALLENGE);
+        return reply_len;
+    }
+
+    // Only the bare ACK that completes a handshake can answer a RESET-style
+    // challenge; skipping data segments keeps bulk uploads cheap.
+    __u32 ip_len = v6 ? sizeof(struct ipv6hdr) : sizeof(struct iphdr);
+    if (style == SC_STYLE_RESET && p->len != ip_len + tcp->doff * 4)
+        return SC_CONTINUE;
+    if (!sc_check_cookie(ip, tcp, v6, style)) {
+        sc_count(v6, SC_EV_INVALID);
+        return SC_CONTINUE;
+    }
+    if (v6)
+        bpf_map_update_elem(&syncookie_verified_v6, p->src, &now, BPF_ANY);
+    else
+        bpf_map_update_elem(&syncookie_verified_v4, &p->src[0], &now, BPF_ANY);
+    sc_count(v6, SC_EV_VALID);
+    if (style == SC_STYLE_OOS)
+        return SC_DROP;
+    // The server never saw this connection.
+    sc_reply(eth, ip, tcp, v6, bpf_ntohl(tcp->ack_seq), 0, SC_TCP_RST);
+    return reply_len;
+}
+
+// Returns SC_CONTINUE, SC_DROP, or the length of the reply frame the caller
+// transmits (the caller trims the frame, which invalidates packet pointers).
+// simple: TCP directly follows a 20-byte IPv4 or a 40-byte IPv6 header and
+// the packet is not a fragment; only such SYNs can be answered. Global so
+// the verifier checks it once.
+__attribute__((noinline)) int scrub_syncookie(struct xdp_md *ctx, struct rule_pkt *p, __u32 l3_off,
+                                              int simple, int is_monitor) {
+    if (!scrub_syncookies || !ctx || !p)
+        return SC_CONTINUE;
+    __u8 flags = p->tcp_flags;
+    __u32 style = sc_cfg(CONFIG_KEY_SC_STYLE);
+    int syn = (flags & (SC_TCP_SYN | SC_TCP_ACK | SC_TCP_RST)) == SC_TCP_SYN;
+    int answer;
+    if (style == SC_STYLE_RESET)
+        answer = (flags & (SC_TCP_SYN | SC_TCP_ACK | SC_TCP_RST | SC_TCP_FIN)) == SC_TCP_ACK;
+    else
+        answer = (flags & (SC_TCP_SYN | SC_TCP_RST)) == SC_TCP_RST;
+    if (!syn && !answer)
+        return SC_CONTINUE;
+
+    __u32 family = p->v6 ? 1 : 0;
+    __u64 now = bpf_ktime_get_ns();
+    if (!sc_active(p, syn, now))
+        return SC_CONTINUE;
+    if (sc_verified(p, now)) {
+        if (syn)
+            sc_count(family, SC_EV_PASSED);
+        return SC_CONTINUE;
+    }
+    // Nothing was challenged in monitor mode, so there is no answer to check.
+    if (is_monitor) {
+        if (syn)
+            sc_count(family, SC_EV_DRY_RUN);
+        return SC_CONTINUE;
+    }
+    if (!simple) {
+        if (!syn)
+            return SC_CONTINUE;
+        sc_count(family, SC_EV_UNSUPPORTED);
+        return SC_DROP;
+    }
+
+    void *data = (void *)(long)ctx->data;
+    void *data_end = (void *)(long)ctx->data_end;
+    struct ethhdr *eth = data;
+    if ((void *)(eth + 1) > data_end)
+        return SC_CONTINUE;
+    __u64 off = l3_off;
+    asm volatile("%0 &= 0x1f" : "+r"(off));
+    if (p->v6) {
+        struct ipv6hdr *ip6 = data + off;
+        struct tcphdr *tcp = (void *)(ip6 + 1);
+        if ((void *)(tcp + 1) > data_end)
+            return SC_CONTINUE;
+        return sc_handle(p, eth, ip6, tcp, 1, off + sizeof(*ip6) + sizeof(*tcp), syn, style, now);
+    }
+    struct iphdr *ip = data + off;
+    struct tcphdr *tcp = (void *)(ip + 1);
+    if ((void *)(tcp + 1) > data_end)
+        return SC_CONTINUE;
+    return sc_handle(p, eth, ip, tcp, 0, off + sizeof(*ip) + sizeof(*tcp), syn, style, now);
+}
+
+// Challenges and RESET-style answers count as drops: the server never sees
+// them.
+static __always_inline int scrub_reply(struct xdp_md *ctx, struct rule_pkt *p, __u32 family, int len) {
+    scrub_fingerprint(p, 1);
+    scrub_verdict(ctx, SCRUB_VERDICT_DROP, family, XDP_TX);
+    long excess = (long)(ctx->data_end - ctx->data) - len;
+    // On failure the IP length still says where the reply ends.
+    if (excess > 0)
+        bpf_xdp_adjust_tail(ctx, -excess);
+    return XDP_TX;
+}
+
 static __always_inline int scrub_ipv4(struct xdp_md *ctx, struct ethhdr *eth, void *l3, void *data_end,
-                                      int tagged, int is_monitor) {
+                                      __u32 l3_off, int tagged, int is_monitor) {
     struct iphdr *ip = l3;
     if ((void *)(ip + 1) > data_end || ip->version != 4 || ip->ihl < 5)
         return scrub_malformed(ctx, SCRUB_FAMILY_V4, is_monitor);
@@ -2095,6 +2468,13 @@ static __always_inline int scrub_ipv4(struct xdp_md *ctx, struct ethhdr *eth, vo
              check_blocked_v4(ctx, saddr, now, is_monitor) == CHECK_DROP ||
              check_l4_v4(ctx, ip, data_end, saddr, now, is_monitor) == CHECK_DROP))
             return scrub_drop(ctx, &rp, SCRUB_FAMILY_V4, 1);
+        if (scrub_syncookies && rv != RULE_VERDICT_PASS && rp.has_tcp) {
+            int sc = scrub_syncookie(ctx, &rp, l3_off, ip->ihl == 5 && !rp.is_frag, is_monitor);
+            if (sc == SC_DROP)
+                return scrub_drop(ctx, &rp, SCRUB_FAMILY_V4, 1);
+            if (sc > 0)
+                return scrub_reply(ctx, &rp, SCRUB_FAMILY_V4, sc);
+        }
         scrub_hs_prepare_v4(&hs, ip, data_end, now);
         scrub_hs_close(&scrub_handshakes, &hs);
     }
@@ -2104,7 +2484,7 @@ static __always_inline int scrub_ipv4(struct xdp_md *ctx, struct ethhdr *eth, vo
 }
 
 static __always_inline int scrub_ipv6(struct xdp_md *ctx, struct ethhdr *eth, void *l3, void *data_end,
-                                      int tagged, int is_monitor) {
+                                      __u32 l3_off, int tagged, int is_monitor) {
     struct ipv6hdr *ip6 = l3;
     if ((void *)(ip6 + 1) > data_end || ip6->version != 6)
         return scrub_malformed(ctx, SCRUB_FAMILY_V6, is_monitor);
@@ -2152,6 +2532,14 @@ static __always_inline int scrub_ipv6(struct xdp_md *ctx, struct ethhdr *eth, vo
             if (check_l4_v6(ctx, l4_proto, l4_hdr, data_end, &saddr, now, is_monitor) == CHECK_DROP)
                 return scrub_drop(ctx, &rp, SCRUB_FAMILY_V6, 1);
         }
+        if (scrub_syncookies && rv != RULE_VERDICT_PASS && rp.has_tcp) {
+            int simple = l4_proto == IPPROTO_TCP && l4_hdr == (void *)(ip6 + 1);
+            int sc = scrub_syncookie(ctx, &rp, l3_off, simple, is_monitor);
+            if (sc == SC_DROP)
+                return scrub_drop(ctx, &rp, SCRUB_FAMILY_V6, 1);
+            if (sc > 0)
+                return scrub_reply(ctx, &rp, SCRUB_FAMILY_V6, sc);
+        }
         if (l4_proto == IPPROTO_TCP) {
             scrub_hs_prepare_v6(&hs, ip6, l4_hdr, data_end, now);
             scrub_hs_close(&scrub_handshakes_v6, &hs);
@@ -2177,7 +2565,7 @@ __attribute__((noinline)) int scrub_ipv4_entry(struct xdp_md *ctx, __u32 l3_off,
     // prove redundant, leaving the verifier an unbounded packet offset.
     __u64 off = l3_off;
     asm volatile("%0 &= 0x1f" : "+r"(off));
-    return scrub_ipv4(ctx, eth, data + off, data_end, tagged, is_monitor);
+    return scrub_ipv4(ctx, eth, data + off, data_end, off, tagged, is_monitor);
 }
 
 __attribute__((noinline)) int scrub_ipv6_entry(struct xdp_md *ctx, __u32 l3_off, int tagged, int is_monitor) {
@@ -2192,7 +2580,7 @@ __attribute__((noinline)) int scrub_ipv6_entry(struct xdp_md *ctx, __u32 l3_off,
     // prove redundant, leaving the verifier an unbounded packet offset.
     __u64 off = l3_off;
     asm volatile("%0 &= 0x1f" : "+r"(off));
-    return scrub_ipv6(ctx, eth, data + off, data_end, tagged, is_monitor);
+    return scrub_ipv6(ctx, eth, data + off, data_end, off, tagged, is_monitor);
 }
 
 SEC("xdp")

@@ -97,7 +97,8 @@ e2e-ebpf-test: proto bpf
 	sudo -E $(GO) test -tags e2e_ebpf -run TestKernelBlockEnforcement -v ./pkg/collector/...
 
 # Run the scrub-mode end-to-end test across three network namespaces. Requires
-# root, Linux 5.15+, curl, python3, ethtool and bpftool.
+# root, Linux 5.15+, curl, python3, ethtool and bpftool; the SYN cookie checks
+# need Linux 6.0+, and trafgen (netsniff-ng) for the spoofed-flood part.
 e2e-scrub-test: proto bpf
 	sudo -E ./scripts/xdp_scrub_test.sh
 

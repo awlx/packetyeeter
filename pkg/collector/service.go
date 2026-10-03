@@ -83,6 +83,13 @@ type Config struct {
 	FingerprintInterval time.Duration
 	// FingerprintTop is how many buckets per destination are sent.
 	FingerprintTop int
+
+	// SynCookies makes xdp_scrub answer SYNs from unverified sources with a
+	// SYN cookie instead of forwarding them (zero value: off).
+	SynCookies      ebpf.SynCookieMode
+	SynCookieStyle  ebpf.SynCookieStyle
+	SynCookieSynPPS uint32        // auto mode: per-destination SYNs/s that start challenges
+	SynCookieTTL    time.Duration // how long a source stays verified
 }
 
 // Collector is a thin relay layer that:
@@ -253,16 +260,15 @@ func New(cfg Config, logger *logrus.Logger) (*Collector, error) {
 func (c *Collector) Start(ctx context.Context) error {
 	c.ctx, c.cancel = context.WithCancel(ctx)
 
-	// PacketYeeter does not implement its own SYN cookie challenge/response:
-	// a transparent XDP-layer syncookie would require silently splicing the
-	// client's already-"established" connection into a fresh kernel-level
-	// handshake, which is not achievable without protocol-breaking hacks
-	// (the client would see an unexpected second SYN-ACK). SYN flood
-	// mitigation instead relies on the kernel's own, battle-tested
-	// implementation via net.ipv4.tcp_syncookies, combined with
-	// PacketYeeter's existing incomplete-handshake detection and
-	// blocked_ips enforcement to cut off flood traffic before it reaches
-	// the backend at all. Warn loudly if the sysctl looks disabled.
+	// Host mode has no SYN cookie challenge of its own: a transparent
+	// XDP-layer syncookie would require silently splicing the client's
+	// already-"established" connection into a fresh kernel-level handshake,
+	// which is not achievable without protocol-breaking hacks (the client
+	// would see an unexpected second SYN-ACK). It relies on the kernel's own
+	// implementation via net.ipv4.tcp_syncookies, combined with the
+	// incomplete-handshake detection and blocked_ips enforcement. Warn loudly
+	// if the sysctl looks disabled. Scrub nodes, which do not terminate TCP,
+	// can challenge sources instead (-scrub-syn-cookies).
 	scrub := c.Config.Mode == ebpf.ModeScrub
 	if scrub {
 		if err := c.preflightScrub(); err != nil {
@@ -281,6 +287,7 @@ func (c *Collector) Start(ctx context.Context) error {
 		XDPMode:      c.Config.XDPMode,
 		AllowGeneric: c.Config.AllowGeneric,
 		Fingerprints: scrub && c.Config.FingerprintInterval > 0,
+		SynCookies:   c.synCookiesEnabled(),
 	})
 	if err := c.Loader.Load(); err != nil {
 		return fmt.Errorf("failed to load eBPF: %w", err)
@@ -353,6 +360,18 @@ func (c *Collector) Start(ctx context.Context) error {
 		}
 		if err := c.syncLocalAddrs(); err != nil {
 			return fmt.Errorf("failed to populate local_addrs: %w", err)
+		}
+		if c.synCookiesEnabled() {
+			if err := c.Maps.SetSynCookies(c.synCookieConfig()); err != nil {
+				return fmt.Errorf("failed to configure -scrub-syn-cookies: %w", err)
+			}
+			c.Logger.WithFields(logrus.Fields{
+				"mode":    c.Config.SynCookies,
+				"style":   c.Config.SynCookieStyle,
+				"syn_pps": c.Config.SynCookieSynPPS,
+				"ttl":     c.Config.SynCookieTTL,
+				"dry_run": c.Config.DryRun,
+			}).Info("SYN cookie challenges enabled")
 		}
 		if c.Config.FingerprintInterval > 0 {
 			host, err := os.Hostname()
@@ -2084,13 +2103,24 @@ func (c *Collector) startCollectorMetricsServer() *http.Server {
 
 	mux := http.NewServeMux()
 	if c.Config.Mode == ebpf.ModeScrub {
-		registry.MustRegister(&scrubMetrics{
+		sm := &scrubMetrics{
 			stats:       c.Maps.ReadScrubStats,
 			ready:       c.scrubReady,
 			ruleMatches: c.Maps.RuleMatches,
 			ruleCounts:  c.rules.Counts,
 			logger:      c.Logger,
-		})
+		}
+		if c.synCookiesEnabled() {
+			sm.synCookies = c.Maps.ReadSynCookieStats
+			sm.verified = func() (int, int, error) {
+				now, err := monotonicNowNS()
+				if err != nil {
+					return 0, 0, err
+				}
+				return c.Maps.CountVerifiedSources(&c.mapWalker, now, c.Config.SynCookieTTL)
+			}
+		}
+		registry.MustRegister(sm)
 		if c.fingerprints != nil {
 			registry.MustRegister(&fingerprintOverflowMetric{read: c.Maps.FingerprintOverflow, logger: c.Logger})
 			registry.MustRegister(metrics.ScrubFingerprintBuckets)

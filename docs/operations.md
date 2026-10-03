@@ -579,6 +579,107 @@ ones keep counting, so the top buckets reflect the traffic shapes seen first in
 the interval. The destination and the per-destination totals of sent buckets
 remain useful; the source networks do not.
 
+### SYN cookies
+
+Without challenges a scrub node forwards every SYN that passes the per-source
+checks, so a spoofed-source SYN flood reaches the server whole: each spoofed
+source sends too little to trip a rate limit. `-scrub-syn-cookies` (default
+`off`, needs Linux 6.0+) makes the node verify that a source receives packets
+sent to its address before forwarding its SYNs.
+
+Replies bypass the node, so it cannot proxy the handshake. Instead, `xdp_scrub`
+answers a SYN from an unverified source itself with a SYN-ACK carrying a SYN
+cookie (the kernel's, via `bpf_tcp_raw_gen_syncookie_ipv4/ipv6`) and does not
+forward it. A spoofed source never sees that SYN-ACK. A real client answers
+it; the node checks the cookie, records the source as verified for
+`-scrub-syn-cookie-ttl` (default `10m`), and forwards the client's next SYN to
+the server as usual. The node keeps no per-connection state, only the
+verified sources.
+
+`-scrub-syn-cookie-style` selects how the client answers:
+
+- `oos` (default): the SYN-ACK acknowledges a sequence number the client never
+  sent. TCP requires a client in SYN-SENT to answer that with a RST whose
+  sequence number is the acknowledgment (RFC 9293, 3.10.7.3) and to keep
+  waiting for its own SYN to be answered. The node finds the cookie in that
+  RST, verifies the source and drops the RST; the client's SYN retransmission
+  then passes. Linux clients retransmit within a few milliseconds of such an
+  answer (connect took 4-5 ms instead of under 1 ms in the veth lab); macOS
+  and Windows retransmit after their initial SYN timeout, about 1 s (Windows:
+  1-3 s depending on version and `InitialRto`). Applications only see a slower
+  connect. A stateful firewall in front of the client that drops
+  out-of-window SYN-ACKs breaks this: the client never answers and every
+  retransmission is challenged again. Linux conntrack (tested on 7.0, also
+  with `ct state invalid drop`) lets them through.
+- `reset`: the SYN-ACK is valid, so the client completes the handshake and
+  its ACK carries the cookie. The server never saw that connection, so the
+  node answers the ACK with a RST: the application sees its first connection
+  fail (curl: "Couldn't connect to server") and has to reconnect; the
+  reconnect passes. Waiting for a SYN retransmission does not work in this
+  style, because the client considers itself connected and sends data, which
+  the server would reset anyway. Use `reset` only where `oos` challenges get
+  lost.
+
+`-scrub-syn-cookies` selects which destinations are challenged:
+
+- `on`: all of them.
+- `auto`: a destination receiving more than `-scrub-syn-cookie-syn-pps`
+  (default 10000) SYNs per second across all CPUs is challenged for 30 s,
+  extended while its rate stays above. As with `-scrub-slow-path-pps`, the
+  rate is split evenly over CPUs, so SYNs concentrated on one RX queue reach
+  their share sooner; RSS spreads a random-source flood evenly. Destinations
+  are hashed into 8192 slots, so an address sharing a slot with an attacked
+  one is challenged too. A flood spread thinly over many destinations
+  (carpet bombing) may stay below the threshold everywhere: use `on` for such
+  prefixes.
+
+What is challenged: plain SYNs to forwarded destinations, after runtime rules
+and the per-source checks. Allowlisted sources, sources matched by a `pass`
+rule and verified sources are never challenged. While challenges are active,
+SYNs the node cannot answer (IPv4 options, IPv6 extension headers,
+fragments) are dropped. No other segment is ever dropped by this feature:
+connections opened before challenges started keep working. In `oos` style
+every RST, in `reset` style every bare ACK, from an unverified source to a
+challenged destination is checked for a cookie; those without one are
+forwarded.
+
+Client-visible effects and caveats:
+
+- Once per source and TTL, a connect takes one extra round trip plus the
+  client's retransmission delay (`oos`), or fails once (`reset`).
+- TCP Fast Open: data in a challenged SYN is not delivered; the client sends
+  it again after the handshake.
+- Sources are verified by address: one verified client verifies its whole
+  NAT, and others can spoof a verified address until its TTL expires.
+- Challenges leave by XDP_TX: the SYN-ACK goes back out of the outside port
+  to the router the SYN came from, sourced from the protected address. The
+  edge must accept and route such packets from the scrub node (no uRPF or ACL
+  dropping them on that interface).
+- With several nodes behind ECMP, a client's answer and retransmitted SYN
+  share the 5-tuple of its first SYN and reach the same node; a connection on
+  another port may hash to another node and be challenged there again.
+- Cookies use the kernel's SYN cookie secret and expire after about two
+  minutes. The cookie's low bits encode the MSS, so a few neighbouring values
+  are also accepted for the same 4-tuple; guessing one blindly still takes
+  millions of tries per 4-tuple.
+- Challenged SYNs are not forwarded, so they never open incomplete-handshake
+  entries; the flood shows up in `packetyeeter_scrub_syncookie_total` and, as
+  drops, in fingerprints.
+
+Cost: SYNs and answer candidates take a few map lookups; a challenge rewrites
+the received frame in place. The verified-source maps preallocate 262,144
+entries per family (about 42 MiB together), plus 128 KiB per possible CPU for
+the auto-mode rates. With `-scrub-syn-cookies off` the verifier removes the
+code and the maps shrink to one entry.
+
+Rollout: run `-dry-run -scrub-syn-cookies auto` first. Nothing is answered or
+dropped; `packetyeeter_scrub_syncookie_total{event="dry_run"}` shows what
+would have been challenged, which helps choose `-scrub-syn-cookie-syn-pps`
+above normal peaks. Then enable it on one node.
+
+Labs on veth pairs: a veth only delivers XDP_TX frames promptly when its peer
+runs an XDP program; `make e2e-scrub-test` attaches one to the client side.
+
 ## Modern DDoS runbook
 
 Use this workflow when campaign metrics or logs indicate a possible L3/L4 DDoS.

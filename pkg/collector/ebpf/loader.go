@@ -8,11 +8,14 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"slices"
 
 	"PacketYeeter/pkg/nic"
 
 	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/asm"
+	"github.com/cilium/ebpf/features"
 	"github.com/cilium/ebpf/link"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
@@ -29,6 +32,7 @@ type LoaderConfig struct {
 	XDPMode      XDPMode
 	AllowGeneric bool // scrub mode only
 	Fingerprints bool // scrub mode only
+	SynCookies   bool // scrub mode only
 }
 
 type Loader struct {
@@ -107,6 +111,27 @@ func (l *Loader) Load() error {
 		}
 	}
 
+	// Disabled, the verifier prunes the cookie code and these maps stay
+	// unused; the verified-source LRUs alone preallocate tens of MiB.
+	if l.cfg.Mode == ModeScrub && l.cfg.SynCookies {
+		if err := checkSynCookieSupport(); err != nil {
+			return err
+		}
+		v, ok := spec.Variables["scrub_syncookies"]
+		if !ok {
+			return errors.New("BPF object has no scrub_syncookies variable")
+		}
+		if err := v.Set(uint32(1)); err != nil {
+			return fmt.Errorf("enable SYN cookies: %w", err)
+		}
+	} else {
+		for _, name := range []string{"syncookie_verified_v4", "syncookie_verified_v6", "syncookie_syn_rate", "syncookie_active"} {
+			if m, ok := spec.Maps[name]; ok {
+				m.MaxEntries = 1
+			}
+		}
+	}
+
 	l.coll, err = ebpf.NewCollection(spec)
 	if err != nil {
 		return fmt.Errorf("failed to create BPF collection: %v", err)
@@ -146,10 +171,31 @@ func (l *Loader) Load() error {
 		FingerprintsA:       l.coll.Maps["fingerprints_a"],
 		FingerprintsB:       l.coll.Maps["fingerprints_b"],
 		FPOverflow:          l.coll.Maps["fingerprint_overflow"],
+		SynCookieStats:      l.coll.Maps["syncookie_stats"],
+		SynCookieVerifiedV4: l.coll.Maps["syncookie_verified_v4"],
+		SynCookieVerifiedV6: l.coll.Maps["syncookie_verified_v6"],
 		RulesTrieSpecV4:     innerSpec(spec, "rules_v4"),
 		RulesTrieSpecV6:     innerSpec(spec, "rules_v6"),
 	}
 
+	return nil
+}
+
+// checkSynCookieSupport refuses SYN cookies on kernels that cannot generate
+// them in XDP, instead of loading a program whose challenges always fail.
+func checkSynCookieSupport() error {
+	for _, fn := range []asm.BuiltinFunc{
+		asm.FnTcpRawGenSyncookieIpv4, asm.FnTcpRawGenSyncookieIpv6,
+		asm.FnTcpRawCheckSyncookieIpv4, asm.FnTcpRawCheckSyncookieIpv6,
+	} {
+		if err := features.HaveProgramHelper(ebpf.XDP, fn); err != nil {
+			return fmt.Errorf("-scrub-syn-cookies needs Linux 6.0 or later (XDP helper %s unavailable): %w", fn, err)
+		}
+	}
+	// Without CONFIG_SYN_COOKIES the helpers exist but always fail.
+	if _, err := os.Stat("/proc/sys/net/ipv4/tcp_syncookies"); err != nil {
+		return fmt.Errorf("-scrub-syn-cookies needs a kernel built with CONFIG_SYN_COOKIES: %w", err)
+	}
 	return nil
 }
 

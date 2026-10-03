@@ -307,6 +307,10 @@ sudo ./packetyeeter-collector -i eth0 -analyzer-addr 127.0.0.1:9090
 | `-scrub-slow-path-pps` | `100000` | Scrub mode: max packets/s handed to the kernel slow path across all CPUs; excess is dropped (counted in monitor mode). `0` = unlimited. |
 | `-fingerprint-interval` | `10s` | Scrub mode: how often per-destination traffic fingerprints are sent to the analyzer. `0` turns fingerprinting off, including its per-packet XDP work. |
 | `-fingerprint-top` | `32` | Scrub mode: fingerprint buckets sent per destination and interval, busiest first (for at most 256 destinations). |
+| `-scrub-syn-cookies` | `off` | Scrub mode: answer SYNs from unverified sources with a SYN cookie instead of forwarding them; `auto` only for destinations over `-scrub-syn-cookie-syn-pps`, `on` for all. Linux 6.0+. See [SYN cookies](docs/operations.md#syn-cookies). |
+| `-scrub-syn-cookie-style` | `oos` | Scrub mode: `oos` (out-of-sequence SYN-ACK; the client's RST verifies it and its SYN retransmission passes) or `reset` (valid SYN-ACK; the client's ACK verifies it, the node resets that first connection). |
+| `-scrub-syn-cookie-syn-pps` | `10000` | Scrub mode: SYNs per second to one destination, across all CPUs, that start challenges in `auto` (held 30 s). |
+| `-scrub-syn-cookie-ttl` | `10m` | Scrub mode: how long a source that answered a challenge stays verified. |
 | `-analyzer-addr` | `127.0.0.1:9090` | Analyzer gRPC address to connect to. |
 | `-analyzer-tls-ca` | `""` | PEM CA bundle that verifies the analyzer's certificate. Enables TLS to the analyzer; unset = plaintext. See [TLS and mTLS](docs/operations.md#tls-and-mtls). |
 | `-analyzer-tls-cert` | `""` | PEM client certificate for mTLS. Requires `-analyzer-tls-key` and `-analyzer-tls-ca`. |

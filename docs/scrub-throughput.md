@@ -157,7 +157,9 @@ Enabling the stats adds two clock reads per packet, so pps figures from such
 a run are slightly lower. Scenario `d` (one matching `DROP` rule) measures the
 drop path. `COLLECTOR_ARGS` passes extra collector flags, e.g.
 `COLLECTOR_ARGS="-fingerprint-interval 0"` to measure the cost of
-fingerprints.
+fingerprints, or `COLLECTOR_ARGS="-scrub-syn-cookies on"` to answer the SYN
+floods with cookie challenges (the `chal pps` column; the challenged SYNs
+also show up as `drop pps`).
 
 On a shared or busy host, single runs scatter widely: VM vCPUs can land on
 efficiency cores. Compare medians of several runs, and A/B the two versions

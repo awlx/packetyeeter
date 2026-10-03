@@ -353,6 +353,14 @@ var (
 	ScrubReadyDesc = prometheus.NewDesc("packetyeeter_scrub_ready",
 		"1 when /readyz reports the scrub node ready, else 0",
 		nil, nil)
+	ScrubSynCookieDesc = prometheus.NewDesc("packetyeeter_scrub_syncookie_total",
+		"SYN cookie events by family: challenge (SYN-ACK sent), dry_run (would challenge), valid (source verified), "+
+			"invalid (answer without a valid cookie, forwarded), passed (SYN from a verified source), "+
+			"unsupported (unanswerable SYN dropped), error (no cookie, SYN forwarded), activated (auto mode started challenging a destination)",
+		[]string{"family", "event"}, nil)
+	ScrubSynCookieVerifiedDesc = prometheus.NewDesc("packetyeeter_scrub_syncookie_verified_sources",
+		"Sources whose SYN cookie verification has not expired, by family",
+		[]string{"family"}, nil)
 	ScrubFingerprintOverflowDesc = prometheus.NewDesc("packetyeeter_scrub_fingerprint_overflow_total",
 		"Packets not fingerprinted because the active fingerprint map was full",
 		nil, nil)
