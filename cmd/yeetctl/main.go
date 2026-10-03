@@ -50,9 +50,14 @@ func main() {
 		fmt.Println("  reputation - List full reputation table")
 		fmt.Println("  ai         - Show AI scraper detections summary")
 		fmt.Println("  bots       - Show bot categorization summary")
+		fmt.Println("  nic-check [-role outside|inside] <iface>")
+		fmt.Println("             - Check a NIC for scrub mode and predict its throughput (local, read-only)")
 		os.Exit(1)
 	}
 	Command = args[0]
+	if Command == "nic-check" {
+		os.Exit(nicCheck(args[1:]))
+	}
 
 	conn, err := net.Dial("unix", SocketPath)
 	if err != nil {

@@ -467,6 +467,13 @@ state is exposed over the management API.
 
 For an interactive live view, run `yeetexplorer` (a terminal UI dashboard).
 
+`yeetctl nic-check [-role outside|inside] <iface>` runs locally, without the
+collector socket, and only reads state. It reports a NIC's driver, firmware,
+XDP attach mode and driver XDP features, queues, IRQ affinity, rings and
+offloads; warns about settings that make scrub mode slow or lossy; and
+predicts `xdp_scrub` throughput for the driver. See
+[docs/scrub-hardware.md](docs/scrub-hardware.md).
+
 ## Running as a Service (Systemd)
 
 PacketYeeter ships two systemd units — one per daemon. `make install-services`
