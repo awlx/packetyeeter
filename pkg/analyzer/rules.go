@@ -123,7 +123,7 @@ func (s *ruleStore) desired(now time.Time, enforcing bool) map[string]*apiv1.Rul
 
 // PushRules replaces one scope's rules and sends the resulting changes to
 // every scrub collector. It is off unless enabled because the analyzer's
-// gRPC listener is unauthenticated, and rules can drop traffic.
+// gRPC listener is unauthenticated without mTLS, and rules can drop traffic.
 func (a *Analyzer) PushRules(ctx context.Context, rs *apiv1.RuleSet) (*apiv1.PushRulesAck, error) {
 	if !a.Config.EnableRuleAPI {
 		return nil, status.Error(codes.PermissionDenied, "rule API disabled; start the analyzer with -enable-rule-api")

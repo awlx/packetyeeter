@@ -41,7 +41,7 @@ jobs:
         run: make portable-test
 
       - name: Run portable tests with race detector
-        run: go test -race ./pkg/analyzer/... ./pkg/ml/... ./pkg/integration_test ./pkg/collector ./cmd/yeetctl
+        run: go test -race ./pkg/analyzer/... ./pkg/ml/... ./pkg/integration_test ./pkg/collector ./pkg/grpctls/... ./cmd/yeetctl
 
       - name: Vet
         run: go vet ./...

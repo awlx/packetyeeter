@@ -2,6 +2,7 @@ package analyzer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -19,6 +20,7 @@ import (
 	"github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
@@ -34,6 +36,7 @@ import (
 	"PacketYeeter/pkg/analyzer/sustained"
 	"PacketYeeter/pkg/analyzer/threatintel"
 	"PacketYeeter/pkg/geoip"
+	"PacketYeeter/pkg/grpctls"
 	"PacketYeeter/pkg/metrics"
 	"PacketYeeter/pkg/ml"
 	"PacketYeeter/pkg/patterns"
@@ -92,9 +95,22 @@ type Config struct {
 	EnableWatchAPI               bool     // Serve WatchDecisions (off by default)
 	WatchMaxSubscribers          int      // Max concurrent WatchDecisions subscribers (default 16)
 	WatchBufferSize              int      // Per-subscriber decision buffer, drop-oldest (default 10000)
-	EnableRuleAPI                bool     // Accept PushRules; off because the gRPC listener is unauthenticated
+	EnableRuleAPI                bool     // Accept PushRules; off because the gRPC listener is unauthenticated without mTLS
 	RuleStateDir                 string   // Persist pushed rules here across restarts; empty disables
 	Sustained                    sustained.Config
+
+	// TLS on the gRPC listener; zero value is plaintext.
+	TLS grpctls.ServerConfig
+	// ControlClientNames, when set, restricts ControlMethods to clients whose
+	// verified certificate has one of these DNS SANs or CommonNames.
+	// Requires TLS.ClientCAFile.
+	ControlClientNames []string
+}
+
+// ControlMethods are the control-plane RPCs gated by ControlClientNames.
+var ControlMethods = []string{
+	apiv1.AnalyzerService_PushRules_FullMethodName,
+	apiv1.AnalyzerService_WatchDecisions_FullMethodName,
 }
 
 // Analyzer is the AI/ML analysis daemon that receives signals from collectors
@@ -253,8 +269,10 @@ type Analyzer struct {
 	collectorSeq atomic.Uint64
 
 	// gRPC server
-	grpcServer *grpc.Server
-	listener   net.Listener
+	grpcServer   *grpc.Server
+	listener     net.Listener
+	grpcCreds    credentials.TransportCredentials // nil = plaintext
+	controlAuthz *grpctls.MethodAuthorizer
 
 	// Metrics server
 	metricsServer *http.Server
@@ -314,6 +332,15 @@ func isAggregateSnapshot(sig *apiv1.Signal) bool {
 }
 
 func New(cfg Config) (*Analyzer, error) {
+	// TLS first: a bad flag combination or unreadable file should fail
+	// before the slower subsystems load.
+	if len(cfg.ControlClientNames) > 0 && !cfg.TLS.MutualTLS() {
+		return nil, errors.New("-control-client-names requires -tls-client-ca (names come from verified client certificates)")
+	}
+	grpcCreds, err := grpctls.NewServerCredentials(cfg.TLS, logrus.StandardLogger())
+	if err != nil {
+		return nil, fmt.Errorf("gRPC TLS: %w", err)
+	}
 	if cfg.AIConfidenceThreshold == 0 {
 		cfg.AIConfidenceThreshold = defaultAIConfidenceThreshold
 	}
@@ -340,6 +367,7 @@ func New(cfg Config) (*Analyzer, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	a := &Analyzer{
 		Config:                 cfg,
+		grpcCreds:              grpcCreds,
 		collectors:             make(map[string]*collectorStream),
 		rules:                  ruleStore{scopes: map[string]map[string]*apiv1.Rule{}},
 		ipRateLimiters:         make(map[string]*ratelimit.TokenBucket),
@@ -362,6 +390,9 @@ func New(cfg Config) (*Analyzer, error) {
 		a.Config.WatchBufferSize = a.watch.bufferSize
 	}
 	a.ReputationHelper = NewReputationHelper(nil) // Will be set during Start()
+	if len(cfg.ControlClientNames) > 0 {
+		a.controlAuthz = grpctls.NewMethodAuthorizer(ControlMethods, cfg.ControlClientNames, logrus.StandardLogger())
+	}
 	return a, nil
 }
 
@@ -583,14 +614,36 @@ func (a *Analyzer) Start() error {
 		PermitWithoutStream: true,
 	}))
 
+	switch {
+	case a.grpcCreds == nil:
+		logrus.WithField("addr", a.Config.ListenAddr).Warn("gRPC listener is plaintext and unauthenticated; set -tls-cert/-tls-key and -tls-client-ca for mTLS")
+	case a.Config.TLS.MutualTLS():
+		logrus.WithFields(logrus.Fields{"addr": a.Config.ListenAddr, "control_client_names": a.Config.ControlClientNames}).Info("gRPC listener requires mTLS")
+	default:
+		logrus.WithField("addr", a.Config.ListenAddr).Warn("gRPC listener uses TLS without client certificates; any client can connect")
+	}
+	if a.grpcCreds != nil {
+		opts = append(opts, grpc.Creds(a.grpcCreds))
+	}
+	if a.controlAuthz != nil {
+		opts = append(opts,
+			grpc.ChainUnaryInterceptor(a.controlAuthz.UnaryInterceptor()),
+			grpc.ChainStreamInterceptor(a.controlAuthz.StreamInterceptor()))
+	}
+
 	a.grpcServer = grpc.NewServer(opts...)
 	apiv1.RegisterAnalyzerServiceServer(a.grpcServer, a)
 	if a.watch != nil {
-		logrus.WithFields(logrus.Fields{
+		log := logrus.WithFields(logrus.Fields{
 			"addr":            a.Config.ListenAddr,
 			"max_subscribers": a.watch.maxSubscribers,
 			"buffer":          a.watch.bufferSize,
-		}).Warn("WatchDecisions enabled on the gRPC listener, which is unauthenticated: restrict it to trusted networks")
+		})
+		if len(a.Config.ControlClientNames) > 0 {
+			log.Info("WatchDecisions enabled for -control-client-names")
+		} else {
+			log.Warn("WatchDecisions enabled for any client that can connect; restrict it with mTLS (-tls-client-ca) and -control-client-names")
+		}
 	}
 
 	// Start background tasks

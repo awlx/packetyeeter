@@ -34,12 +34,19 @@ GEOIP_ASN_PATH=/var/lib/GeoIP/GeoLite2-ASN.mmdb
 # above -reputation-threshold while bounding runaway penalty accumulation.
 # EXTRA_ARGS=-reputation-threshold 75 -reputation-ip-score-cap 200 -reputation-ja4-score-cap 200 -reputation-asn-score-cap 500
 
+# TLS / mTLS on the gRPC listener (off by default = plaintext). -tls-client-ca
+# requires client certificates; -control-client-names limits PushRules and
+# WatchDecisions to those certificate names. Files are re-read when they change.
+# See docs/operations.md#tls-and-mtls.
+# EXTRA_ARGS=-tls-cert /etc/packetyeeter/tls/analyzer.crt -tls-key /etc/packetyeeter/tls/analyzer.key -tls-client-ca /etc/packetyeeter/tls/ca.crt -control-client-names controller.example.net
+
 # Enable verbose logging
 # EXTRA_ARGS=-v
 #
 # Runtime rules for scrub collectors (PushRules). Off by default: the gRPC
-# listener is unauthenticated, so firewall -listen-addr to trusted controllers
-# and collectors before enabling it.
+# listener is unauthenticated unless mTLS (-tls-client-ca) is configured, so
+# restrict PushRules with -control-client-names (see above) or firewall
+# -listen-addr to trusted controllers and collectors before enabling it.
 # EXTRA_ARGS=-enable-rule-api
 #
 # Keep pushed rules across analyzer restarts (otherwise a restart clears the
@@ -71,6 +78,8 @@ GEOIP_ASN_PATH=/var/lib/GeoIP/GeoLite2-ASN.mmdb
 
 # Decision stream for a controller (scrub mode): WatchDecisions streams every
 # command sent to collectors, campaign observations and scrub fingerprints.
-# Off by default. The gRPC listener is unauthenticated, so enable it only when
-# LISTEN_ADDR is reachable from trusted networks alone.
+# Off by default. The gRPC listener is unauthenticated unless mTLS
+# (-tls-client-ca) is configured, so restrict WatchDecisions with
+# -control-client-names (see TLS above) or enable it only when LISTEN_ADDR is
+# reachable from trusted networks alone.
 # EXTRA_ARGS=-enable-watch-api -watch-max-subscribers 16 -watch-buffer-size 10000
