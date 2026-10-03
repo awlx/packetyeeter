@@ -5,8 +5,10 @@ package scrubrules
 
 import (
 	"cmp"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
 	"net/netip"
 	"slices"
 	"time"
@@ -173,7 +175,8 @@ func Parse(pr *apiv1.Rule, now time.Time) (*Rule, error) {
 	if len(pr.GetSrcPrefixes()) > ebpf.RuleMaxSources {
 		return fail("%d src_prefixes, at most %d", len(pr.GetSrcPrefixes()), ebpf.RuleMaxSources)
 	}
-	for i, s := range pr.GetSrcPrefixes() {
+	srcs := make([]netip.Prefix, 0, len(pr.GetSrcPrefixes()))
+	for _, s := range pr.GetSrcPrefixes() {
 		src, err := netip.ParsePrefix(s)
 		if err != nil {
 			return fail("src_prefixes: %v", err)
@@ -181,23 +184,66 @@ func Parse(pr *apiv1.Rule, now time.Time) (*Rule, error) {
 		if src.Addr().Is4() != v4 {
 			return fail("src_prefixes %s is not the same address family as dst_prefix", s)
 		}
-		b.Sources[i] = rulePrefix(src.Masked())
+		srcs = append(srcs, src.Masked())
 	}
-	b.NSources = uint8(len(pr.GetSrcPrefixes()))
+	encodeSources(b, srcs, v4)
 	return r, nil
+}
+
+// encodeSources sorts IPv4 sources and records their span and whether they
+// share one length, which lets XDP reject most packets with two compares and
+// binary-search the rest.
+func encodeSources(b *ebpf.ScrubRule, srcs []netip.Prefix, v4 bool) {
+	if v4 {
+		slices.SortFunc(srcs, func(x, y netip.Prefix) int { return x.Addr().Compare(y.Addr()) })
+		srcs = slices.Compact(srcs)
+	}
+	for i, p := range srcs {
+		b.Sources[i] = rulePrefix(p)
+	}
+	b.NSources = uint8(len(srcs))
+	if !v4 || len(srcs) == 0 {
+		return
+	}
+	b.SrcBsearch = 1
+	b.SrcLo = math.MaxUint32
+	for _, p := range srcs {
+		if p.Bits() != srcs[0].Bits() {
+			b.SrcBsearch = 0
+		}
+		start := binary.BigEndian.Uint32(p.Addr().AsSlice())
+		end := start | uint32(math.MaxUint32>>p.Bits())
+		if p.Bits() == 0 {
+			end = math.MaxUint32
+		}
+		b.SrcLo = min(b.SrcLo, start)
+		b.SrcHi = max(b.SrcHi, end)
+	}
 }
 
 func portRanges(dst []ebpf.RuleRange, in []*apiv1.PortRange) (uint8, error) {
 	if len(in) > len(dst) {
 		return 0, fmt.Errorf("%d ranges, at most %d", len(in), len(dst))
 	}
-	for i, pr := range in {
+	ranges := make([]ebpf.RuleRange, 0, len(in))
+	for _, pr := range in {
 		if pr.GetFrom() > pr.GetTo() || pr.GetTo() > 65535 {
 			return 0, fmt.Errorf("%d-%d is not a valid port range", pr.GetFrom(), pr.GetTo())
 		}
-		dst[i] = ebpf.RuleRange{From: uint16(pr.GetFrom()), To: uint16(pr.GetTo())}
+		ranges = append(ranges, ebpf.RuleRange{From: uint16(pr.GetFrom()), To: uint16(pr.GetTo())})
 	}
-	return uint8(len(in)), nil
+	// XDP binary-searches the ranges, so they must be sorted and disjoint.
+	slices.SortFunc(ranges, func(x, y ebpf.RuleRange) int { return cmp.Compare(x.From, y.From) })
+	n := 0
+	for _, r := range ranges {
+		if n > 0 && uint32(r.From) <= uint32(dst[n-1].To)+1 {
+			dst[n-1].To = max(dst[n-1].To, r.To)
+			continue
+		}
+		dst[n] = r
+		n++
+	}
+	return uint8(n), nil
 }
 
 func rulePrefix(p netip.Prefix) ebpf.RulePrefix {

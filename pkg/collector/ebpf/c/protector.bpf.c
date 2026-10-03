@@ -1591,6 +1591,13 @@ struct scrub_rule {
     __u8  fragment;
     __u8  tcp_flags_mask;
     __u8  tcp_flags_value;
+    // IPv4 only: srcs are sorted, src_lo/src_hi (host byte order) span them,
+    // and src_bsearch says they all share one prefix length. Userspace also
+    // sorts and merges the port ranges, so both can be binary-searched.
+    __u8  src_bsearch;
+    __u8  pad[3];
+    __u32 src_lo;
+    __u32 src_hi;
 };
 
 struct rule_list {
@@ -1726,13 +1733,53 @@ static __always_inline void rule_pkt_v6(struct rule_pkt *p, struct ipv6hdr *ip6,
     rule_pkt_ports(p, l4_proto, l4_hdr, data_end);
 }
 
+// Rule matching runs for every rule covering a destination on every packet,
+// so the per-rule loops are binary searches over data userspace sorted.
 static __always_inline int rule_range_match(struct rule_range *ranges, __u8 n, __u16 v) {
     if (n == 0)
         return 1;
-    for (int i = 0; i < RULE_MAX_RANGES; i++) {
-        if (i >= n)
+    __u32 lo = 0, hi = n;
+    #pragma unroll
+    for (int i = 0; i < 3; i++) {
+        if (lo + 1 >= hi)
             break;
-        if (v >= ranges[i].from && v <= ranges[i].to)
+        __u32 mid = (lo + hi) / 2;
+        if (ranges[mid & (RULE_MAX_RANGES - 1)].from <= v)
+            lo = mid;
+        else
+            hi = mid;
+    }
+    struct rule_range *r = &ranges[lo & (RULE_MAX_RANGES - 1)];
+    return v >= r->from && v <= r->to;
+}
+
+static __always_inline int rule_src_match_v4(struct scrub_rule *r, struct rule_pkt *p) {
+    __u32 src = bpf_ntohl(p->src[0]);
+    if (src < r->src_lo || src > r->src_hi)
+        return 0;
+    if (r->src_bsearch) {
+        __u32 masked = src & bpf_ntohl(r->srcs[0].mask[0]);
+        __u32 lo = 0, hi = r->n_srcs;
+        #pragma unroll
+        for (int i = 0; i < 4; i++) {
+            if (lo >= hi)
+                break;
+            __u32 mid = (lo + hi) / 2;
+            __u32 addr = bpf_ntohl(r->srcs[mid & (RULE_MAX_SRCS - 1)].addr[0]);
+            if (addr == masked)
+                return 1;
+            if (addr < masked)
+                lo = mid + 1;
+            else
+                hi = mid;
+        }
+        return 0;
+    }
+    for (int i = 0; i < RULE_MAX_SRCS; i++) {
+        if (i >= r->n_srcs)
+            break;
+        struct rule_prefix *pf = &r->srcs[i];
+        if ((p->src[0] & pf->mask[0]) == pf->addr[0])
             return 1;
     }
     return 0;
@@ -1741,6 +1788,8 @@ static __always_inline int rule_range_match(struct rule_range *ranges, __u8 n, _
 static __always_inline int rule_src_match(struct scrub_rule *r, struct rule_pkt *p) {
     if (r->n_srcs == 0)
         return 1;
+    if (!p->v6)
+        return rule_src_match_v4(r, p);
     for (int i = 0; i < RULE_MAX_SRCS; i++) {
         if (i >= r->n_srcs)
             break;
@@ -1754,11 +1803,7 @@ static __always_inline int rule_src_match(struct scrub_rule *r, struct rule_pkt 
     return 0;
 }
 
-// Global for the same reason as scrub_match_rules: verified once rather than
-// per loop iteration.
-__attribute__((noinline)) int rule_match(struct scrub_rule *r, struct rule_pkt *p) {
-    if (!r || !p)
-        return 0;
+static __always_inline int rule_match(struct scrub_rule *r, struct rule_pkt *p) {
     if (!r->any_proto && !(r->proto_bits[(p->proto >> 6) & 3] & (1ULL << (p->proto & 63))))
         return 0;
     if (r->fragment == RULE_FRAG_ONLY && !p->is_frag)

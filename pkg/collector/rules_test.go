@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"math"
 	"net/netip"
 	"reflect"
 	"slices"
@@ -710,6 +711,102 @@ func TestRateWindow(t *testing.T) {
 				t.Fatal("zero budget")
 			}
 		})
+	}
+}
+
+func TestRuleEncodingForBinarySearch(t *testing.T) {
+	pr := testRule("r", "192.0.2.0/24", 1, func(r *apiv1.Rule) {
+		r.Protocols = []uint32{6}
+		r.DstPorts = []*apiv1.PortRange{{From: 500, To: 600}, {From: 80, To: 80}, {From: 550, To: 700}, {From: 81, To: 90}, {From: 1000, To: 1000}}
+		r.SrcPrefixes = []string{"10.0.0.9/32", "10.0.0.3/32", "10.0.0.3/32", "10.0.0.7/32"}
+	})
+	r, err := scrubrules.Parse(pr, ruleT0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := r.Body
+	wantPorts := []ebpf.RuleRange{{From: 80, To: 90}, {From: 500, To: 700}, {From: 1000, To: 1000}}
+	if got := b.DstPorts[:b.NDstPorts]; !slices.Equal(got, wantPorts) {
+		t.Errorf("dst ports = %v, want sorted and merged %v", got, wantPorts)
+	}
+	if b.NSources != 3 || b.SrcBsearch != 1 {
+		t.Fatalf("sources = %d, bsearch = %d; want 3 deduplicated same-length sources", b.NSources, b.SrcBsearch)
+	}
+	for i, want := range []byte{3, 7, 9} {
+		if got := b.Sources[i].Addr[3]; got != want {
+			t.Errorf("source %d = .%d, want .%d", i, got, want)
+		}
+	}
+	if b.SrcLo != 0x0a000003 || b.SrcHi != 0x0a000009 {
+		t.Errorf("span = %08x-%08x, want 0a000003-0a000009", b.SrcLo, b.SrcHi)
+	}
+
+	mixed, err := scrubrules.Parse(testRule("m", "192.0.2.0/24", 1, func(r *apiv1.Rule) {
+		r.SrcPrefixes = []string{"10.0.1.0/24", "10.0.0.8/29", "0.0.0.0/0"}
+	}), ruleT0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mb := mixed.Body; mb.SrcBsearch != 0 || mb.SrcLo != 0 || mb.SrcHi != math.MaxUint32 {
+		t.Errorf("mixed lengths: bsearch=%d span=%08x-%08x, want linear walk over the whole space", mb.SrcBsearch, mb.SrcLo, mb.SrcHi)
+	}
+
+	v6, err := scrubrules.Parse(testRule("v6", "2001:db8::/32", 1, func(r *apiv1.Rule) {
+		r.SrcPrefixes = []string{"2001:db8:1::/48"}
+	}), ruleT0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v6.Body.SrcBsearch != 0 {
+		t.Error("IPv6 sources must use the linear walk")
+	}
+}
+
+func TestPortRangeMergeEdges(t *testing.T) {
+	pr := func(a, b uint32) *apiv1.PortRange { return &apiv1.PortRange{From: a, To: b} }
+	for _, tc := range []struct {
+		name string
+		in   []*apiv1.PortRange
+		want []ebpf.RuleRange
+	}{
+		{"empty", nil, []ebpf.RuleRange{}},
+		{"one", []*apiv1.PortRange{pr(53, 53)}, []ebpf.RuleRange{{From: 53, To: 53}}},
+		{"adjacent at the top", []*apiv1.PortRange{pr(65535, 65535), pr(65534, 65534)}, []ebpf.RuleRange{{From: 65534, To: 65535}}},
+		{"contained", []*apiv1.PortRange{pr(0, 65535), pr(80, 80)}, []ebpf.RuleRange{{From: 0, To: 65535}}},
+		{"gap of one stays split", []*apiv1.PortRange{pr(10, 10), pr(12, 12)}, []ebpf.RuleRange{{From: 10, To: 10}, {From: 12, To: 12}}},
+		{"eight disjoint", []*apiv1.PortRange{pr(70, 70), pr(10, 10), pr(30, 30), pr(50, 50), pr(20, 20), pr(60, 60), pr(40, 40), pr(80, 65535)},
+			[]ebpf.RuleRange{{From: 10, To: 10}, {From: 20, To: 20}, {From: 30, To: 30}, {From: 40, To: 40}, {From: 50, To: 50}, {From: 60, To: 60}, {From: 70, To: 70}, {From: 80, To: 65535}}},
+	} {
+		r, err := scrubrules.Parse(testRule("p", "192.0.2.0/24", 1, func(r *apiv1.Rule) {
+			r.Protocols = []uint32{6}
+			r.DstPorts = tc.in
+		}), ruleT0)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if got := r.Body.DstPorts[:r.Body.NDstPorts]; !slices.Equal(got, tc.want) {
+			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestSourceSpanEdges(t *testing.T) {
+	for _, tc := range []struct {
+		srcs   []string
+		lo, hi uint32
+	}{
+		{[]string{"0.0.0.0/0"}, 0, math.MaxUint32},
+		{[]string{"255.255.255.255/32"}, math.MaxUint32, math.MaxUint32},
+		{[]string{"10.0.0.1/32"}, 0x0a000001, 0x0a000001},
+		{[]string{"10.0.0.0/8", "9.255.255.255/32"}, 0x09ffffff, 0x0affffff},
+	} {
+		r, err := scrubrules.Parse(testRule("s", "192.0.2.0/24", 1, func(r *apiv1.Rule) { r.SrcPrefixes = tc.srcs }), ruleT0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if b := r.Body; b.SrcLo != tc.lo || b.SrcHi != tc.hi {
+			t.Errorf("%v: span %08x-%08x, want %08x-%08x", tc.srcs, b.SrcLo, b.SrcHi, tc.lo, tc.hi)
+		}
 	}
 }
 
