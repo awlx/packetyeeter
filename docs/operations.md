@@ -218,10 +218,22 @@ then remove `-dry-run`. Scrub nodes do not run SPOE, JA4H or egress accounting.
 Incomplete-handshake signals work on scrub nodes too, tracked in XDP: replies
 bypass the node, so a handshake counts as complete when the client's first ACK
 arrives rather than after the server's SYN-ACK. Only SYNs the node actually
-forwarded in XDP are tracked. Signals reach the analyzer after
+forwarded in XDP are tracked; any ACK without SYN or RST on the same 4-tuple
+closes the entry, even one the kernel forwards. The node cannot check that ACK
+against the server's sequence number, so a sender that follows each SYN with a
+blind ACK avoids these signals; the per-source rate limits and blocks still
+apply. Signals reach the analyzer after
 `-handshake-timeout` (default `3s`) and use the same `-ddos-min-incomplete`
 threshold as host mode. Handshake RTT (JA4L) needs the SYN-ACK and is not
 available in scrub mode.
+
+Scrub nodes keep these entries in `scrub_handshakes(_v6)` (500k entries per
+family; `bpftool` truncates both names to `scrub_handshake`) with per-CPU LRU
+lists. The kernel gives every possible CPU (`/sys/devices/system/cpu/possible`)
+an equal share, and under a random-source SYN flood each CPU evicts its own
+oldest entries: a CPU taking most of the flood, or a host with far fewer online
+than possible CPUs, evicts sooner than the total size suggests. A SYN evicted
+before its ACK is never reported.
 
 A connection's SYN and first ACK must cross the same scrub node. With several
 nodes, keep ECMP hashing on the 5-tuple, and expect a short burst of
