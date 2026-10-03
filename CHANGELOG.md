@@ -16,6 +16,17 @@
   JA4T event, so SYNs past the budget skip the event work. Handshake tracking
   still runs for every SYN.
 - No verdict changes; enforcement and telemetry are unaffected.
+## 2026-10-02 - Scrub mode handshake map per-CPU LRU
+
+- `xdp_scrub` tracks handshakes in its own `scrub_handshakes(_v6)` maps, LRU
+  hashes with per-CPU LRU lists (`BPF_F_NO_COMMON_LRU`), instead of sharing
+  `pending_handshakes(_v6)` with host mode. A random-source SYN flood no longer
+  contends on one LRU lock across CPUs. Host mode is unchanged, and each mode
+  only creates its own pair of maps.
+- The 500k-entry capacity is now split evenly across the kernel's possible
+  CPUs for eviction, so under a flood hitting few RX queues, or on a host with
+  far fewer online than possible CPUs, old entries are evicted earlier.
+
 ## 2026-10-02 - Scrub mode handshake tracking fixes
 
 - An ACK the kernel forwards (slow path, e.g. right after a neighbour
