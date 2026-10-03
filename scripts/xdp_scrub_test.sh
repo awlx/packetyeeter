@@ -248,6 +248,14 @@ ip netns exec "$NS_SCR" "$SINK_BIN" 127.0.0.1:59999 "$CMD_FIFO" >"$SINK_LOG" 2>&
 SINK_PID=$!
 sleep 0.5
 start_collector -analyzer-addr 127.0.0.1:59999 -handshake-timeout 1s
+# Kernel map names stop at 15 characters, so both families share this name.
+hs_flags=$(for id in $(scrub_map_id scrub_handshake); do
+  bpftool -j map show id "$id" | python3 -c 'import json, sys; print(json.load(sys.stdin)["flags"])'
+done | sort | uniq -c | awk '{print $1 "x" $2}')
+# BPF_F_NO_COMMON_LRU is 2.
+[[ "$hs_flags" == 2x2 && -z "$(scrub_map_id pending_handsha)" ]] \
+  && pass "xdp_scrub tracks handshakes in its own per-CPU LRU maps" \
+  || bad "scrub handshake maps: flags ${hs_flags:-none}, host maps: $(scrub_map_id pending_handsha | xargs)"
 # Resolve the inside neighbours first: a SYN that takes the kernel path is not
 # tracked, which would make the check below vacuous. Bind the sources, since
 # Linux would otherwise pick the newest address (HS6).
