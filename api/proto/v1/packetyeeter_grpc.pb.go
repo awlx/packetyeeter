@@ -29,6 +29,7 @@ const (
 	AnalyzerService_GetReputation_FullMethodName   = "/packetyeeter.v1.AnalyzerService/GetReputation"
 	AnalyzerService_ReportBlock_FullMethodName     = "/packetyeeter.v1.AnalyzerService/ReportBlock"
 	AnalyzerService_Health_FullMethodName          = "/packetyeeter.v1.AnalyzerService/Health"
+	AnalyzerService_PushRules_FullMethodName       = "/packetyeeter.v1.AnalyzerService/PushRules"
 	AnalyzerService_WatchDecisions_FullMethodName  = "/packetyeeter.v1.AnalyzerService/WatchDecisions"
 )
 
@@ -57,6 +58,10 @@ type AnalyzerServiceClient interface {
 	ReportBlock(ctx context.Context, in *BlockReport, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	// Health check
 	Health(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*HealthResponse, error)
+	// Replace the runtime rules of one scope (a controller identity) and send
+	// the resulting changes to scrub collectors. Disabled unless the analyzer
+	// runs with -enable-rule-api.
+	PushRules(ctx context.Context, in *RuleSet, opts ...grpc.CallOption) (*PushRulesAck, error)
 	// Stream of what the analyzer decides and sees, for a controller: every
 	// command sent to collectors, campaign observations and scrub fingerprints.
 	WatchDecisions(ctx context.Context, in *WatchRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[Decision], error)
@@ -163,6 +168,16 @@ func (c *analyzerServiceClient) Health(ctx context.Context, in *emptypb.Empty, o
 	return out, nil
 }
 
+func (c *analyzerServiceClient) PushRules(ctx context.Context, in *RuleSet, opts ...grpc.CallOption) (*PushRulesAck, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PushRulesAck)
+	err := c.cc.Invoke(ctx, AnalyzerService_PushRules_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *analyzerServiceClient) WatchDecisions(ctx context.Context, in *WatchRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[Decision], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	stream, err := c.cc.NewStream(ctx, &AnalyzerService_ServiceDesc.Streams[1], AnalyzerService_WatchDecisions_FullMethodName, cOpts...)
@@ -207,6 +222,10 @@ type AnalyzerServiceServer interface {
 	ReportBlock(context.Context, *BlockReport) (*emptypb.Empty, error)
 	// Health check
 	Health(context.Context, *emptypb.Empty) (*HealthResponse, error)
+	// Replace the runtime rules of one scope (a controller identity) and send
+	// the resulting changes to scrub collectors. Disabled unless the analyzer
+	// runs with -enable-rule-api.
+	PushRules(context.Context, *RuleSet) (*PushRulesAck, error)
 	// Stream of what the analyzer decides and sees, for a controller: every
 	// command sent to collectors, campaign observations and scrub fingerprints.
 	WatchDecisions(*WatchRequest, grpc.ServerStreamingServer[Decision]) error
@@ -246,6 +265,9 @@ func (UnimplementedAnalyzerServiceServer) ReportBlock(context.Context, *BlockRep
 }
 func (UnimplementedAnalyzerServiceServer) Health(context.Context, *emptypb.Empty) (*HealthResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Health not implemented")
+}
+func (UnimplementedAnalyzerServiceServer) PushRules(context.Context, *RuleSet) (*PushRulesAck, error) {
+	return nil, status.Error(codes.Unimplemented, "method PushRules not implemented")
 }
 func (UnimplementedAnalyzerServiceServer) WatchDecisions(*WatchRequest, grpc.ServerStreamingServer[Decision]) error {
 	return status.Error(codes.Unimplemented, "method WatchDecisions not implemented")
@@ -422,6 +444,24 @@ func _AnalyzerService_Health_Handler(srv interface{}, ctx context.Context, dec f
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AnalyzerService_PushRules_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RuleSet)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AnalyzerServiceServer).PushRules(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AnalyzerService_PushRules_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AnalyzerServiceServer).PushRules(ctx, req.(*RuleSet))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _AnalyzerService_WatchDecisions_Handler(srv interface{}, stream grpc.ServerStream) error {
 	m := new(WatchRequest)
 	if err := stream.RecvMsg(m); err != nil {
@@ -471,6 +511,10 @@ var AnalyzerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Health",
 			Handler:    _AnalyzerService_Health_Handler,
+		},
+		{
+			MethodName: "PushRules",
+			Handler:    _AnalyzerService_PushRules_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{
