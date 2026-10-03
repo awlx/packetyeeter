@@ -159,6 +159,20 @@ blocking without enabling high-cardinality IP metrics.
 - **ASN baseline**: `packetyeeter_latency_ewma_by_asn_ms`,
   `packetyeeter_asn_*`.
 
+### Runtime rule distribution
+
+Analyzer-side, for `PushRules`:
+
+- `packetyeeter_rules_desired{scope}` (gauge): rules currently pushed by each
+  scope (expired rules drop out).
+- `packetyeeter_rule_state_errors_total{op}` (counter): failures saving
+  (`op="save"`) or restoring (`op="load"`) persisted rules with
+  `-rule-state-dir`. A save failure means the current rules will not survive a
+  restart.
+- `packetyeeter_rule_deltas_sent_total` (counter): complete rule sets sent to
+  scrub collectors (on each push, on connect and once a minute). Compare with
+  the collectors' `packetyeeter_scrub_rules_active` to confirm they converged.
+
 ### Runtime enforcement kill switch
 
 - `packetyeeter_enforcement_stopped` (gauge): `1` after `POST
