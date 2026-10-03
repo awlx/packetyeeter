@@ -308,6 +308,10 @@ sudo ./packetyeeter-collector -i eth0 -analyzer-addr 127.0.0.1:9090
 | `-fingerprint-interval` | `10s` | Scrub mode: how often per-destination traffic fingerprints are sent to the analyzer. `0` turns fingerprinting off, including its per-packet XDP work. |
 | `-fingerprint-top` | `32` | Scrub mode: fingerprint buckets sent per destination and interval, busiest first (for at most 256 destinations). |
 | `-analyzer-addr` | `127.0.0.1:9090` | Analyzer gRPC address to connect to. |
+| `-analyzer-tls-ca` | `""` | PEM CA bundle that verifies the analyzer's certificate. Enables TLS to the analyzer; unset = plaintext. See [TLS and mTLS](docs/operations.md#tls-and-mtls). |
+| `-analyzer-tls-cert` | `""` | PEM client certificate for mTLS. Requires `-analyzer-tls-key` and `-analyzer-tls-ca`. |
+| `-analyzer-tls-key` | `""` | PEM private key for `-analyzer-tls-cert`. |
+| `-analyzer-tls-server-name` | `""` | Name to verify in the analyzer's certificate. Default: the host part of `-analyzer-addr`. Requires `-analyzer-tls-ca`. |
 | `-metrics-addr` | `:2112` | Prometheus metrics HTTP listen address. |
 | `-spoe-port` | `9876` | HAProxy SPOE agent port. |
 | `-socket` | `/var/run/packetyeeter-collector.sock` | UNIX socket for `yeetctl`. |
@@ -328,6 +332,10 @@ sudo ./packetyeeter-collector -i eth0 -analyzer-addr 127.0.0.1:9090
 | Flag | Default | Description |
 | :--- | :--- | :--- |
 | `-listen-addr` | `0.0.0.0:9090` | gRPC listen address for collectors. |
+| `-tls-cert` | `""` | PEM certificate for the gRPC listener. Enables TLS; requires `-tls-key`. Unset = plaintext. See [TLS and mTLS](docs/operations.md#tls-and-mtls). |
+| `-tls-key` | `""` | PEM private key for `-tls-cert`. |
+| `-tls-client-ca` | `""` | PEM CA bundle. When set, every gRPC client must present a certificate signed by it (mTLS). Requires `-tls-cert`. |
+| `-control-client-names` | `""` | Comma-separated client certificate DNS SANs or CommonNames allowed to call the control-plane RPCs (`PushRules`, `WatchDecisions`). Requires `-tls-client-ca`. Empty = any authenticated client. |
 | `-metrics-addr` | `:9091` | Prometheus metrics HTTP listen address. |
 | `-inspect-addr` | `127.0.0.1:9092` | Read-only HTTP inspector UI address. |
 | `-inspect-trusted-hosts` | `""` | Comma-separated extra Host/Origin hostnames the inspector trusts for state-mutating requests, in addition to loopback (e.g. a reverse-proxy hostname). Read-only GETs are never gated. |
@@ -343,8 +351,8 @@ sudo ./packetyeeter-collector -i eth0 -analyzer-addr 127.0.0.1:9090
 | `-ai-confidence-threshold` | `0.7` | Minimum AI confidence in `(0,1]` to flag a bot/scraper. Also the bar the ML model must clear to confirm a reputation-threshold block when `-ml-model` is set. |
 | `-ai-workers` | `16` | AI detection worker pool size. |
 | `-ai-queue-size` | `10000` | AI detection queue size. |
-| `-max-collectors` | `1024` | Maximum concurrent collector streams. Bounds fan-out and goroutines on the unauthenticated signal plane. |
-| `-enable-rule-api` | `false` | Accept `PushRules` and send runtime rules to scrub collectors. The gRPC listener is unauthenticated, so enable it only where `-listen-addr` is firewalled to trusted controllers and collectors. See [runtime rules](docs/operations.md#runtime-rules). |
+| `-max-collectors` | `1024` | Maximum concurrent collector streams. Bounds fan-out and goroutines on the signal plane, which is unauthenticated unless `-tls-client-ca` is set. |
+| `-enable-rule-api` | `false` | Accept `PushRules` and send runtime rules to scrub collectors. The gRPC listener is unauthenticated unless mTLS (`-tls-client-ca`) is configured; restrict `PushRules` with `-control-client-names`, or firewall `-listen-addr` to trusted controllers and collectors. See [runtime rules](docs/operations.md#runtime-rules) and [TLS and mTLS](docs/operations.md#tls-and-mtls). |
 | `-rule-state-dir` | `""` | With `-enable-rule-api`: directory to persist pushed rules in (`scrub-rules.json`), so a restarted analyzer resends them instead of clearing the collectors' rules. Empty disables. |
 | `-ml-model` | `""` | Optional path to an ONNX ML model. When set, reputation-threshold blocks must additionally be confirmed by the model at `-ai-confidence-threshold`. When unset, no ML gate is applied to blocking. |
 | `-ddos-min-incomplete` | `400` | Min incomplete handshakes for a DDoS categorization. |
@@ -372,7 +380,7 @@ sudo ./packetyeeter-collector -i eth0 -analyzer-addr 127.0.0.1:9090
 | `-sustained-release-factor-percent` | `100` | Percentage of the thresholds a held client must stay above (on requests, resources and sections) to remain held. |
 | `-sustained-reputation-factor` | `4` | Multiplier applied to the request and byte floors for verified good-reputation clients. Resource and section floors are unaffected. |
 | `-dry-run` | `false` | Log detections but do not send BLOCK commands (Monitor Mode). Also suppresses sustained-download blocks. |
-| `-enable-watch-api` | `false` | Serve the `WatchDecisions` stream (commands sent, campaign observations, scrub fingerprints) for a controller on the gRPC listener. The listener is unauthenticated; see [`docs/operations.md`](docs/operations.md#decision-stream-for-controllers). |
+| `-enable-watch-api` | `false` | Serve the `WatchDecisions` stream (commands sent, campaign observations, scrub fingerprints) for a controller on the gRPC listener. The listener is unauthenticated unless mTLS (`-tls-client-ca`) is configured; restrict `WatchDecisions` with `-control-client-names`. See [decision stream](docs/operations.md#decision-stream-for-controllers) and [TLS and mTLS](docs/operations.md#tls-and-mtls). |
 | `-watch-max-subscribers` | `16` | Maximum concurrent `WatchDecisions` subscribers; more are refused with `RESOURCE_EXHAUSTED`. |
 | `-watch-buffer-size` | `10000` | Per-subscriber decision buffer. When full, the oldest decision is dropped and counted. |
 | `-v` | `false` | Verbose logging. |

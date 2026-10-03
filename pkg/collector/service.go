@@ -18,6 +18,7 @@ import (
 	"PacketYeeter/pkg/collector/ebpf"
 	"PacketYeeter/pkg/collector/haproxy/spoe"
 	"PacketYeeter/pkg/geoip"
+	"PacketYeeter/pkg/grpctls"
 	"PacketYeeter/pkg/metrics"
 
 	"github.com/cilium/ebpf/perf"
@@ -26,7 +27,7 @@ import (
 	"github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -35,6 +36,7 @@ import (
 type Config struct {
 	Interface       string
 	AnalyzerAddr    string
+	AnalyzerTLS     grpctls.ClientConfig // zero value is plaintext
 	MetricsAddr     string
 	SPOEAddr        string // e.g., ":9876"
 	SocketPath      string
@@ -110,6 +112,7 @@ type Collector struct {
 	incidentReader *perf.Reader
 
 	// gRPC connection to analyzer
+	analyzerCreds  credentials.TransportCredentials
 	analyzerConn   *grpc.ClientConn
 	analyzerClient apiv1.AnalyzerServiceClient
 	signalStream   apiv1.AnalyzerService_StreamSignalsClient
@@ -183,12 +186,17 @@ func New(cfg Config, logger *logrus.Logger) (*Collector, error) {
 	if err != nil {
 		return nil, err
 	}
+	analyzerCreds, err := grpctls.NewClientCredentials(cfg.AnalyzerTLS, logger)
+	if err != nil {
+		return nil, fmt.Errorf("analyzer TLS: %w", err)
+	}
 	for _, w := range warnings {
 		logger.Warn(w)
 	}
 	c := &Collector{
 		Config:             cfg,
 		Logger:             logger,
+		analyzerCreds:      analyzerCreds,
 		reconnectCh:        make(chan struct{}, 1),
 		signalQueue:        make(chan *apiv1.Signal, max(cfg.SignalQueueSize, 10000)), // Ring buffer default 10k
 		synCacheTTL:        60 * time.Second,                                          // TTL for SYN timestamp cache
@@ -529,14 +537,18 @@ func (c *Collector) connectToAnalyzer() error {
 		c.signalStream = nil
 	}
 
-	c.Logger.WithField("addr", c.Config.AnalyzerAddr).Info("Connecting to analyzer...")
+	c.Logger.WithFields(logrus.Fields{
+		"addr": c.Config.AnalyzerAddr,
+		"tls":  c.Config.AnalyzerTLS.Enabled(),
+		"mtls": c.Config.AnalyzerTLS.CertFile != "",
+	}).Info("Connecting to analyzer...")
 
 	// Create connection with keepalive
 	ctx, cancel := context.WithTimeout(c.ctx, 10*time.Second)
 	defer cancel()
 
 	conn, err := grpc.DialContext(ctx, c.Config.AnalyzerAddr,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithTransportCredentials(c.analyzerCreds),
 		grpc.WithBlock(),
 		grpc.WithKeepaliveParams(keepalive.ClientParameters{
 			Time:                10 * time.Second,

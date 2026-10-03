@@ -67,6 +67,20 @@ journalctl -u packetyeeter-analyzer -n 100 --no-pager
 journalctl -u packetyeeter-collector -n 100 --no-pager
 ```
 
+With TLS, check the analyzer certificate and the name the collector verifies
+(the `-analyzer-addr` host or `-analyzer-tls-server-name`):
+
+```bash
+openssl s_client -connect analyzer.example.net:9090 -CAfile ca.crt \
+  -cert collector.crt -key collector.key -servername analyzer.example.net </dev/null
+```
+
+`certificate signed by unknown authority` means `-analyzer-tls-ca` does not
+contain the analyzer's CA; `certificate is valid for X, not Y` means the SAN
+list lacks the dialed name. A collector without a client certificate, or with
+one from another CA, is dropped during the handshake when the analyzer has
+`-tls-client-ca`. After rotating files, look for `Cannot reload` in either log.
+
 ## Runtime and operations
 
 ### Unexpected blocks or suspected false positives

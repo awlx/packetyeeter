@@ -1,5 +1,20 @@
 # PacketYeeter Changelog
 
+## 2026-10-02 - Optional TLS and mTLS for the analyzer gRPC API (SCR-20)
+
+- Analyzer `-tls-cert`/`-tls-key` enable TLS on the gRPC listener;
+  `-tls-client-ca` additionally requires client certificates signed by that CA.
+- Collector `-analyzer-tls-ca` enables TLS and verifies the analyzer;
+  `-analyzer-tls-cert`/`-analyzer-tls-key` present a client certificate;
+  `-analyzer-tls-server-name` overrides the verified name.
+- Analyzer `-control-client-names` limits `PushRules` and `WatchDecisions` to
+  the named client certificates (`PermissionDenied` otherwise).
+- Certificates, keys and CA bundles are reloaded on change without a restart;
+  a bad file keeps the previous material and is logged.
+- All off by default: plaintext deployments are unchanged. Inconsistent flag
+  combinations and unreadable files fail at startup. The analyzer now logs a
+  warning at startup when the listener is plaintext. See
+  `docs/operations.md#tls-and-mtls`.
 ## 2026-10-02 - XDP hot-path performance
 
 - Fix: dropping a packet from an IPv4 `blocked_ips` source no longer adds 1 to
@@ -66,6 +81,7 @@
   `packetyeeter_watch_published_total{kind}`,
   `packetyeeter_watch_dropped_total` and
   `packetyeeter_watch_invalid_fingerprints_total`.
+
 ## 2026-10-02 - Scrub mode throughput procedure and loop test
 
 - `docs/scrub-throughput.md`: how to measure a scrub node on real hardware
@@ -89,6 +105,7 @@
   `packetyeeter_scrub_fingerprint_overflow_total` and
   `packetyeeter_scrub_fingerprint_capped_total{kind}`.
 - The collector warns in host mode about non-default fingerprint flags.
+
 ## 2026-10-02 - Analyzer PushRules for scrub collectors
 
 - New `PushRules(RuleSet)` RPC: a controller sets the complete rule set of its
@@ -96,7 +113,8 @@
   scopes as a replacement (`RuleSetDelta.replace`) on each push, on
   (re)connect and once a minute, so collectors converge without
   acknowledgements. Off unless the analyzer runs with
-  `-enable-rule-api`, since the gRPC listener is unauthenticated.
+  `-enable-rule-api`, since the gRPC listener is unauthenticated unless mTLS
+  (`-tls-client-ca`) is configured.
 - Optional `-rule-state-dir`: the analyzer persists pushed rules and restores
   them on start, so a restart does not clear scrub collectors' rules until the
   controller pushes again.
@@ -110,6 +128,7 @@
   pulling the kill switch withdraws existing `DROP`/`RATE_LIMIT` rules.
 - New analyzer metrics `packetyeeter_rules_desired{scope}` and
   `packetyeeter_rule_deltas_sent_total`.
+
 ## 2026-10-02 - Scrub mode handshake map per-CPU LRU
 
 - `xdp_scrub` tracks handshakes in its own `scrub_handshakes(_v6)` maps, LRU
