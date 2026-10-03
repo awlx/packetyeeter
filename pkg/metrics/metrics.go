@@ -637,6 +637,21 @@ var (
 		Help: "Current size of bot verification cache",
 	})
 
+	BotVerificationQueueDepth = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "packetyeeter_bot_verification_queue_depth",
+		Help: "Bot verification DNS lookups waiting for a worker",
+	})
+
+	BotVerificationQueueDrops = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "packetyeeter_bot_verification_queue_drops_total",
+		Help: "Bot verification lookups not started, by reason (queue_full, cache_full); the request is treated as unverified",
+	}, []string{"reason"})
+
+	BotVerificationPending = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "packetyeeter_bot_verification_pending_total",
+		Help: "Requests claiming a known bot that were handled as unverified while their DNS verification was still pending, by claimed bot type",
+	}, []string{"bot_type"})
+
 	// ML Model Metrics
 	MLBotProbability = promauto.NewGauge(prometheus.GaugeOpts{
 		Name: "packetyeeter_ml_bot_probability",

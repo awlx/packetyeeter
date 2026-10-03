@@ -16,6 +16,22 @@
   warning at startup when the listener is plaintext. See
   `docs/operations.md#tls-and-mtls`.
 
+## 2026-10-02 - Asynchronous bot verification
+
+- Crawler DNS verification no longer runs on the collector's signal stream.
+  Previously each new IP with a crawler User-Agent behind an unresponsive PTR
+  server stalled that collector's signal processing for 5 seconds. Lookups now
+  run on a bounded worker pool with per-IP de-duplication; a full queue drops
+  the lookup instead of waiting.
+- Detection change: until an IP's verification completes (at most the
+  5-second DNS budget), its requests are unverified - no verified-bot
+  exemption, no impersonation penalty, and the browser-claim header heuristics
+  are skipped. Requests after completion get the cached verdict as before.
+  Dropped lookups, and lookups still pending past the DNS budget, are treated
+  as plain unverified requests. See `docs/operations.md#bot-verification`.
+- New metrics `packetyeeter_bot_verification_queue_depth`,
+  `packetyeeter_bot_verification_queue_drops_total{reason}` and
+  `packetyeeter_bot_verification_pending_total{bot_type}`.
 ## 2026-10-02 - Analyzer decision stream
 
 - New `WatchDecisions` gRPC stream for a scrub controller: every command sent

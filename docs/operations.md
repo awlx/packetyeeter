@@ -228,6 +228,47 @@ verified crawler that starts mirroring the site is still caught. If a verified
 crawler is being caught legitimately, allowlist it rather than raising the
 factor for everyone.
 
+## Bot verification
+
+Requests whose User-Agent claims a DNS-verifiable crawler (Googlebot, Bingbot,
+Baiduspider, YandexBot, facebookexternalhit, Twitterbot, Slackbot) are checked
+with reverse and forward-confirming DNS. The verdict is cached per IP (1 hour;
+transient DNS failures 1 minute).
+
+The lookups run on a bounded worker pool (16 workers, 1024 queued lookups), not
+on the collector's signal stream: a PTR server that never answers can no longer
+stall signal processing. In-flight lookups are de-duplicated per IP. The DNS
+budget is unchanged (5 seconds for reverse plus forward together), and
+in-flight lookups are cancelled on analyzer shutdown.
+
+Until an IP has a cached verdict, its requests are handled as follows:
+
+- **Pending** (lookup queued or running, for at most the 5-second DNS
+  budget since it was queued): the request is unverified. It gets
+  neither the verified-bot exemption (no positive signal, no raised
+  sustained-download floors) nor the impersonation penalty. Heuristics that
+  presume a browser UA claim is false (header order, `sec-ch`, `Sec-Fetch-*`,
+  `Accept`, TLS version, JA4 rotation) are skipped, because a verified crawler
+  would be exempt from them. Everything else - rate limits, error tracking,
+  JA4DB, bot-keyword and missing-header signals, threat intel and the
+  reputation threshold - applies as for any unverified client.
+- **Dropped** (queue full, or the verdict cache is full): no lookup is started
+  and the request is handled as a plain unverified client, with all
+  heuristics. Treating it as pending would let a lookup flood switch those
+  heuristics off. The same applies once a lookup has been queued or running
+  for longer than the DNS budget, so a backlog cannot stretch the pending
+  window.
+
+Requests after the lookup completes get the cached verdict: verified bots are
+exempt, impersonators are penalised. In practice the first request or few from
+a new crawler IP are unverified rather than verified or penalised. This errs
+towards neither blocking nor allowlisting on an unconfirmed claim.
+
+Watch `packetyeeter_bot_verification_queue_depth` and
+`packetyeeter_bot_verification_queue_drops_total`. Sustained drops mean
+lookups are slow or a flood of new bot-claiming IPs is arriving; check
+resolver latency before anything else.
+
 ## Runtime enforcement kill switch
 
 `POST /api/enforcement/stop` on the analyzer's inspector suppresses every
