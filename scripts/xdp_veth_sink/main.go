@@ -1,8 +1,8 @@
 // Command xdp_veth_sink is a throwaway analyzer used only by the veth test
 // scripts: it accepts the collector's StreamSignals stream and prints one line
-// per received signal (id, type, and IP family). Given a second argument, a
-// file (typically a FIFO), it also sends every line of it, a protojson
-// Command, to all connected collectors.
+// per received signal (id, type, and IP family; every field for scrub
+// fingerprints). Given a second argument, a file (typically a FIFO), it also
+// sends every line of it, a protojson Command, to all connected collectors.
 package main
 
 import (
@@ -45,6 +45,12 @@ func (s *sink) StreamSignals(stream collectorStream) error {
 		}
 		if err != nil {
 			return err
+		}
+		if fp := sig.Fingerprint; sig.Type == apiv1.SignalType_SIGNAL_SCRUB_FINGERPRINT && fp != nil {
+			fmt.Printf("FINGERPRINT collector=%s dst=%s proto=%d dport=%d size=%d ttl=%d src_net=%s dropped=%t packets=%d bytes=%d interval=%d\n",
+				fp.CollectorId, net.IP(fp.DstIp), fp.Protocol, fp.DstPort, fp.SizeBucket, fp.TtlBucket,
+				net.IP(fp.SrcNet), fp.Dropped, fp.Packets, fp.Bytes, fp.IntervalSeconds)
+			continue
 		}
 		fam := "v4"
 		if len(sig.Ip) == net.IPv6len {

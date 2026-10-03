@@ -318,6 +318,41 @@ previous rules stay active. `expires_at` is required; expired rules are removed
 within a second. Rules live in memory only: after a collector restart they are
 back once the analyzer resends them.
 
+### Fingerprints
+
+Scrub collectors summarise what they see per destination so a controller can
+build edge filters. Every packet that reaches a verdict for redirected
+traffic (forwarded, handed to the kernel, or dropped by a rule or per-source
+check) is counted in XDP into a bucket keyed by destination address,
+protocol, destination port (0 when not TCP/UDP or a later fragment), IP total
+length bucket (0: <128, 1: <256, 2: <512, 3: <1024, 4: larger), TTL or hop
+limit bucket (TTL / 32), source /24 (IPv4) or /48 (IPv6), and whether it was
+dropped. Traffic to the node's own, multicast and link-local addresses, and
+frames that cannot be parsed, are not counted. `dropped` is the filtering
+verdict: in `-dry-run` nothing is dropped, and slow-path packets over
+`-scrub-slow-path-pps` count as not dropped. Bytes are IP total lengths.
+
+Every `-fingerprint-interval` (default `10s`) the collector switches XDP to a
+second map, reads and clears the first, and sends the busiest
+`-fingerprint-top` (default 32) buckets of each of the 256 busiest
+destinations to the analyzer as `SIGNAL_SCRUB_FINGERPRINT`, one signal per
+bucket with packets, bytes and the interval length. Fingerprints only enter a
+free slot of the signal queue, never displacing detection signals, and are
+skipped while the analyzer is disconnected. `-fingerprint-interval 0` turns
+fingerprinting off, including the per-packet work in XDP. Both flags only
+apply in scrub mode.
+
+Cost: one hash lookup per packet (an insert for a new bucket). The two maps
+hold 65,536 buckets each and preallocate their per-CPU counters, about 2 MiB
+per CPU in total (nothing with `-fingerprint-interval 0`).
+
+Limitation: with spoofed sources, every random source /24 is a new bucket, so
+a flood fills the map within the interval. Further new buckets are then not
+counted (`packetyeeter_scrub_fingerprint_overflow_total` rises) while existing
+ones keep counting, so the top buckets reflect the traffic shapes seen first in
+the interval. The destination and the per-destination totals of sent buckets
+remain useful; the source networks do not.
+
 ## Modern DDoS runbook
 
 Use this workflow when campaign metrics or logs indicate a possible L3/L4 DDoS.
