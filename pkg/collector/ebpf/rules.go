@@ -66,7 +66,10 @@ type ScrubRule struct {
 	Fragment      uint8
 	TCPFlagsMask  uint8
 	TCPFlagsValue uint8
-	Pad           [4]byte
+	SrcBsearch    uint8
+	Pad           [3]byte
+	SrcLo         uint32 // IPv4 source span, host byte order
+	SrcHi         uint32
 }
 
 // ruleList mirrors struct rule_list.
