@@ -29,7 +29,10 @@ func TestValidateModeConfig(t *testing.T) {
 			host(c)
 			c.ReadyzDrain = DefaultReadyzDrain
 			c.ScrubSlowPathPPS = DefaultScrubSlowPathPPS
+			c.FingerprintInterval = DefaultFingerprintInterval
+			c.FingerprintTop = DefaultFingerprintTop
 		}, true, 0},
+		"host with fingerprints":    {func(c *Config) { host(c); c.FingerprintInterval = time.Second; c.FingerprintTop = 4 }, true, 2},
 		"host with custom drain":    {func(c *Config) { host(c); c.ReadyzDrain = time.Second }, true, 1},
 		"host with custom slow pps": {func(c *Config) { host(c); c.ScrubSlowPathPPS = 5 }, true, 1},
 		"host with inside-if":       {func(c *Config) { host(c); c.InsideInterface = "eth1" }, false, 0},
@@ -40,6 +43,11 @@ func TestValidateModeConfig(t *testing.T) {
 		"generic not allowed":       {func(c *Config) { c.XDPMode = ebpf.XDPModeGeneric }, false, 0},
 		"generic allowed":           {func(c *Config) { c.XDPMode = ebpf.XDPModeGeneric; c.AllowGeneric = true }, true, 0},
 		"egress accounting":         {func(c *Config) { c.EgressAccounting = true }, false, 0},
+		"fingerprints":              {func(c *Config) { c.FingerprintInterval = time.Second; c.FingerprintTop = 1 }, true, 0},
+		"fingerprints off, no top":  {func(c *Config) { c.FingerprintInterval = 0; c.FingerprintTop = 0 }, true, 0},
+		"fingerprint interval < 1s": {func(c *Config) { c.FingerprintInterval = 500 * time.Millisecond; c.FingerprintTop = 1 }, false, 0},
+		"negative interval":         {func(c *Config) { c.FingerprintInterval = -time.Second; c.FingerprintTop = 1 }, false, 0},
+		"fingerprint top 0":         {func(c *Config) { c.FingerprintInterval = time.Second }, false, 0},
 	} {
 		cfg := scrub
 		tc.mutate(&cfg)
