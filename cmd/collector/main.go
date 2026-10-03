@@ -27,6 +27,8 @@ func main() {
 		readyzDrain     = flag.Duration("readyz-drain", collector.DefaultReadyzDrain, "Scrub mode: how long /readyz reports not ready on shutdown before detaching")
 		hsTimeout       = flag.Duration("handshake-timeout", collector.DefaultHandshakeTimeout, "How long a SYN may go without the client's ACK before it is reported as an incomplete handshake")
 		slowPathPPS     = flag.Uint("scrub-slow-path-pps", collector.DefaultScrubSlowPathPPS, "Scrub mode: max packets/s handed to the kernel slow path across all CPUs, excess dropped (0 = unlimited)")
+		fpInterval      = flag.Duration("fingerprint-interval", collector.DefaultFingerprintInterval, "Scrub mode: how often per-destination traffic fingerprints are sent to the analyzer (0 = off)")
+		fpTop           = flag.Int("fingerprint-top", collector.DefaultFingerprintTop, "Scrub mode: fingerprint buckets sent per destination and interval, busiest first")
 		analyzerAddr    = flag.String("analyzer-addr", "127.0.0.1:9090", "Analyzer gRPC address")
 		metricsAddr     = flag.String("metrics-addr", ":2112", "Prometheus metrics HTTP listen address")
 		spoePort        = flag.Int("spoe-port", 9876, "SPOE agent port")
@@ -96,6 +98,9 @@ func main() {
 		HandshakeTimeout: *hsTimeout,
 
 		ScrubSlowPathPPS: uint32(min(*slowPathPPS, math.MaxUint32)),
+
+		FingerprintInterval: *fpInterval,
+		FingerprintTop:      *fpTop,
 	}
 
 	coll, err := collector.New(cfg, logger)
