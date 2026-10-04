@@ -343,6 +343,7 @@ sudo ./packetyeeter-collector -i eth0 -analyzer-addr 127.0.0.1:9090
 | `-tls-key` | `""` | PEM private key for `-tls-cert`. |
 | `-tls-client-ca` | `""` | PEM CA bundle. When set, every gRPC client must present a certificate signed by it (mTLS). Requires `-tls-cert`. |
 | `-control-client-names` | `""` | Comma-separated client certificate DNS SANs or CommonNames allowed to call the control-plane RPCs (`PushRules`, `WatchDecisions`). Requires `-tls-client-ca`. Empty = any authenticated client. |
+| `-scrub-client-names` | `""` | Comma-separated client certificate DNS SANs or CommonNames of scrub collectors whose blocks are sent to every other listed scrub collector. Requires `-tls-client-ca`. Empty = no cross-node fan-out. Only gates fan-out: any connected collector still adds evidence to shared per-source state. See [scrub mode](docs/operations.md#scrub-mode). |
 | `-grpc-max-connection-age` | `1h` | Close gRPC connections after this long (±10%), so collectors and controllers re-handshake against the current certificates and CA bundle. `0` = never. |
 | `-grpc-max-connection-age-grace` | `30s` | How long open streams may continue after `-grpc-max-connection-age` before the connection is cut. |
 | `-metrics-addr` | `:9091` | Prometheus metrics HTTP listen address. |
