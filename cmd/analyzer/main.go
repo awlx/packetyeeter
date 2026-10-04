@@ -59,6 +59,7 @@ func main() {
 		maxConnAge     = flag.Duration("grpc-max-connection-age", analyzer.DefaultGRPCMaxConnectionAge, "Close gRPC connections after this long (±10%) so clients re-handshake against the current certificates and CA bundle; 0 = never")
 		maxConnGrace   = flag.Duration("grpc-max-connection-age-grace", analyzer.DefaultGRPCMaxConnectionAgeGrace, "How long open streams may continue after -grpc-max-connection-age before the connection is cut")
 		controlClients = flag.String("control-client-names", "", "Comma-separated client certificate DNS SANs/CommonNames allowed to call PushRules and WatchDecisions (requires -tls-client-ca; empty = any authenticated client)")
+		scrubClients   = flag.String("scrub-client-names", "", "Comma-separated client certificate DNS SANs/CommonNames of scrub collectors whose blocks are sent to every other listed scrub collector (requires -tls-client-ca; empty = no cross-node fan-out). Only gates fan-out: any connected collector still adds evidence to shared per-source state")
 
 		sustainedDefaults = sustained.DefaultConfig()
 
@@ -139,6 +140,7 @@ func main() {
 			ClientCAFile: *tlsClientCA,
 		},
 		ControlClientNames: grpctls.ParseNames(*controlClients),
+		ScrubClientNames:   grpctls.ParseNames(*scrubClients),
 
 		GRPCMaxConnectionAge:      *maxConnAge,
 		GRPCMaxConnectionAgeGrace: *maxConnGrace,

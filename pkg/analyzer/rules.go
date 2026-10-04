@@ -297,6 +297,9 @@ func (a *Analyzer) handleRoleSignal(collectorID string, cs *collectorStream, sig
 		"role":      role,
 		"node":      sig.GetMetadata()["node"],
 	}).Info("Collector announced its role")
+	if role == "scrub" && !cs.certTrusted && cs.warnedUntrusted.CompareAndSwap(false, true) {
+		logrus.WithField("collector", collectorID).Warn("Collector announced scrub mode but its certificate is not on -scrub-client-names; its blocks are not fanned out to other scrub collectors and it receives none")
+	}
 	// Only on becoming scrub: repeated announcements must not pile up
 	// goroutines behind a send that blocks.
 	if role == "scrub" && prev != "scrub" {

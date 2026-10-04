@@ -111,6 +111,13 @@ type Config struct {
 	// verified certificate has one of these DNS SANs or CommonNames.
 	// Requires TLS.ClientCAFile.
 	ControlClientNames []string
+	// ScrubClientNames lists the client certificate DNS SANs or CommonNames
+	// whose streams may take part in scrub block fan-out. A block decided
+	// from a scrub stream reaches the other scrub streams only when both are
+	// on this list; empty disables cross-node fan-out. It does not gate
+	// signals: any connected stream still adds evidence to the shared
+	// per-source state. Requires TLS.ClientCAFile.
+	ScrubClientNames []string
 }
 
 const (
@@ -333,6 +340,16 @@ type collectorStream struct {
 
 	role atomic.Value // string, from the collector's role signal
 
+	// certTrusted is set once at registration: the verified client
+	// certificate matched -scrub-client-names.
+	certTrusted bool
+	// fanout queues block commands decided from other scrub nodes, drained
+	// in order by one worker; nil for streams that can never receive them.
+	fanout chan *apiv1.Command
+	// warnedUntrusted limits the "scrub but not trusted" warning to once per
+	// stream.
+	warnedUntrusted atomic.Bool
+
 	// At most one rule sync runs per collector; requests made meanwhile wait
 	// for one more send that covers them all.
 	syncMu      sync.Mutex
@@ -353,6 +370,12 @@ func (cs *collectorStream) setRole(role string) string {
 func (cs *collectorStream) isScrub() bool {
 	role, _ := cs.role.Load().(string)
 	return role == "scrub"
+}
+
+// isTrustedScrub reports whether cs announced scrub mode and its certificate
+// is on -scrub-client-names: only such streams send or receive fan-out.
+func (cs *collectorStream) isTrustedScrub() bool {
+	return cs.certTrusted && cs.isScrub()
 }
 
 func mapProtoSignalType(t apiv1.SignalType) aidetection.SignalType {
@@ -386,6 +409,9 @@ func New(cfg Config) (*Analyzer, error) {
 	// before the slower subsystems load.
 	if len(cfg.ControlClientNames) > 0 && !cfg.TLS.MutualTLS() {
 		return nil, errors.New("-control-client-names requires -tls-client-ca (names come from verified client certificates)")
+	}
+	if len(cfg.ScrubClientNames) > 0 && !cfg.TLS.MutualTLS() {
+		return nil, errors.New("-scrub-client-names requires -tls-client-ca (names come from verified client certificates)")
 	}
 	grpcCreds, err := grpctls.NewServerCredentials(cfg.TLS, logrus.StandardLogger())
 	if err != nil {
@@ -676,9 +702,16 @@ func (a *Analyzer) Start() error {
 	case a.grpcCreds == nil:
 		logrus.WithField("addr", a.Config.ListenAddr).Warn("gRPC listener is plaintext and unauthenticated; set -tls-cert/-tls-key and -tls-client-ca for mTLS")
 	case a.Config.TLS.MutualTLS():
-		logrus.WithFields(logrus.Fields{"addr": a.Config.ListenAddr, "control_client_names": a.Config.ControlClientNames}).Info("gRPC listener requires mTLS")
+		logrus.WithFields(logrus.Fields{
+			"addr":                 a.Config.ListenAddr,
+			"control_client_names": a.Config.ControlClientNames,
+			"scrub_client_names":   a.Config.ScrubClientNames,
+		}).Info("gRPC listener requires mTLS")
 	default:
 		logrus.WithField("addr", a.Config.ListenAddr).Warn("gRPC listener uses TLS without client certificates; any client can connect")
+	}
+	if len(a.Config.ScrubClientNames) == 0 {
+		logrus.Info("Scrub block fan-out disabled: -scrub-client-names is empty, so a block decided from a scrub collector goes only to that collector")
 	}
 	if a.grpcCreds != nil {
 		opts = append(opts, grpc.Creds(a.grpcCreds))
@@ -837,6 +870,9 @@ func (a *Analyzer) Start() error {
 // concurrent streams would otherwise grow the collectors map, its per-stream
 // goroutines, and the Broadcast fan-out without limit. The caller closes the
 // stream when it gets an empty id.
+// registerCollector admits cs and, when its verified certificate is on
+// -scrub-client-names, starts its fan-out worker, which stops when ctx (the
+// stream) or the analyzer ends.
 func (a *Analyzer) registerCollector(ctx context.Context, cs *collectorStream) string {
 	addr := "unknown"
 	if p, ok := peer.FromContext(ctx); ok && p.Addr != nil {
@@ -844,12 +880,23 @@ func (a *Analyzer) registerCollector(ctx context.Context, cs *collectorStream) s
 	}
 	id := fmt.Sprintf("%s#%d", addr, a.collectorSeq.Add(1))
 
+	if len(a.Config.ScrubClientNames) > 0 && grpctls.PeerNameAllowed(ctx, a.Config.ScrubClientNames) {
+		cs.certTrusted = true
+		cs.fanout = make(chan *apiv1.Command, scrubFanoutQueueSize)
+	}
+
 	a.collectorsMu.Lock()
-	defer a.collectorsMu.Unlock()
 	if a.Config.MaxCollectors > 0 && len(a.collectors) >= a.Config.MaxCollectors {
+		a.collectorsMu.Unlock()
 		return ""
 	}
 	a.collectors[id] = cs
+	a.collectorsMu.Unlock()
+
+	if cs.fanout != nil {
+		// Fails only during shutdown; enqueues then just fill and drop.
+		a.goTracked(func() { a.runScrubFanout(ctx, id, cs) })
+	}
 	return id
 }
 
@@ -1245,7 +1292,7 @@ func (a *Analyzer) sendCommand(cs *collectorStream, cmd *apiv1.Command) {
 	}
 
 	a.publishCommand(cmd)
-	if cs.isScrub() && fansOutToScrub(cmd) {
+	if cs.isTrustedScrub() && fansOutToScrub(cmd) {
 		a.sendToScrubPeers(cs, cmd)
 	}
 	a.sendToStream(cs, cmd)
@@ -1262,22 +1309,52 @@ func fansOutToScrub(cmd *apiv1.Command) bool {
 	return false
 }
 
-// sendToScrubPeers sends cmd to every scrub collector except origin. ECMP
-// splits a source's traffic across scrub nodes, so a block on one node alone
-// leaves the rest forwarding it. Asynchronous so a stalled peer cannot hold
-// up origin's signal stream.
+// scrubFanoutQueueSize bounds the commands queued per scrub peer. A peer
+// this far behind is stalled; the send watchdog closes its stream.
+const scrubFanoutQueueSize = 256
+
+// sendToScrubPeers queues cmd for every trusted scrub collector except
+// origin. ECMP splits a source's traffic across scrub nodes, so a block on
+// one node alone leaves the rest forwarding it. Queued, not sent, so a
+// stalled peer cannot hold up origin's signal stream; one FIFO per peer
+// keeps a block and a later unblock in order.
 func (a *Analyzer) sendToScrubPeers(origin *collectorStream, cmd *apiv1.Command) {
 	a.collectorsMu.RLock()
-	var peers []*collectorStream
+	defer a.collectorsMu.RUnlock()
 	for _, cs := range a.collectors {
-		if cs != origin && cs.isScrub() {
-			peers = append(peers, cs)
+		if cs == origin || cs.fanout == nil || !cs.isTrustedScrub() {
+			continue
+		}
+		select {
+		case cs.fanout <- cmd:
+		default:
+			metrics.ScrubCommandFanoutDropped.Inc()
 		}
 	}
-	a.collectorsMu.RUnlock()
+}
 
-	for _, cs := range peers {
-		if a.goTracked(func() { a.sendToStream(cs, cmd) }) {
+// runScrubFanout sends cs's queued fan-out commands in order until its
+// stream or the analyzer ends. Ending the stream also unblocks a Send in
+// progress, so shutdown does not wait out the send watchdog.
+func (a *Analyzer) runScrubFanout(ctx context.Context, id string, cs *collectorStream) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-a.lifetime().Done():
+			return
+		case cmd := <-cs.fanout:
+			if ctx.Err() != nil || a.lifetime().Err() != nil {
+				return
+			}
+			// The role can change after the command was queued.
+			if !cs.isTrustedScrub() {
+				continue
+			}
+			if err := a.sendLocked(cs, cmd); err != nil {
+				logrus.WithError(err).WithField("collector", id).Debug("Failed to send fan-out command to scrub collector")
+				continue
+			}
 			metrics.ScrubCommandFanout.Inc()
 		}
 	}
