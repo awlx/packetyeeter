@@ -238,6 +238,7 @@ func TestAnalyzerReadiness(t *testing.T) {
 	if err := a.check(); err != nil {
 		t.Fatalf("connected: %v", err)
 	}
+	now = now.Add(analyzerConnectionStable)
 	a.set(false)
 	now = now.Add(29 * time.Second)
 	if err := a.check(); err != nil {
@@ -251,6 +252,23 @@ func TestAnalyzerReadiness(t *testing.T) {
 	a.set(true)
 	if err := a.check(); err != nil {
 		t.Fatalf("reconnected: %v", err)
+	}
+
+	// An analyzer that accepts the stream and drops it at once (collector
+	// capacity) must not keep the node ready by restarting the clock.
+	now = now.Add(analyzerConnectionStable)
+	a.set(false)
+	for range 3 {
+		now = now.Add(20 * time.Second)
+		a.set(true)
+		now = now.Add(time.Millisecond)
+		a.set(false)
+	}
+	if err := a.check(); err == nil {
+		t.Fatal("flapping stream kept the node ready past the grace")
+	}
+	if _, down := a.status(); down < time.Minute {
+		t.Fatalf("flapping stream: down %s, want counted from the last stable loss", down)
 	}
 }
 
@@ -270,6 +288,7 @@ func TestAnalyzerDegraded(t *testing.T) {
 	if up, down := a.status(); !up || down != 0 || a.degraded() != nil {
 		t.Fatalf("connected: up=%v down=%s degraded=%v", up, down, a.degraded())
 	}
+	now = now.Add(analyzerConnectionStable)
 	a.set(false)
 	now = now.Add(12 * time.Second)
 	if err := a.degraded(); err == nil || !strings.Contains(err.Error(), "analyzer stream down for 12s") {

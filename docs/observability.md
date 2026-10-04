@@ -339,6 +339,9 @@ time:
   new rules or blocks.
 - `packetyeeter_scrub_analyzer_stream_down_seconds` (gauge): how long the
   stream has been down (since start-up if it never connected), 0 while up.
+  A stream that breaks within 30s does not end the outage (e.g. an analyzer
+  at collector capacity accepts and drops it at once), so the count goes on
+  from the previous loss.
 - `packetyeeter_scrub_rule_matches_total{action}` (counter): packets matching a
   runtime rule, by its action (`drop`, `rate_limit`, `pass`). Rate-limited
   packets count whether or not they were over the rate. Rule drops (and, in

@@ -362,7 +362,7 @@ Readiness and failure:
   redirects for it, since the alternative is unscrubbed traffic.
 - `-readyz-analyzer-grace` > 0 opts into gating: `/readyz` is 503 until the
   stream first connects, and again once it has been down longer than the
-  grace period. Only use it where a node without fresh rules is worse than no
+  grace period. A stream that lasted under 30s does not restart that period. Only use it where a node without fresh rules is worse than no
   scrubbing at all.
 - On SIGTERM the node reports 503 for `-readyz-drain` before detaching, so
   traffic can move away first. The control plane (analyzer block commands,

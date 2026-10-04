@@ -310,6 +310,7 @@ type analyzerReadiness struct {
 	mu        sync.Mutex
 	up        bool
 	everUp    bool
+	upSince   time.Time
 	downSince time.Time // start-up until the first connect
 }
 
@@ -346,7 +347,12 @@ func (a *analyzerReadiness) degraded() error {
 func (a *analyzerReadiness) set(up bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.up && !up {
+	switch {
+	case !a.up && up:
+		a.upSince = a.now()
+	case a.up && !up && a.now().Sub(a.upSince) >= analyzerConnectionStable:
+		// A stream the analyzer drops at once (e.g. at collector capacity)
+		// must not restart the outage clock on every redial.
 		a.downSince = a.now()
 	}
 	a.up = up

@@ -729,6 +729,15 @@ ip netns exec "$NS_SCR" "$SINK_BIN" 127.0.0.1:59999 "$CMD_FIFO" >>"$SINK_LOG" 2>
 SINK_PID=$!
 for _ in $(seq 100); do [[ "$(readyz)" == ready ]] && break; sleep 0.2; done
 [[ "$(readyz)" == ready ]] && pass "grace set: /readyz 200 once the stream is up" || bad "grace set, analyzer up: $(readyz)"
+# A stream that breaks within 30s does not end the outage counted since start-up.
+kill "$SINK_PID"; wait "$SINK_PID" 2>/dev/null || true
+for _ in $(seq 25); do [[ "$(readyz)" == *"analyzer: stream down"* ]] && break; sleep 0.2; done
+[[ "$(readyz)" == *"analyzer: stream down"* ]] && pass "grace set: short-lived stream does not restart the grace" \
+  || bad "short-lived stream: $(readyz)"
+ip netns exec "$NS_SCR" "$SINK_BIN" 127.0.0.1:59999 "$CMD_FIFO" >>"$SINK_LOG" 2>&1 &
+SINK_PID=$!
+for _ in $(seq 100); do [[ "$(readyz)" == ready ]] && break; sleep 0.2; done
+sleep 31 # past analyzerConnectionStable, so the loss starts a fresh grace period
 kill "$SINK_PID"; wait "$SINK_PID" 2>/dev/null || true
 sleep 0.5
 [[ "$(readyz_code)" == 200 ]] && pass "grace set: 200 within the grace period" || bad "within grace: $(readyz)"

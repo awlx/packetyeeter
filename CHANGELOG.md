@@ -10,6 +10,9 @@
 - New flag `-readyz-analyzer-grace` (default `0`, off): above 0, `/readyz`
   requires the stream, staying ready that long after it breaks. See
   `docs/operations.md#scrub-mode`.
+- Compatibility: while the analyzer stream is down, the `/readyz` body has a
+  second line (`degraded: ...`) after `ready`. Checks on the status code or
+  the first line are unaffected; exact matches on the whole body are not.
 
 ## 2026-10-03 - Scrub-mode SYN cookies
 
