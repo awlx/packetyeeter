@@ -261,23 +261,24 @@ struct {
     __type(value, struct policy_entry);
 } policy_v6 SEC(".maps");
 
-// Counts packets dropped by an explicit POLICY_BLOCK CIDR rule, keyed by
-// source IP, so the collector can surface policy-engine activity even
-// though (unlike blocked_ips) these blocks are never reported back from
-// the analyzer.
-struct {
-    __uint(type, BPF_MAP_TYPE_LRU_HASH);
-    __uint(max_entries, 4096);
-    __type(key, __u32);
-    __type(value, __u64);
-} policy_blocks SEC(".maps");
+// POLICY_BLOCK matches by family (POLICY_STATS_*). Per-CPU totals rather than
+// a per-source map: a spoofed flood from a blocked prefix would otherwise
+// churn a shared LRU on every packet.
+#define POLICY_STATS_V4   0
+#define POLICY_STATS_V6   1
+#define POLICY_STATS_SIZE 2
+
+struct policy_counter {
+    __u64 packets;
+    __u64 bytes;
+};
 
 struct {
-    __uint(type, BPF_MAP_TYPE_LRU_HASH);
-    __uint(max_entries, 4096);
-    __type(key, struct in6_addr);
-    __type(value, __u64);
-} policy_blocks_v6 SEC(".maps");
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, POLICY_STATS_SIZE);
+    __type(key, __u32);
+    __type(value, struct policy_counter);
+} policy_block_stats SEC(".maps");
 
 // Bad Flags (TCP) - separate because handled by existing logic, but could unify?
 // Keeping existing logical to minimize drift for now.
@@ -329,10 +330,10 @@ struct {
 //   4 = UDP/IPv6 fragment mode (see CONFIG_KEY_UDP_FRAG_MODE)
 //   5 = scrub mode: per-CPU slow-path packets per second (0 = unlimited)
 //   6 = scrub mode: fingerprint generation (0 = off; parity selects the map)
-//   7-10 = scrub mode: SYN cookies (see CONFIG_KEY_SC_*)
+//   7-11 = scrub mode: SYN cookies (see CONFIG_KEY_SC_*)
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
-    __uint(max_entries, 11);
+    __uint(max_entries, 12);
     __type(key, __u32);
     __type(value, __u32);
 } config_map SEC(".maps");
@@ -916,23 +917,12 @@ static __always_inline int source_allowlisted_v6(struct in6_addr *saddr) {
     return bpf_map_lookup_elem(&allowlist_v6, &key) != NULL;
 }
 
-static __always_inline void count_policy_block_v4(__u32 saddr) {
-    __u64 *cnt = bpf_map_lookup_elem(&policy_blocks, &saddr);
-    if (cnt) {
-        __sync_fetch_and_add(cnt, 1);
-    } else {
-        __u64 one = 1;
-        bpf_map_update_elem(&policy_blocks, &saddr, &one, BPF_ANY);
-    }
-}
-
-static __always_inline void count_policy_block_v6(struct in6_addr *saddr) {
-    __u64 *cnt = bpf_map_lookup_elem(&policy_blocks_v6, saddr);
-    if (cnt) {
-        __sync_fetch_and_add(cnt, 1);
-    } else {
-        __u64 one = 1;
-        bpf_map_update_elem(&policy_blocks_v6, saddr, &one, BPF_ANY);
+// Bytes cover the linear part of the frame only, as in scrub_count.
+static __always_inline void count_policy_block(struct xdp_md *ctx, __u32 idx) {
+    struct policy_counter *c = bpf_map_lookup_elem(&policy_block_stats, &idx);
+    if (c) {
+        c->packets++;
+        c->bytes += ctx->data_end - ctx->data;
     }
 }
 
@@ -946,7 +936,7 @@ static __always_inline int check_policy_v4(struct xdp_md *ctx, __u32 saddr, __u6
     if (policy->action == POLICY_MONITOR) {
         *is_monitor = 1;
     } else if (policy->action == POLICY_BLOCK) {
-        count_policy_block_v4(saddr);
+        count_policy_block(ctx, POLICY_STATS_V4);
         emit_incident_v4(ctx, saddr, INCIDENT_POLICY_BLOCK, now);
         if (!*is_monitor) return CHECK_DROP;
     }
@@ -963,7 +953,7 @@ static __always_inline int check_policy_v6(struct xdp_md *ctx, struct in6_addr *
     if (policy->action == POLICY_MONITOR) {
         *is_monitor = 1;
     } else if (policy->action == POLICY_BLOCK) {
-        count_policy_block_v6(saddr);
+        count_policy_block(ctx, POLICY_STATS_V6);
         emit_incident_v6(ctx, saddr, INCIDENT_POLICY_BLOCK, now);
         if (!*is_monitor) return CHECK_DROP;
     }
@@ -1460,18 +1450,17 @@ static __always_inline void scrub_hs_close(void *map, struct scrub_hs *hs) {
         bpf_map_delete_elem(map, &hs->key);
 }
 
+// Called once bpf_redirect_map has accepted fib->ifindex: the helper only
+// records the target, so the frame can still be rewritten before returning.
 static __always_inline int scrub_redirect(struct xdp_md *ctx, struct ethhdr *eth,
                                           struct bpf_fib_lookup *fib, __u32 family, struct scrub_hs *hs) {
     __builtin_memcpy(eth->h_dest, fib->dmac, ETH_ALEN);
     __builtin_memcpy(eth->h_source, fib->smac, ETH_ALEN);
-    int action = bpf_redirect_map(&tx_ports, fib->ifindex, 0);
-    if (action != XDP_REDIRECT)
-        return scrub_verdict(ctx, SCRUB_VERDICT_DROP, family, action);
     if (family == SCRUB_FAMILY_V4)
         scrub_hs_open(&scrub_handshakes, hs);
     else
         scrub_hs_open(&scrub_handshakes_v6, hs);
-    return scrub_verdict(ctx, SCRUB_VERDICT_FORWARD, family, action);
+    return scrub_verdict(ctx, SCRUB_VERDICT_FORWARD, family, XDP_REDIRECT);
 }
 
 static __always_inline void ip_decrease_ttl(struct iphdr *ip) {
@@ -1502,7 +1491,9 @@ static __always_inline int scrub_forward_v4(struct xdp_md *ctx, struct ethhdr *e
     int rc = bpf_fib_lookup(ctx, &fib, sizeof(fib), 0);
     if (rc != BPF_FIB_LKUP_RET_SUCCESS)
         return scrub_fib_slow_path(ctx, rc, SCRUB_FAMILY_V4, is_monitor);
-    if (!bpf_map_lookup_elem(&tx_ports, &fib.ifindex))
+    // XDP_PASS on a miss, so a route out of any other port is checked before
+    // the frame is rewritten, with one devmap lookup instead of two.
+    if (bpf_redirect_map(&tx_ports, fib.ifindex, XDP_PASS) != XDP_REDIRECT)
         return scrub_slow_path(ctx, SCRUB_SLOW_EGRESS_OTHER, SCRUB_FAMILY_V4, is_monitor);
 
     ip_decrease_ttl(ip);
@@ -1528,7 +1519,9 @@ static __always_inline int scrub_forward_v6(struct xdp_md *ctx, struct ethhdr *e
     int rc = bpf_fib_lookup(ctx, &fib, sizeof(fib), 0);
     if (rc != BPF_FIB_LKUP_RET_SUCCESS)
         return scrub_fib_slow_path(ctx, rc, SCRUB_FAMILY_V6, is_monitor);
-    if (!bpf_map_lookup_elem(&tx_ports, &fib.ifindex))
+    // XDP_PASS on a miss, so a route out of any other port is checked before
+    // the frame is rewritten, with one devmap lookup instead of two.
+    if (bpf_redirect_map(&tx_ports, fib.ifindex, XDP_PASS) != XDP_REDIRECT)
         return scrub_slow_path(ctx, SCRUB_SLOW_EGRESS_OTHER, SCRUB_FAMILY_V6, is_monitor);
 
     ip6->hop_limit--;
@@ -1906,6 +1899,8 @@ __attribute__((noinline)) int scrub_match_rules(struct rule_pkt *p) {
 #define FP_MAP_SIZE 65536
 #define CONFIG_KEY_FINGERPRINT 6
 #define FP_EEXIST 17
+#define FP_E2BIG 7
+#define FP_EBUSY 16
 
 struct fp_key {
     __u32 dst[4];
@@ -1978,7 +1973,13 @@ static __always_inline void fp_bump(void *map, struct fp_key *k, __u64 len, __u3
     }
     if (o) {
         o->packets++;
-        o->full_gen = gen;
+        // Only a lost bucket-lock trylock (-EBUSY) is cheap and worth
+        // retrying next packet. A full map (-E2BIG) stays full, and an
+        // rqspinlock timeout or deadlock (-ETIMEDOUT/-EDEADLK) means the
+        // lock is contended enough that retrying per packet would spin
+        // again, so stop inserting until the next generation.
+        if (err != -FP_EBUSY)
+            o->full_gen = gen;
     }
 }
 
@@ -2070,6 +2071,7 @@ volatile const __u32 scrub_syncookies = 0;
 #define CONFIG_KEY_SC_SYN_PPS 8   // auto mode: SYNs per second, per CPU and destination
 #define CONFIG_KEY_SC_TTL     9   // seconds a source stays verified
 #define CONFIG_KEY_SC_STYLE   10
+#define CONFIG_KEY_SC_MAX_PPS 11  // challenges per second, all CPUs together (0 = unlimited)
 
 #define SC_MODE_AUTO 1
 #define SC_MODE_ON   2
@@ -2090,7 +2092,8 @@ volatile const __u32 scrub_syncookies = 0;
 #define SC_EV_UNSUPPORTED 5
 #define SC_EV_ERROR       6
 #define SC_EV_ACTIVATED   7
-#define SC_EVENTS         8
+#define SC_EV_SUPPRESSED  8
+#define SC_EVENTS         9
 
 #define SC_VERIFIED_SIZE  262144
 #define SC_DST_SLOT_BITS  13
@@ -2192,6 +2195,43 @@ static __always_inline int sc_active(struct rule_pkt *p, int syn, __u64 now) {
         }
     }
     return *until > now;
+}
+
+// When the challenge budget is next empty (GCRA theoretical arrival time).
+// One entry for all CPUs, so the cap holds however few RX queues a flood
+// lands on; only challenge candidates touch it.
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, __u64);
+} syncookie_challenge_budget SEC(".maps");
+
+// Burst allowance: a tenth of a second's budget, so any one second carries
+// at most about 1.1x the cap (a fixed one-second window allows 2x across
+// its boundary).
+#define SC_CAP_BURST_NS (SC_SEC_NS / 10)
+
+// Bounds challenge egress: every challenge is a SYN-ACK sent back towards
+// the (often spoofed) source, which cloud and transit egress bill or police.
+// A lost compare-and-swap means another CPU took the slot just then, so it
+// suppresses rather than retries: contention can only under-send.
+static __always_inline int sc_over_cap(__u64 now) {
+    __u32 limit = sc_cfg(CONFIG_KEY_SC_MAX_PPS);
+    if (limit == 0)
+        return 0;
+    __u32 zero = 0;
+    __u64 *tat = bpf_map_lookup_elem(&syncookie_challenge_budget, &zero);
+    if (!tat)
+        return 0;
+    __u64 old = *(volatile __u64 *)tat;
+    __u64 base = old > now ? old : now;
+    if (base - now > SC_CAP_BURST_NS)
+        return 1;
+    __u64 interval = SC_SEC_NS / limit;
+    if (interval == 0)
+        interval = 1;
+    return __sync_val_compare_and_swap(tat, old, base + interval) != old;
 }
 
 static __always_inline int sc_verified(struct rule_pkt *p, __u64 now) {
@@ -2318,6 +2358,12 @@ static __always_inline void sc_reply(struct ethhdr *eth, void *ip, struct tcphdr
 static __always_inline int sc_handle(struct rule_pkt *p, struct ethhdr *eth, void *ip, struct tcphdr *tcp,
                                      const int v6, int reply_len, int syn, __u32 style, __u64 now) {
     if (syn) {
+        // The source is unverified, so a SYN over the cap is dropped, not
+        // forwarded; the client's retransmission may get a challenge.
+        if (sc_over_cap(now)) {
+            sc_count(v6, SC_EV_SUPPRESSED);
+            return SC_DROP;
+        }
         __s64 cookie = sc_gen_cookie(ip, tcp, v6, style);
         if (cookie < 0) {
             sc_count(v6, SC_EV_ERROR);
@@ -2382,7 +2428,7 @@ __attribute__((noinline)) int scrub_syncookie(struct xdp_md *ctx, struct rule_pk
     // Nothing was challenged in monitor mode, so there is no answer to check.
     if (is_monitor) {
         if (syn)
-            sc_count(family, SC_EV_DRY_RUN);
+            sc_count(family, sc_over_cap(now) ? SC_EV_SUPPRESSED : SC_EV_DRY_RUN);
         return SC_CONTINUE;
     }
     if (!simple) {

@@ -65,14 +65,12 @@ func TestTransientFailureDoesNotPenalize(t *testing.T) {
 
 	// Pre-seed the verifier cache with a transient failure, as verifyDNS
 	// produces on a resolver timeout.
-	v.mu.Lock()
-	v.cache[ipStr] = &VerificationResult{
+	seedCache(v, ipStr, &VerificationResult{
 		BotType:          BotTypeGooglebot,
 		VerifiedAt:       time.Now(),
 		TransientFailure: true,
 		ErrorMessage:     "reverse DNS failed",
-	}
-	v.mu.Unlock()
+	})
 
 	result := h.VerifyBot(ip, "Mozilla/5.0 (compatible; Googlebot/2.1)", "AS15169", "Google LLC")
 	if result.IsImpersonation {

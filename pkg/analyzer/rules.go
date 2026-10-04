@@ -2,6 +2,7 @@ package analyzer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -175,15 +176,9 @@ func (a *Analyzer) syncScrubCollectors(ctx context.Context) int {
 	}
 	a.collectorsMu.RUnlock()
 
-	results := make(chan bool, len(scrub))
+	results := make(chan error, len(scrub))
 	for _, cs := range scrub {
-		go func() {
-			err := a.syncRules(cs)
-			if err != nil {
-				logrus.WithError(err).Warn("Failed to send rules to scrub collector")
-			}
-			results <- err == nil
-		}()
+		a.requestRuleSync(cs, results)
 	}
 	limit := a.ruleSyncTimeout
 	if limit <= 0 {
@@ -194,8 +189,10 @@ func (a *Analyzer) syncScrubCollectors(ctx context.Context) int {
 	synced := 0
 	for range scrub {
 		select {
-		case ok := <-results:
-			if ok {
+		case err := <-results:
+			if err != nil {
+				logrus.WithError(err).Warn("Failed to send rules to scrub collector")
+			} else {
 				synced++
 			}
 		case <-timeout.C:
@@ -208,24 +205,50 @@ func (a *Analyzer) syncScrubCollectors(ctx context.Context) int {
 	return synced
 }
 
-// syncRules sends one collector its complete rule set as a replacement.
+// requestRuleSync makes sure the collector is sent its complete rule set,
+// built after this call, and sends the result to res once; res must have room.
 // Collectors do not acknowledge rule changes, so a change that was rejected
 // or lost can only be repaired by sending everything again; every push and
-// the periodic resync do that. Holding rulesMu keeps sends to one collector
-// in order.
-func (a *Analyzer) syncRules(cs *collectorStream) error {
-	cs.rulesMu.Lock()
-	defer cs.rulesMu.Unlock()
-
-	cmd := a.ruleSetCommand()
-	cs.sendMu.Lock()
-	err := cs.stream.Send(cmd)
-	cs.sendMu.Unlock()
-	if err != nil {
-		return err
+// the periodic resync do that. Requests made while a send is running are
+// coalesced into one more send, so a collector that stopped reading costs one
+// blocked goroutine, not one per request.
+func (a *Analyzer) requestRuleSync(cs *collectorStream, res chan<- error) {
+	cs.syncMu.Lock()
+	cs.syncWaiters = append(cs.syncWaiters, res)
+	start := !cs.syncing
+	cs.syncing = true
+	cs.syncMu.Unlock()
+	if start && !a.goTracked(func() { a.runRuleSyncs(cs) }) {
+		cs.syncMu.Lock()
+		waiters := cs.syncWaiters
+		cs.syncWaiters, cs.syncing = nil, false
+		cs.syncMu.Unlock()
+		for _, w := range waiters {
+			w <- errors.New("analyzer shutting down")
+		}
 	}
-	metrics.RuleDeltasSent.Inc()
-	return nil
+}
+
+func (a *Analyzer) runRuleSyncs(cs *collectorStream) {
+	for {
+		cs.syncMu.Lock()
+		waiters := cs.syncWaiters
+		cs.syncWaiters = nil
+		if len(waiters) == 0 {
+			cs.syncing = false
+			cs.syncMu.Unlock()
+			return
+		}
+		cs.syncMu.Unlock()
+
+		err := a.sendLocked(cs, a.ruleSetCommand())
+		if err == nil {
+			metrics.RuleDeltasSent.Inc()
+		}
+		for _, w := range waiters {
+			w <- err
+		}
+	}
 }
 
 // ruleSetCommand builds the full replacement rule set every scrub collector
@@ -277,11 +300,13 @@ func (a *Analyzer) handleRoleSignal(collectorID string, cs *collectorStream, sig
 	// Only on becoming scrub: repeated announcements must not pile up
 	// goroutines behind a send that blocks.
 	if role == "scrub" && prev != "scrub" {
-		go func() {
-			if err := a.syncRules(cs); err != nil {
+		res := make(chan error, 1)
+		a.requestRuleSync(cs, res)
+		a.goTracked(func() {
+			if err := <-res; err != nil {
 				logrus.WithError(err).WithField("collector", collectorID).Warn("Failed to send rules to scrub collector")
 			}
-		}()
+		})
 	}
 }
 

@@ -11,6 +11,8 @@ import (
 	"os"
 	"slices"
 
+	"PacketYeeter/pkg/nic"
+
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
 	"github.com/cilium/ebpf/features"
@@ -28,19 +30,22 @@ type LoaderConfig struct {
 	Interface    string // the protected host's interface, or the outside port in scrub mode
 	InsideIface  string // scrub mode only
 	XDPMode      XDPMode
-	AllowGeneric bool // scrub mode only
-	Fingerprints bool // scrub mode only
-	SynCookies   bool // scrub mode only
+	AllowGeneric bool         // scrub mode only
+	Fingerprints bool         // scrub mode only
+	SynCookies   bool         // scrub mode only
+	HandshakeLRU HandshakeLRU // scrub mode only; zero value is auto
 }
 
 type Loader struct {
 	cfg        LoaderConfig
+	handshakes HandshakeSizing
 	coll       *ebpf.Collection
 	maps       *Maps
 	links      []link.Link // XDP
 	iface      string
 	scrubLink  link.Link
 	outsideIdx int
+	scrubPorts []ScrubPort
 
 	// TC Filter objects
 	ingressFilter *netlink.BpfFilter
@@ -59,6 +64,39 @@ func NewLoader(cfg LoaderConfig) *Loader {
 		iface: cfg.Interface,
 	}
 }
+
+// sizeScrubHandshakes applies SizeScrubHandshakes to both families alike.
+func (l *Loader) sizeScrubHandshakes(spec *ebpf.CollectionSpec, names ...string) error {
+	possible, err := ebpf.PossibleCPU()
+	if err != nil {
+		return fmt.Errorf("count possible CPUs: %w", err)
+	}
+	// On failure assume all possible CPUs are online: that only costs
+	// per-CPU capacity on hotplug-capable hosts. The collector logs it.
+	online, onlineErr := OnlineCPUs()
+	if onlineErr != nil {
+		online = possible
+	}
+	l.handshakes = SizeScrubHandshakes(l.cfg.HandshakeLRU, possible, online)
+	l.handshakes.OnlineErr = onlineErr
+	for _, name := range names {
+		m, ok := spec.Maps[name]
+		if !ok {
+			return fmt.Errorf("BPF object has no %s map", name)
+		}
+		m.MaxEntries = l.handshakes.Entries
+		if l.handshakes.PerCPU {
+			m.Flags |= unix.BPF_F_NO_COMMON_LRU
+		} else {
+			m.Flags &^= unix.BPF_F_NO_COMMON_LRU
+		}
+	}
+	return nil
+}
+
+// HandshakeSizing reports the scrub handshake map layout Load chose; zero
+// outside scrub mode.
+func (l *Loader) HandshakeSizing() HandshakeSizing { return l.handshakes }
 
 // Only the mode's own programs are loaded, so scrub-only code can never make
 // host mode fail verification, and vice versa.
@@ -96,6 +134,11 @@ func (l *Loader) Load() error {
 	}
 	for _, name := range unused {
 		delete(spec.Maps, name)
+	}
+	if l.cfg.Mode == ModeScrub {
+		if err := l.sizeScrubHandshakes(spec, handshakes, handshakesV6); err != nil {
+			return err
+		}
 	}
 
 	// The fingerprint maps preallocate per-CPU values (2 MiB per CPU for
@@ -150,8 +193,7 @@ func (l *Loader) Load() error {
 		AllowListV6:         l.coll.Maps["allowlist_v6"],
 		PolicyV4:            l.coll.Maps["policy_v4"],
 		PolicyV6:            l.coll.Maps["policy_v6"],
-		PolicyBlocks:        l.coll.Maps["policy_blocks"],
-		PolicyBlocksV6:      l.coll.Maps["policy_blocks_v6"],
+		PolicyBlockStats:    l.coll.Maps["policy_block_stats"],
 		Events:              l.coll.Maps["events"],
 		Incidents:           l.coll.Maps["incidents"],
 		EgressBytes:         l.coll.Maps["egress_bytes"],
@@ -299,7 +341,7 @@ func (l *Loader) attachScrub() error {
 		return fmt.Errorf("outside and inside interface are both %s", outside.Name)
 	}
 
-	insideLink, err := l.attachXDPWithMode(l.coll.Programs["xdp_pass_inside"], inside)
+	insideLink, insideGeneric, err := l.attachXDPWithMode(l.coll.Programs["xdp_pass_inside"], inside, false)
 	if err != nil {
 		return fmt.Errorf("inside interface %s does not accept XDP: %w", inside.Name, err)
 	}
@@ -309,43 +351,88 @@ func (l *Loader) attachScrub() error {
 		return fmt.Errorf("add inside interface %s to tx_ports: %w", inside.Name, err)
 	}
 
-	scrubLink, err := l.attachXDPWithMode(l.coll.Programs["xdp_scrub"], outside)
+	// Native redirects into a port without native XDP have no ndo_xdp_xmit
+	// (or, on ixgbe/i40e, no XDP TX rings) and are dropped, so a generic
+	// inside port keeps the outside generic too.
+	scrubLink, outsideGeneric, err := l.attachXDPWithMode(l.coll.Programs["xdp_scrub"], outside, insideGeneric)
 	if err != nil {
 		return fmt.Errorf("attach xdp_scrub to %s: %w", outside.Name, err)
 	}
 	l.links = append(l.links, scrubLink)
 	l.scrubLink = scrubLink
 	l.outsideIdx = outside.Index
+	l.scrubPorts = []ScrubPort{
+		scrubPort("outside", outside, outsideGeneric),
+		scrubPort("inside", inside, insideGeneric),
+	}
 	return nil
+}
+
+// ScrubPort is how one scrub-mode port ended up attached.
+type ScrubPort struct {
+	Role     string
+	Name     string
+	Generic  bool
+	Features *nic.DevFeatures // nil when the kernel cannot report them
+	// FeaturesErr is set when Features is nil.
+	FeaturesErr error
+}
+
+func scrubPort(role string, iface *net.Interface, generic bool) ScrubPort {
+	p := ScrubPort{Role: role, Name: iface.Name, Generic: generic}
+	// Queried after attaching: veth, ixgbe and i40e only advertise
+	// ndo-xmit once an XDP program is on the port.
+	f, err := nic.QueryDevFeatures(iface.Index)
+	if err == nil {
+		p.Features = &f
+	} else {
+		p.FeaturesErr = err
+	}
+	return p
+}
+
+// ScrubPorts reports the attach mode and driver XDP features of the outside
+// and inside port, in that order; empty outside scrub mode.
+func (l *Loader) ScrubPorts() []ScrubPort {
+	return l.scrubPorts
 }
 
 // attachXDPWithMode refuses generic XDP in scrub mode unless allowed, because
 // it is far too slow to scrub at line rate and the kernel would otherwise fall
 // back to it silently.
-func (l *Loader) attachXDPWithMode(prog *ebpf.Program, iface *net.Interface) (link.Link, error) {
+// preferGeneric skips the native attempt in auto mode; it is only set once
+// another port already fell back, which requires AllowGeneric.
+func (l *Loader) attachXDPWithMode(prog *ebpf.Program, iface *net.Interface, preferGeneric bool) (link.Link, bool, error) {
 	opts := link.XDPOptions{Program: prog, Interface: iface.Index}
+	generic := func() (link.Link, bool, error) {
+		opts.Flags = link.XDPGenericMode
+		lnk, err := link.AttachXDP(opts)
+		return lnk, true, err
+	}
 	switch l.cfg.XDPMode {
 	case XDPModeGeneric:
 		if !l.cfg.AllowGeneric {
-			return nil, errors.New("generic XDP requires -allow-generic")
+			return nil, false, errors.New("generic XDP requires -allow-generic")
 		}
-		opts.Flags = link.XDPGenericMode
-		return link.AttachXDP(opts)
+		return generic()
 	case XDPModeNative:
 		opts.Flags = link.XDPDriverMode
-		return link.AttachXDP(opts)
+		lnk, err := link.AttachXDP(opts)
+		return lnk, false, err
 	}
 
+	if preferGeneric && l.cfg.AllowGeneric {
+		return generic()
+	}
 	opts.Flags = link.XDPDriverMode
 	lnk, err := link.AttachXDP(opts)
 	if err != nil && l.cfg.AllowGeneric {
-		opts.Flags = link.XDPGenericMode
-		return link.AttachXDP(opts)
+		return generic()
 	}
 	if err != nil {
-		return nil, fmt.Errorf("native XDP unavailable (pass -allow-generic for labs): %w", err)
+		return nil, false, fmt.Errorf("native XDP unavailable (pass -allow-generic for labs): %w", err)
 	}
-	return lnk, nil
+	return lnk, false, nil
 }
 
 // ScrubAttached reports whether xdp_scrub is still attached to the outside port.

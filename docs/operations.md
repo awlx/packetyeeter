@@ -118,9 +118,19 @@ service user). The analyzer unit's `ProtectSystem=strict` still allows reading
 
 Certificates, keys and CA bundles are re-read without a restart: before each
 new TLS handshake the file's modification time and size are checked, and the
-file is parsed again when they changed. Existing connections keep the
-certificate they were established with; collectors pick up a new analyzer
-certificate when they reconnect.
+file is parsed again when they changed. The analyzer also checks
+`-tls-client-ca` every 10 seconds; when it changed, connections whose client
+certificate no longer verifies against it are closed at once (logged as
+`Closing connection: client certificate is not trusted by the reloaded
+-tls-client-ca`), with their open streams. Other connections keep the
+certificates they were established with until the analyzer closes them after
+`-grpc-max-connection-age` (default `1h`, ±10%) plus
+`-grpc-max-connection-age-grace` (default `30s`) for open streams; clients
+then reconnect with a new handshake. So a rotated analyzer certificate or
+client certificate is in use everywhere within about an hour. Collectors
+reconnect on their own and are resynced; controllers holding a
+`WatchDecisions` stream must reconnect too. Set `-grpc-max-connection-age 0`
+to keep connections indefinitely.
 
 - Replace files atomically (write to a temporary file in the same directory,
   then `mv`). A certificate and key that do not match yet, or a file that does
@@ -131,8 +141,10 @@ certificate when they reconnect.
   (`-tls-client-ca`, `-analyzer-tls-ca`), then issue new certificates, then
   remove the old CA.
 - The analyzer does not check revocation lists. To cut off a compromised
-  client certificate, rotate to a new CA or remove its name from
-  `-control-client-names`.
+  client certificate, rotate to a new CA: once the old CA is removed from
+  `-tls-client-ca`, its clients are disconnected within about 10 seconds and
+  cannot reconnect. Removing its name from `-control-client-names` needs a
+  restart, which also ends its connections.
 
 ### Control-plane authorization
 
@@ -243,29 +255,40 @@ in-flight lookups are cancelled on analyzer shutdown.
 
 Until an IP has a cached verdict, its requests are handled as follows:
 
-- **Pending** (lookup queued or running, for at most the 5-second DNS
-  budget since it was queued): the request is unverified. It gets
-  neither the verified-bot exemption (no positive signal, no raised
-  sustained-download floors) nor the impersonation penalty. Heuristics that
-  presume a browser UA claim is false (header order, `sec-ch`, `Sec-Fetch-*`,
-  `Accept`, TLS version, JA4 rotation) are skipped, because a verified crawler
-  would be exempt from them. Everything else - rate limits, error tracking,
-  JA4DB, bot-keyword and missing-header signals, threat intel and the
-  reputation threshold - applies as for any unverified client.
-- **Dropped** (queue full, or the verdict cache is full): no lookup is started
-  and the request is handled as a plain unverified client, with all
-  heuristics. Treating it as pending would let a lookup flood switch those
-  heuristics off. The same applies once a lookup has been queued or running
-  for longer than the DNS budget, so a backlog cannot stretch the pending
-  window.
+- **Pending** (for at most the 5-second DNS budget per IP, counted from its
+  first pending request, whether the lookup is queued, running, or could not
+  be queued yet because the queue was full): the request is unverified. It
+  gets neither the verified-bot exemption (no positive signal, no raised
+  sustained-download floors) nor the impersonation penalty. The heuristics a
+  verified crawler would be exempt from are skipped: header order, `sec-ch`,
+  `Sec-Fetch-*`, `Accept`, TLS version, JA4 rotation, the bot-keyword
+  User-Agent signal, the known-bot JA4DB match and the missing
+  `Accept-Language`/cookies/`Referer` signals. Rate limits, error and path
+  tracking, threat intel and the reputation threshold apply as for any
+  client. An IP cannot get a new pending window until a minute after its
+  last one ended, unless a verdict arrived in between.
+- **Dropped** (the pending window is used up, or more than 65536 IPs are
+  pending at once): the request is handled as a plain unverified client, with
+  all heuristics, so a lookup flood cannot switch them off indefinitely. A
+  lookup that could not be queued is retried on the IP's next request.
+- **Revalidating** (verified before, verdict expired less than an hour ago):
+  pending until the new verdict arrives, without using up the window, so a
+  lookup flood cannot strip known crawlers of their exemption at expiry.
+
+Verdicts are cached in two pools of 50000 IPs each, one for verified crawlers
+and one for failed or incomplete verifications. When a pool is full its oldest
+verdict is evicted, so fake crawler claims can only push out other failed
+claims, never a verified crawler, and new verdicts are always cached.
 
 Requests after the lookup completes get the cached verdict: verified bots are
 exempt, impersonators are penalised. In practice the first request or few from
 a new crawler IP are unverified rather than verified or penalised. This errs
 towards neither blocking nor allowlisting on an unconfirmed claim.
 
-Watch `packetyeeter_bot_verification_queue_depth` and
-`packetyeeter_bot_verification_queue_drops_total`. Sustained drops mean
+Watch `packetyeeter_bot_verification_queue_depth`,
+`packetyeeter_bot_verification_queue_drops_total` and
+`packetyeeter_bot_verification_cache_evictions_total`. Sustained drops or
+unverified-pool evictions mean
 lookups are slow or a flood of new bot-claiming IPs is arriving; check
 resolver latency before anything else.
 
@@ -317,6 +340,13 @@ sudo packetyeeter-collector -mode scrub -i eth0 -inside-if eth1 -dry-run
 Requirements, checked at start-up (the collector refuses to start otherwise):
 
 - Linux 5.15 or newer, and native XDP on both ports (`-allow-generic` for labs).
+  At start-up the collector logs one `Scrub port attached` line per port, with
+  its XDP mode and driver XDP features (Linux 6.3+). It warns if the outside
+  driver lacks `XDP_REDIRECT`, or if the inside driver lacks `ndo_xdp_xmit`,
+  which makes the kernel drop every forwarded frame. With `-allow-generic`, a
+  generic inside port forces the outside port to generic too.
+  `yeetctl nic-check` runs the same checks before deployment;
+  [scrub-hardware.md](scrub-hardware.md) covers NIC choice and tuning.
 - `net.ipv4.ip_forward=1` and `net.ipv4.conf.<outside>.forwarding=1`, plus
   `net.ipv6.conf.all.forwarding=1` and `net.ipv6.conf.<outside>.forwarding=1`
   when the node has a global IPv6 address on either port or any IPv6 route
@@ -402,13 +432,39 @@ apply. Signals reach the analyzer after
 threshold as host mode. Handshake RTT (JA4L) needs the SYN-ACK and is not
 available in scrub mode.
 
-Scrub nodes keep these entries in `scrub_handshakes(_v6)` (500k entries per
-family; `bpftool` truncates both names to `scrub_handshake`) with per-CPU LRU
-lists. The kernel gives every possible CPU (`/sys/devices/system/cpu/possible`)
-an equal share, and under a random-source SYN flood each CPU evicts its own
-oldest entries: a CPU taking most of the flood, or a host with far fewer online
-than possible CPUs, evicts sooner than the total size suggests. A SYN evicted
-before its ACK is never reported.
+Scrub nodes keep these entries in `scrub_handshakes(_v6)` (`bpftool`
+truncates both names to `scrub_handshake`). By default they use per-CPU LRU
+lists, which keep a random-source SYN flood from serialising every CPU on one
+LRU lock. The kernel splits a per-CPU LRU map's entries evenly over every
+possible CPU (`/sys/devices/system/cpu/possible`), and a CPU only evicts its
+own, so the collector sizes the maps at start-up for the online CPUs: each
+online CPU gets 1/n of 500k entries per family, and the map has that share
+times the possible CPUs. On hosts where all possible CPUs are online that is
+500k, as before. `-scrub-handshake-lru` selects the layout:
+
+- `auto` (default): per-CPU lists sized as above, up to 1M entries per family.
+  If that is not enough (more than twice as many possible as online CPUs,
+  typical of VMs with CPU hotplug headroom), the maps fall back to one common
+  LRU list with 500k entries.
+- `percpu`: always per-CPU lists, at most 1M entries (rounded down to a
+  multiple of the possible CPUs, as the kernel does); with many more possible
+  than online CPUs each online CPU then holds less than its share.
+- `common`: one LRU list with 500k entries shared by all CPUs. No CPU evicts
+  early, but inserts contend on one lock: on the veth bench (3 sender CPUs) a
+  random-source SYN flood cost 41% of the forwarding rate with it against 34%
+  with per-CPU lists.
+
+The maps preallocate about 105 bytes per IPv4 and 129 bytes per IPv6 entry:
+about 111 MiB for the pair at 500k entries, 223 MiB at 1M. With `auto` or
+`percpu`, a host with more possible than online CPUs (but at most twice as
+many) gets more than 500k entries, up to twice the memory of earlier releases;
+set `-scrub-handshake-lru common` to keep 500k entries per family if that
+memory matters more than lock contention. The collector logs the chosen mode,
+entries, per-CPU share and estimated memory at start-up ("Scrub handshake maps
+sized"), and warns if it cannot read `/sys/devices/system/cpu/online` (it then
+sizes for all possible CPUs). With per-CPU
+lists a CPU taking most of a flood still evicts its own oldest entries sooner
+than the total size suggests. A SYN evicted before its ACK is never reported.
 
 A connection's SYN and first ACK must cross the same scrub node. With several
 nodes, keep ECMP hashing on the 5-tuple, and expect a short burst of
@@ -442,7 +498,12 @@ acknowledge rules: a collector that rejected or missed a set converges within
 a minute, and rules a restarted analyzer no longer knows are removed.
 `PushRulesAck.collectors` says how many scrub collectors were sent the set
 within 10 seconds; it does not confirm they applied it, so compare
-`packetyeeter_scrub_rules_active` on the collectors. All scopes together must
+`packetyeeter_scrub_rules_active` on the collectors. At most one send runs
+per collector; pushes and resyncs made meanwhile are folded into one more send
+of the then-current set. A collector that stops reading commands for 30
+seconds has its stream closed by the analyzer
+(`packetyeeter_collector_send_stalls_total`) and gets the full set again when
+it reconnects. All scopes together must
 also encode to at most 3 MiB. A rule is withdrawn from collectors 5 seconds
 before its `expires_at`, so a collector whose clock runs slightly ahead does
 not reject the whole set.
@@ -671,6 +732,24 @@ Client-visible effects and caveats:
 - Challenged SYNs are not forwarded, so they never open incomplete-handshake
   entries; the flood shows up in `packetyeeter_scrub_syncookie_total` and, as
   drops, in fingerprints.
+
+Challenge rate cap: every challenge is a SYN-ACK sent back out of the
+outside port, so a spoofed SYN flood turns into an equal flood of SYN-ACKs
+towards the spoofed sources. On cloud instances and metered or policed
+transit that egress costs money or hits the provider's packet-rate limits.
+`-scrub-syn-cookie-max-pps` (default `0`, unlimited) caps challenges per second
+for the node as a whole: unlike `-scrub-slow-path-pps` the budget is shared by
+all CPUs, so it holds however many RX queues the NIC has. Challenges are paced
+with a burst of a tenth of a second's budget, so any one second carries at
+most about 1.1 times the cap. A SYN from an unverified source over the cap is
+dropped unanswered (not forwarded) and counted as `event="suppressed"`. The
+tradeoff: while the cap is reached, real clients' SYNs are suppressed at the
+same rate as spoofed ones (each SYN gets a challenge with a probability of
+roughly cap / SYN rate), so new clients only get through when a retransmission
+finds budget; already verified sources are unaffected. Size it from the
+egress you can afford, well above the normal rate of new clients
+(`event="challenge"` outside attacks). In `-dry-run`, would-be challenges over
+the cap count as `suppressed` instead of `dry_run`.
 
 Cost: SYNs and answer candidates take a few map lookups; a challenge rewrites
 the received frame in place. The verified-source maps preallocate 262,144

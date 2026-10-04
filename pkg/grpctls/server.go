@@ -48,14 +48,6 @@ func NewServerCredentials(c ServerConfig, log logrus.FieldLogger) (credentials.T
 	if !c.Enabled() {
 		return nil, nil
 	}
-	cfg, err := newServerTLSConfig(c, log)
-	if err != nil {
-		return nil, err
-	}
-	return credentials.NewTLS(cfg), nil
-}
-
-func newServerTLSConfig(c ServerConfig, log logrus.FieldLogger) (*tls.Config, error) {
 	keyPair, err := newKeyPairSource(c.CertFile, c.KeyFile, log)
 	if err != nil {
 		return nil, err
@@ -66,6 +58,14 @@ func newServerTLSConfig(c ServerConfig, log logrus.FieldLogger) (*tls.Config, er
 			return nil, err
 		}
 	}
+	creds := credentials.NewTLS(newServerTLSConfig(keyPair, clientCAs))
+	if clientCAs == nil {
+		return creds, nil
+	}
+	return newTrackingServerCreds(creds, clientCAs, log), nil
+}
+
+func newServerTLSConfig(keyPair *fileSource[*tls.Certificate], clientCAs *fileSource[*x509.CertPool]) *tls.Config {
 	getCert := func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return keyPair.get(), nil }
 	return &tls.Config{
 		MinVersion:     tls.VersionTLS12,
@@ -85,5 +85,5 @@ func newServerTLSConfig(c ServerConfig, log logrus.FieldLogger) (*tls.Config, er
 			}
 			return cfg, nil
 		},
-	}, nil
+	}
 }

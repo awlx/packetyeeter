@@ -19,6 +19,9 @@ type fakeFPStore struct {
 	drained []uint32
 	setErr  error
 	events  []string
+	// drainFail makes the next drain return only the first entry and an
+	// error, keeping the rest in the map.
+	drainFail bool
 }
 
 func (s *fakeFPStore) SetFingerprintGeneration(gen uint32) error {
@@ -36,6 +39,12 @@ func (s *fakeFPStore) DrainFingerprints(gen uint32) ([]ebpf.Fingerprint, error) 
 	}
 	s.events = append(s.events, "drain")
 	s.drained = append(s.drained, gen)
+	if s.drainFail && len(s.maps[gen&1]) > 1 {
+		s.drainFail = false
+		out := s.maps[gen&1][:1]
+		s.maps[gen&1] = s.maps[gen&1][1:]
+		return out, errors.New("iteration aborted")
+	}
 	out := s.maps[gen&1]
 	s.maps[gen&1] = nil
 	return out, nil
@@ -87,6 +96,35 @@ func TestFingerprinterFlip(t *testing.T) {
 	store.setErr = errors.New("boom")
 	if _, _, err := f.flip(); err == nil || f.gen != 3 {
 		t.Errorf("failed switch: err %v, gen %d; want an error and the generation kept", err, f.gen)
+	}
+}
+
+func TestFingerprinterRetriesPartialDrain(t *testing.T) {
+	store := &fakeFPStore{}
+	f := newFingerprinter(store)
+	f.sleep = func(time.Duration) {}
+	if err := f.start(); err != nil {
+		t.Fatal(err)
+	}
+	store.packet(ebpf.Fingerprint{Packets: 1})
+	store.packet(ebpf.Fingerprint{Packets: 2})
+	store.drainFail = true
+	fps, _, err := f.flip()
+	if err == nil || len(fps) != 1 || f.retry != 1 {
+		t.Fatalf("flip 1: %d fps, err %v, retry %d; want 1 fp, an error and gen 1 to retry", len(fps), err, f.retry)
+	}
+
+	// The leftover of map 1 is drained before XDP switches back to it.
+	store.packet(ebpf.Fingerprint{Packets: 3})
+	fps, _, err = f.flip()
+	if err != nil || len(fps) != 2 || f.retry != 0 {
+		t.Fatalf("flip 2: %d fps, err %v, retry %d; want the leftover and the new fp", len(fps), err, f.retry)
+	}
+	if fps[0].Packets != 2 || fps[1].Packets != 3 {
+		t.Errorf("flip 2 fps = %+v, want 2 then 3 packets", fps)
+	}
+	if len(store.maps[1]) != 0 {
+		t.Errorf("map 1 still holds %d entries after XDP switched back", len(store.maps[1]))
 	}
 }
 
