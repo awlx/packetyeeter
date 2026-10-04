@@ -20,6 +20,7 @@ import (
 	"PacketYeeter/pkg/geoip"
 	"PacketYeeter/pkg/grpctls"
 	"PacketYeeter/pkg/metrics"
+	"PacketYeeter/pkg/nic"
 
 	"github.com/cilium/ebpf/perf"
 	"github.com/prometheus/client_golang/prometheus"
@@ -396,6 +397,7 @@ func (c *Collector) Start(ctx context.Context) error {
 			"outside": c.Config.Interface,
 			"inside":  c.Config.InsideInterface,
 		}).Info("xdp_scrub attached: forwarding clean traffic from outside to inside port")
+		c.logScrubPorts()
 	} else {
 		c.Logger.Info("eBPF programs loaded and attached")
 	}
@@ -2233,4 +2235,25 @@ func parsePolicyRules(spec string) ([]ebpf.PolicyRule, error) {
 	}
 
 	return rules, errors.Join(errs...)
+}
+
+// logScrubPorts records how each scrub port is attached and warns about
+// states that make forwarding slow or lossy (docs/scrub-hardware.md).
+func (c *Collector) logScrubPorts() {
+	for _, p := range c.Loader.ScrubPorts() {
+		fields := logrus.Fields{"role": p.Role, "interface": p.Name, "xdp_mode": "native"}
+		if p.Generic {
+			fields["xdp_mode"] = "generic"
+		}
+		if p.Features != nil {
+			fields["xdp_features"] = p.Features.XDP.String()
+			fields["xdp_rx_metadata"] = p.Features.RxMetadata.String()
+		} else if p.FeaturesErr != nil {
+			fields["xdp_features"] = "unknown: " + p.FeaturesErr.Error()
+		}
+		c.Logger.WithFields(fields).Info("Scrub port attached")
+		for _, w := range nic.ScrubPortWarnings(p.Role, p.Generic, p.Features) {
+			c.Logger.WithFields(logrus.Fields{"role": p.Role, "interface": p.Name}).Warn(w)
+		}
+	}
 }

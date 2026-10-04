@@ -178,6 +178,13 @@ scr sysctl -qw net.ipv4.conf.out0.forwarding=1
 log "starting collector in scrub mode"
 start_collector
 pass "/readyz is 200"
+# Before 6.3 the kernel cannot report driver XDP features; only the mode is checked there.
+if grep -q 'interface=in0 role=inside xdp_features="basic,redirect,ndo-xmit' "$COLLECTOR_LOG" \
+   || grep -q 'interface=in0 role=inside xdp_features="unknown: netdev netlink.*xdp_mode=native' "$COLLECTOR_LOG"; then
+  pass "inside port logged as a native redirect target"
+else
+  bad "no native ndo-xmit start-up line for in0: $(grep 'Scrub port attached' "$COLLECTOR_LOG" | tail -2)"
+fi
 
 fwd4=$(metric packetyeeter_scrub_packets_total 'family="ipv4",verdict="forward"')
 http_ok "http://$DST4:8080/" && pass "IPv4 TCP forwarded" || bad "IPv4 TCP to $DST4 failed"
