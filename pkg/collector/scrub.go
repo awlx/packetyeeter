@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"PacketYeeter/pkg/collector/ebpf"
@@ -21,10 +22,13 @@ import (
 
 // Defaults of the scrub-only flags, so host mode can warn when they are set.
 const (
-	DefaultReadyzDrain      = 5 * time.Second
-	DefaultScrubSlowPathPPS = 100000
-	DefaultSynCookieSynPPS  = 10000
-	DefaultSynCookieTTL     = 10 * time.Minute
+	DefaultReadyzDrain = 5 * time.Second
+	// Covers an analyzer restart and the 1s reconnect after a stable stream
+	// breaks, so a blip does not move traffic off the node.
+	DefaultReadyzAnalyzerGrace = 30 * time.Second
+	DefaultScrubSlowPathPPS    = 100000
+	DefaultSynCookieSynPPS     = 10000
+	DefaultSynCookieTTL        = 10 * time.Minute
 )
 
 func (c *Collector) synCookiesEnabled() bool {
@@ -54,6 +58,9 @@ func validateModeConfig(cfg Config) (warnings []string, err error) {
 		}
 		if cfg.ReadyzDrain != 0 && cfg.ReadyzDrain != DefaultReadyzDrain {
 			warnings = append(warnings, "-readyz-drain has no effect in host mode")
+		}
+		if cfg.ReadyzAnalyzerGrace != 0 && cfg.ReadyzAnalyzerGrace != DefaultReadyzAnalyzerGrace {
+			warnings = append(warnings, "-readyz-analyzer-grace has no effect in host mode")
 		}
 		if cfg.ScrubSlowPathPPS != 0 && cfg.ScrubSlowPathPPS != DefaultScrubSlowPathPPS {
 			warnings = append(warnings, "-scrub-slow-path-pps has no effect in host mode")
@@ -88,6 +95,8 @@ func validateScrubConfig(cfg Config) error {
 		return errors.New("-xdp-mode generic in scrub mode requires -allow-generic")
 	case cfg.EgressAccounting:
 		return errors.New("-egress-accounting is not available in scrub mode (no TC programs)")
+	case cfg.ReadyzAnalyzerGrace < 0:
+		return fmt.Errorf("-readyz-analyzer-grace must be 0 (analyzer not required) or positive, got %s", cfg.ReadyzAnalyzerGrace)
 	case cfg.FingerprintInterval < 0 || (cfg.FingerprintInterval > 0 && cfg.FingerprintInterval < time.Second):
 		return fmt.Errorf("-fingerprint-interval must be 0 (off) or at least 1s, got %s", cfg.FingerprintInterval)
 	case cfg.FingerprintInterval > 0 && cfg.FingerprintTop < 1:
@@ -276,7 +285,7 @@ type readinessCheck struct {
 }
 
 func (c *Collector) scrubReadinessChecks() []readinessCheck {
-	return []readinessCheck{
+	checks := []readinessCheck{
 		{"xdp_scrub", c.Loader.ScrubAttached},
 		{"inside port", func() error { return checkInsidePort(c.Config.InsideInterface, c.Maps.HasTxPort) }},
 		{"forwarding", func() error {
@@ -285,6 +294,54 @@ func (c *Collector) scrubReadinessChecks() []readinessCheck {
 			})
 		}},
 	}
+	if c.Config.ReadyzAnalyzerGrace > 0 {
+		checks = append(checks, readinessCheck{"analyzer", c.analyzerReady.check})
+	}
+	return checks
+}
+
+// analyzerReadiness gates readiness on the analyzer stream: without it the
+// node gets no new rules or blocks, so the controller should prefer another
+// node. Forwarding itself never depends on the analyzer.
+type analyzerReadiness struct {
+	grace time.Duration
+	now   func() time.Time
+
+	mu        sync.Mutex
+	up        bool
+	everUp    bool
+	downSince time.Time
+}
+
+func newAnalyzerReadiness(grace time.Duration) *analyzerReadiness {
+	return &analyzerReadiness{grace: grace, now: time.Now}
+}
+
+func (a *analyzerReadiness) set(up bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.up && !up {
+		a.downSince = a.now()
+	}
+	a.up = up
+	a.everUp = a.everUp || up
+}
+
+func (a *analyzerReadiness) check() error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	switch {
+	case a.up:
+		return nil
+	case !a.everUp:
+		// No rules or blocks have been received since start-up.
+		return errors.New("stream not connected yet")
+	}
+	down := a.now().Sub(a.downSince)
+	if down < a.grace {
+		return nil
+	}
+	return fmt.Errorf("stream down for %s", down.Truncate(time.Second))
 }
 
 func (c *Collector) scrubReady() error {

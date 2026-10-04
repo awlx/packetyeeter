@@ -109,10 +109,15 @@ ip netns exec "$NS_DST" python3 -m http.server 8080 --bind :: >/dev/null 2>&1 &
 HTTP_PID=$!
 
 METRICS=127.0.0.1:2112
-start_collector() {
+# Most checks run without an analyzer, so readiness leaves it out unless a
+# test passes -readyz-analyzer-grace.
+launch_collector() {
   ip netns exec "$NS_SCR" "$COLLECTOR_BIN" -mode scrub -i out0 -inside-if in0 -metrics-addr "$METRICS" \
-    -socket "" -analyzer-addr 127.0.0.1:1 -policy "$POLICY4/32=block" "$@" >>"$COLLECTOR_LOG" 2>&1 &
+    -socket "" -analyzer-addr 127.0.0.1:1 -readyz-analyzer-grace 0 -policy "$POLICY4/32=block" "$@" >>"$COLLECTOR_LOG" 2>&1 &
   COLLECTOR_PID=$!
+}
+start_collector() {
+  launch_collector "$@"
   for _ in $(seq 50); do
     [[ "$(scr curl -s -o /dev/null -w '%{http_code}' "http://$METRICS/readyz" || true)" == 200 ]] && return 0
     kill -0 "$COLLECTOR_PID" 2>/dev/null || { tail -20 "$COLLECTOR_LOG"; die "collector exited"; }
@@ -695,6 +700,29 @@ src ip link set dev src0 xdpdrv off
 stop_collector
 start_collector
 fi
+
+log "readiness follows the analyzer stream"
+stop_collector
+readyz() { scr curl -s "http://$METRICS/readyz" || true; }
+launch_collector -readyz-analyzer-grace 2s
+for _ in $(seq 25); do [[ "$(readyz)" == *"analyzer: stream not connected yet"* ]] && break; sleep 0.2; done
+[[ "$(readyz)" == *"analyzer: stream not connected yet"* ]] && pass "/readyz 503 until the analyzer stream is up" \
+  || bad "without an analyzer: $(readyz)"
+stop_collector
+start_collector -analyzer-addr 127.0.0.1:59999 -readyz-analyzer-grace 2s
+pass "/readyz 200 with the analyzer stream up"
+kill "$SINK_PID"; wait "$SINK_PID" 2>/dev/null || true
+sleep 0.5
+[[ "$(readyz)" == ready ]] && pass "/readyz stays 200 within the grace period" || bad "within grace: $(readyz)"
+sleep 2
+[[ "$(readyz)" == *"analyzer: stream down"* ]] && pass "/readyz 503 after the grace period" || bad "after grace: $(readyz)"
+http_ok "http://$DST4:8080/" && pass "forwarding continues without the analyzer" || bad "forwarding stopped without the analyzer"
+ip netns exec "$NS_SCR" "$SINK_BIN" 127.0.0.1:59999 "$CMD_FIFO" >>"$SINK_LOG" 2>&1 &
+SINK_PID=$!
+for _ in $(seq 100); do [[ "$(readyz)" == ready ]] && break; sleep 0.2; done
+[[ "$(readyz)" == ready ]] && pass "/readyz recovers when the analyzer returns" || bad "after analyzer restart: $(readyz)"
+stop_collector
+start_collector
 
 log "fail open on crash"
 stop_collector

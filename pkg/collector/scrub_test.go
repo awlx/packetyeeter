@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -28,6 +29,7 @@ func TestValidateModeConfig(t *testing.T) {
 		"host with default drain": {func(c *Config) {
 			host(c)
 			c.ReadyzDrain = DefaultReadyzDrain
+			c.ReadyzAnalyzerGrace = DefaultReadyzAnalyzerGrace
 			c.ScrubSlowPathPPS = DefaultScrubSlowPathPPS
 			c.FingerprintInterval = DefaultFingerprintInterval
 			c.FingerprintTop = DefaultFingerprintTop
@@ -38,6 +40,9 @@ func TestValidateModeConfig(t *testing.T) {
 		}, true, 0},
 		"host with fingerprints":    {func(c *Config) { host(c); c.FingerprintInterval = time.Second; c.FingerprintTop = 4 }, true, 2},
 		"host with custom drain":    {func(c *Config) { host(c); c.ReadyzDrain = time.Second }, true, 1},
+		"host with analyzer grace":  {func(c *Config) { host(c); c.ReadyzAnalyzerGrace = time.Second }, true, 1},
+		"negative analyzer grace":   {func(c *Config) { c.ReadyzAnalyzerGrace = -time.Second }, false, 0},
+		"analyzer not required":     {func(c *Config) { c.ReadyzAnalyzerGrace = 0 }, true, 0},
 		"host with custom slow pps": {func(c *Config) { host(c); c.ScrubSlowPathPPS = 5 }, true, 1},
 		"host with inside-if":       {func(c *Config) { host(c); c.InsideInterface = "eth1" }, false, 0},
 		"host with allow-generic":   {func(c *Config) { host(c); c.AllowGeneric = true }, false, 0},
@@ -214,6 +219,56 @@ func TestScrubReadyz(t *testing.T) {
 	c.draining.Store(true)
 	if err := c.scrubReady(); err == nil || !strings.Contains(err.Error(), "draining") {
 		t.Fatalf("scrubReady while draining = %v", err)
+	}
+}
+
+func TestAnalyzerReadiness(t *testing.T) {
+	now := time.Unix(1000, 0)
+	a := newAnalyzerReadiness(30 * time.Second)
+	a.now = func() time.Time { return now }
+
+	if err := a.check(); err == nil || !strings.Contains(err.Error(), "not connected yet") {
+		t.Fatalf("before first connect: %v, want not connected yet", err)
+	}
+	a.set(false) // failed dial before any stream
+	if err := a.check(); err == nil {
+		t.Fatal("failed first dial reported ready")
+	}
+	a.set(true)
+	if err := a.check(); err != nil {
+		t.Fatalf("connected: %v", err)
+	}
+	a.set(false)
+	now = now.Add(29 * time.Second)
+	if err := a.check(); err != nil {
+		t.Fatalf("within grace: %v", err)
+	}
+	a.set(false) // repeated failed redials must not restart the grace period
+	now = now.Add(time.Second)
+	if err := a.check(); err == nil || !strings.Contains(err.Error(), "down for 30s") {
+		t.Fatalf("after grace: %v, want down for 30s", err)
+	}
+	a.set(true)
+	if err := a.check(); err != nil {
+		t.Fatalf("reconnected: %v", err)
+	}
+}
+
+func TestScrubReadinessChecksAnalyzer(t *testing.T) {
+	names := func(c *Collector) []string {
+		var out []string
+		for _, rc := range c.scrubReadinessChecks() {
+			out = append(out, rc.name)
+		}
+		return out
+	}
+	c := &Collector{Config: Config{ReadyzAnalyzerGrace: time.Second}, analyzerReady: newAnalyzerReadiness(time.Second)}
+	if got := names(c); !slices.Contains(got, "analyzer") {
+		t.Errorf("checks %v, want analyzer included", got)
+	}
+	c.Config.ReadyzAnalyzerGrace = 0
+	if got := names(c); slices.Contains(got, "analyzer") {
+		t.Errorf("checks %v with grace 0, want analyzer left out", got)
 	}
 }
 

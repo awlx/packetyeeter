@@ -302,6 +302,7 @@ sudo ./packetyeeter-collector -i eth0 -analyzer-addr 127.0.0.1:9090
 | `-inside-if` | `""` | Scrub mode: inside port clean traffic is forwarded to. Required in scrub mode; rejected in host mode. |
 | `-xdp-mode` | `auto` | XDP attach mode: `auto` (kernel default; in scrub mode native, failing unless `-allow-generic`), `native`, or `generic`. |
 | `-allow-generic` | `false` | Scrub mode: allow generic XDP. Labs only; far slower than native. Rejected in host mode. |
+| `-readyz-analyzer-grace` | `30s` | Scrub mode: `/readyz` needs the analyzer stream (not ready until it first connects); after the stream breaks the node stays ready this long. `0` leaves the analyzer out of readiness. Forwarding never depends on the analyzer. |
 | `-readyz-drain` | `5s` | Scrub mode: how long `/readyz` reports not ready on shutdown before XDP detaches. The control plane keeps running meanwhile. |
 | `-handshake-timeout` | `3s` | How long a SYN may go without the client's ACK before it is reported to the analyzer as an incomplete handshake. Applies in both modes. |
 | `-scrub-slow-path-pps` | `100000` | Scrub mode: max packets/s handed to the kernel slow path across all CPUs; excess is dropped (counted in monitor mode). `0` = unlimited. |

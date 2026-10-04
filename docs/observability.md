@@ -332,7 +332,8 @@ time:
 - `packetyeeter_scrub_ttl_expired_total` (counter): packets arriving with TTL or
   hop limit <= 1; an alias of `packetyeeter_scrub_slow_path_total{reason="ttl"}`,
   kept for dashboards. A rising rate indicates a routing loop.
-- `packetyeeter_scrub_ready` (gauge): 1 while `/readyz` returns 200.
+- `packetyeeter_scrub_ready` (gauge): 1 while `/readyz` returns 200. Includes
+  the analyzer stream check (see `-readyz-analyzer-grace`).
 - `packetyeeter_scrub_rule_matches_total{action}` (counter): packets matching a
   runtime rule, by its action (`drop`, `rate_limit`, `pass`). Rate-limited
   packets count whether or not they were over the rate. Rule drops (and, in
