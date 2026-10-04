@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"PacketYeeter/pkg/analyzer/reputation"
+	"PacketYeeter/pkg/metrics"
 )
 
 // Trusted scrub evidence: the shared per-source state (RateLimiter,
@@ -36,6 +37,21 @@ func (a *Analyzer) checkRateLimitFor(cs *collectorStream, ip net.IP, asn string)
 		}
 	}
 	return limited || fanout, fanout
+}
+
+// skipSharedOnlyBlock reports whether a rate-limit or reputation block of a
+// source on cs must be skipped: cs is a trusted scrub stream and only the
+// shared state, which any connected collector feeds, crossed the threshold.
+// Trusted scrub nodes block on trusted scrub evidence alone, so an untrusted
+// collector cannot get a source blocked on them. Other streams block on the
+// shared verdict as before; with -scrub-client-names empty no stream is
+// trusted and nothing changes. kind labels the skip metric.
+func (a *Analyzer) skipSharedOnlyBlock(cs *collectorStream, trustedVerdict bool, kind string) bool {
+	if cs == nil || !cs.isTrustedScrub() || trustedVerdict {
+		return false
+	}
+	metrics.ScrubSharedOnlyBlocksSkipped.WithLabelValues(kind).Inc()
+	return true
 }
 
 // penalizeRateLimited records a rate-limit trip in the shared reputation
@@ -115,6 +131,7 @@ func (e *evidenceSet) evictSampledLocked() {
 	}
 	if n > 0 {
 		delete(e.seen, oldest)
+		metrics.ScrubEvidenceEvictions.Inc()
 	}
 }
 

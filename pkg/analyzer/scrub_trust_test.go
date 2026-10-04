@@ -5,6 +5,10 @@ import (
 	"net"
 	"testing"
 	"time"
+
+	"PacketYeeter/pkg/metrics"
+
+	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 func TestEvidenceSetTTLAndRefresh(t *testing.T) {
@@ -47,6 +51,7 @@ func TestEvidenceSetEvictsAtCapacity(t *testing.T) {
 	for i := range capacity {
 		e.addAt(benchIP(i), t0.Add(time.Duration(i)*time.Second))
 	}
+	evictions := testutil.ToFloat64(metrics.ScrubEvidenceEvictions)
 	for i := range 2 * capacity {
 		ip := benchIP(capacity + i)
 		e.addAt(ip, t0.Add(time.Hour/2))
@@ -56,6 +61,9 @@ func TestEvidenceSetEvictsAtCapacity(t *testing.T) {
 		if !e.hasAt(ip, t0.Add(time.Hour/2)) {
 			t.Fatalf("new entry %v not stored", ip)
 		}
+	}
+	if got := testutil.ToFloat64(metrics.ScrubEvidenceEvictions) - evictions; got != 2*capacity {
+		t.Fatalf("evictions counted = %v, want %d", got, 2*capacity)
 	}
 	// Refreshing an existing key at capacity evicts nothing.
 	existing := benchIP(2*capacity + capacity - 1)

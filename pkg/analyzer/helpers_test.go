@@ -117,6 +117,17 @@ func (a *Analyzer) markBlocked(ip net.IP) {
 	a.reserveBlock(ip, scopeLocal, []*collectorStream{{}}, time.Now())
 }
 
+// publishedScopes returns the scopes r has published within the TTL.
+func publishedScopes(r *blockReservation) blockScope {
+	var out blockScope
+	for _, sc := range blockScopes {
+		if r.publishedWithin(sc, time.Now()) {
+			out |= sc
+		}
+	}
+	return out
+}
+
 // liveReservation returns ip's block reservation if it is within the TTL.
 func liveReservation(a *Analyzer, ip net.IP) *blockReservation {
 	a.recentBlocksMu.Lock()
@@ -135,9 +146,9 @@ func TestRecentBlocksTTLIndependentOfSweep(t *testing.T) {
 	t.Cleanup(a.cancel)
 	now := time.Now()
 	expired, live, stale := net.ParseIP("192.0.2.1"), net.ParseIP("192.0.2.2"), net.ParseIP("192.0.2.3")
-	a.recentBlocks[expired.String()] = &blockReservation{at: now.Add(-recentBlockTTL - time.Second), scopes: scopeLocal}
-	a.recentBlocks[live.String()] = &blockReservation{at: now.Add(-recentBlockTTL + 5*time.Second), scopes: scopeLocal}
-	a.recentBlocks[stale.String()] = &blockReservation{at: now.Add(-3 * recentBlockTTL), scopes: scopeLocal}
+	a.recentBlocks[expired.String()] = &blockReservation{at: now.Add(-recentBlockTTL - time.Second)}
+	a.recentBlocks[live.String()] = &blockReservation{at: now.Add(-recentBlockTTL + 5*time.Second)}
+	a.recentBlocks[stale.String()] = &blockReservation{at: now.Add(-3 * recentBlockTTL)}
 	// Future, so a slow -race run cannot cross the sweep interval.
 	a.recentBlocksSwept = now.Add(time.Hour)
 
@@ -173,4 +184,65 @@ func TestCloseIdempotent(t *testing.T) {
 	a.Reputation = rep
 	a.Close()
 	a.Close()
+}
+
+// Collectors that take turns getting a source's block less than a TTL apart
+// keep its reservation alive; WatchDecisions must still see the source again
+// about once per TTL per scope instead of once for the whole attack.
+func TestReservationRepublishesWhileSendsChain(t *testing.T) {
+	for _, scope := range blockScopes {
+		t.Run(fmt.Sprintf("scope %d", scope), func(t *testing.T) {
+			a, err := New(Config{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ip := net.ParseIP("192.0.2.77")
+			collectors := []*collectorStream{{}, {}}
+			t0 := time.Now()
+			var published []time.Duration
+			for i := range 20 { // 11m40s of alternating 35s sends
+				at := time.Duration(i) * 35 * time.Second
+				target := collectors[i%2]
+				fresh, publish := a.reserveBlock(ip, scope, []*collectorStream{target}, t0.Add(at))
+				if len(fresh) != 1 {
+					t.Fatalf("t=%v: collector last blocked 70s ago was skipped", at)
+				}
+				if publish {
+					published = append(published, at)
+				}
+			}
+			if len(published) < 10 {
+				t.Fatalf("published at %v, want about once per 60-70s over 11m40s", published)
+			}
+			for i := 1; i < len(published); i++ {
+				if gap := published[i] - published[i-1]; gap < recentBlockTTL || gap > 70*time.Second {
+					t.Fatalf("publish gap %v at %v, want 60-70s", gap, published[i])
+				}
+			}
+		})
+	}
+}
+
+// Sent entries expire per collector, so a collector blocked over a TTL ago
+// gets the block again while the reservation lives on, but only that one.
+func TestReservationExpiresSentPerCollector(t *testing.T) {
+	a, err := New(Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ip := net.ParseIP("192.0.2.78")
+	x, y := &collectorStream{}, &collectorStream{}
+	t0 := time.Now()
+	a.reserveBlock(ip, scopeFanout, []*collectorStream{x}, t0)
+	a.reserveBlock(ip, scopeFanout, []*collectorStream{y}, t0.Add(40*time.Second))
+	fresh, _ := a.reserveBlock(ip, scopeFanout, []*collectorStream{x, y}, t0.Add(65*time.Second))
+	if len(fresh) != 1 || fresh[0] != x {
+		t.Fatalf("fresh = %v, want only x", fresh)
+	}
+	a.recentBlocksMu.Lock()
+	n := len(a.recentBlocks[ip.String()].sent)
+	a.recentBlocksMu.Unlock()
+	if n != 2 {
+		t.Fatalf("sent entries = %d, want 2", n)
+	}
 }

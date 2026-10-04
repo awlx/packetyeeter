@@ -85,7 +85,7 @@ func BenchmarkMarkBlocked(b *testing.B) {
 			a := newOfflineAnalyzer(b, false)
 			now := time.Now()
 			for i := 0; i < n; i++ {
-				a.recentBlocks[benchIP(i).String()] = &blockReservation{at: now, scopes: scopeLocal}
+				a.recentBlocks[benchIP(i).String()] = &blockReservation{at: now}
 			}
 			ips := make([]net.IP, 1<<16)
 			for i := range ips {

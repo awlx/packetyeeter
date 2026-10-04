@@ -68,7 +68,12 @@ func startFanoutAnalyzer(t *testing.T) (*analyzer.Analyzer, func(name string) ap
 	}
 	noRefill := 0.0
 	limits := ratelimit.Config{IPRateExact: &noRefill, IPBurst: fanoutBurst}
+	// Replace the limiters New() built; stop theirs so no cleanup goroutine leaks.
+	a.RateLimiter.Stop()
 	a.RateLimiter = ratelimit.NewLimiter(limits)
+	if a.ScrubRateLimiter != nil {
+		a.ScrubRateLimiter.Stop()
+	}
 	a.ScrubRateLimiter = ratelimit.NewLimiter(limits)
 	if err := a.Start(); err != nil {
 		t.Fatalf("start analyzer: %v", err)
@@ -213,9 +218,9 @@ func TestUntrustedScrubCannotFanOutOverGRPC(t *testing.T) {
 	expectNoBlock(t, "trusted scrub node", blocksA)
 }
 
-// An unlisted collector drains a victim's shared bucket without tripping it;
-// the next trusted scrub signal trips the shared limiter, but the block stays
-// on that trusted node instead of fanning out.
+// An unlisted collector drains a victim's shared bucket without tripping it.
+// Trusted scrub nodes that then report the victim trip only the shared
+// limiter, so neither is blocked; trusted-only evidence still blocks both.
 func TestUntrustedEvidenceCannotTriggerFanoutOverGRPC(t *testing.T) {
 	_, dial := startFanoutAnalyzer(t)
 
@@ -248,7 +253,12 @@ func TestUntrustedEvidenceCannotTriggerFanoutOverGRPC(t *testing.T) {
 		t.Fatal("rogue stream never ended")
 	}
 	sendSignals(t, victim, 1, scrubA)
-
-	expectBlock(t, ctx, "scrub A", blocksA, victim)
+	sendSignals(t, victim, 1, scrubB)
+	expectNoBlock(t, "scrub A", blocksA)
 	expectNoBlock(t, "scrub B", blocksB)
+
+	// Two trusted reports so far; fanoutBurst-1 more cross the trusted limit.
+	sendSignals(t, victim, fanoutBurst-1, scrubA)
+	expectBlock(t, ctx, "scrub A", blocksA, victim)
+	expectBlock(t, ctx, "scrub B", blocksB, victim)
 }

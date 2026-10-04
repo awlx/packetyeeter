@@ -244,9 +244,12 @@ func (a *Analyzer) processHTTPRequest(sig *apiv1.Signal, ip net.IP, asn string, 
 	// Apply rate limiting for HTTP/SPOE signals
 	if limited, fanout := a.checkRateLimitFor(cs, ip, asn); limited {
 		if !a.Config.DryRun {
+			a.penalizeRateLimited(ip, fanout)
+			if a.skipSharedOnlyBlock(cs, fanout, "rate_limit") {
+				return
+			}
 			metrics.HAProxyBlocks.Inc()
 			metrics.HTTPFloodBlocks.Inc()
-			a.penalizeRateLimited(ip, fanout)
 			a.sendCommand(cs, &apiv1.Command{
 				Type:   apiv1.CommandType_COMMAND_BLOCK_IP,
 				Ip:     sig.Ip,
@@ -749,6 +752,10 @@ func (a *Analyzer) processHTTPRequest(sig *apiv1.Signal, ip net.IP, asn string, 
 	// Check reputation threshold and potentially block
 	score := a.Reputation.GetScore(ip.String(), reputation.TypeIP)
 	if score > a.Config.ReputationThreshold {
+		fanout := a.scrubReputationExceeded(cs, ip)
+		if !a.Config.DryRun && a.skipSharedOnlyBlock(cs, fanout, "reputation") {
+			return
+		}
 		shouldBlock := a.mlConfirmsReputationBlock(ip, asn, score, "http")
 
 		if shouldBlock && !a.Config.DryRun {
@@ -757,7 +764,7 @@ func (a *Analyzer) processHTTPRequest(sig *apiv1.Signal, ip net.IP, asn string, 
 				Type:   apiv1.CommandType_COMMAND_BLOCK_IP,
 				Ip:     sig.Ip,
 				Reason: fmt.Sprintf("HTTP reputation threshold exceeded: %.0f", score),
-			}, a.scrubReputationExceeded(cs, ip))
+			}, fanout)
 		}
 	}
 }
