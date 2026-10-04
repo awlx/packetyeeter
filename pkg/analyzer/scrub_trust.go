@@ -30,6 +30,10 @@ func (a *Analyzer) checkRateLimitFor(cs *collectorStream, ip net.IP, asn string)
 	limited = a.checkRateLimit(ip, asn)
 	if cs != nil && cs.isTrustedScrub() && a.ScrubRateLimiter != nil {
 		fanout = !a.ScrubRateLimiter.Allow(ip, asn)
+		if fanout && !limited {
+			// Count it like a shared trip: the source is blocked either way.
+			a.recordRateLimitTrip(ip, asn)
+		}
 	}
 	return limited || fanout, fanout
 }
@@ -54,7 +58,9 @@ func (a *Analyzer) scrubReputationExceeded(cs *collectorStream, ip net.IP) bool 
 }
 
 // evidenceSet remembers recently seen addresses, bounded in age and size.
-// A nil set is empty.
+// Inserts are O(1): a full set evicts the oldest of a small sample, and
+// expired entries are dropped by purge, which cleanupTrackingMaps runs every
+// few minutes, never on the insert path. A nil set is empty.
 type evidenceSet struct {
 	mu   sync.RWMutex
 	seen map[string]time.Time
@@ -62,16 +68,23 @@ type evidenceSet struct {
 	max  int
 }
 
+// evidenceEvictionSample bounds the entries an insert into a full set
+// inspects, as in ratelimit's evictOldestLocked.
+const evidenceEvictionSample = 8
+
 func newEvidenceSet(ttl time.Duration, maxEntries int) *evidenceSet {
 	return &evidenceSet{seen: make(map[string]time.Time), ttl: ttl, max: maxEntries}
 }
 
 func (e *evidenceSet) add(ip net.IP) {
+	e.addAt(ip, time.Now())
+}
+
+func (e *evidenceSet) addAt(ip net.IP, now time.Time) {
 	if e == nil || ip == nil {
 		return
 	}
 	key := ip.String()
-	now := time.Now()
 	e.mu.RLock()
 	last, ok := e.seen[key]
 	e.mu.RUnlock()
@@ -81,21 +94,14 @@ func (e *evidenceSet) add(ip net.IP) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if _, ok := e.seen[key]; !ok && len(e.seen) >= e.max {
-		e.evictLocked(now)
+		e.evictSampledLocked()
 	}
 	e.seen[key] = now
 }
 
-// evictLocked drops expired entries, or failing that a sampled oldest one.
-func (e *evidenceSet) evictLocked(now time.Time) {
-	for k, t := range e.seen {
-		if now.Sub(t) >= e.ttl {
-			delete(e.seen, k)
-		}
-	}
-	if len(e.seen) < e.max {
-		return
-	}
+// evictSampledLocked drops the oldest of up to evidenceEvictionSample
+// entries; Go's randomized map iteration makes them a pseudo-random sample.
+func (e *evidenceSet) evictSampledLocked() {
 	var oldest string
 	var oldestAt time.Time
 	n := 0
@@ -103,19 +109,49 @@ func (e *evidenceSet) evictLocked(now time.Time) {
 		if n == 0 || t.Before(oldestAt) {
 			oldest, oldestAt = k, t
 		}
-		if n++; n >= 8 {
+		if n++; n >= evidenceEvictionSample {
 			break
 		}
 	}
-	delete(e.seen, oldest)
+	if n > 0 {
+		delete(e.seen, oldest)
+	}
+}
+
+// purge drops expired entries and returns how many remain.
+func (e *evidenceSet) purge(now time.Time) int {
+	if e == nil {
+		return 0
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for k, t := range e.seen {
+		if now.Sub(t) >= e.ttl {
+			delete(e.seen, k)
+		}
+	}
+	return len(e.seen)
+}
+
+func (e *evidenceSet) len() int {
+	if e == nil {
+		return 0
+	}
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return len(e.seen)
 }
 
 func (e *evidenceSet) has(ip net.IP) bool {
+	return e.hasAt(ip, time.Now())
+}
+
+func (e *evidenceSet) hasAt(ip net.IP, now time.Time) bool {
 	if e == nil || ip == nil {
 		return false
 	}
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	t, ok := e.seen[ip.String()]
-	return ok && time.Since(t) < e.ttl
+	return ok && now.Sub(t) < e.ttl
 }
