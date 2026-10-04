@@ -88,6 +88,17 @@ func fillFromOneCPU(t *testing.T, hm *cebpf.Map, n int) int {
 	t.Helper()
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
+	var prev unix.CPUSet
+	if err := unix.SchedGetaffinity(0, &prev); err != nil {
+		t.Fatal(err)
+	}
+	// Restore before UnlockOSThread hands the thread back to the scheduler,
+	// so later tests do not inherit a thread pinned to CPU 0.
+	defer func() {
+		if err := unix.SchedSetaffinity(0, &prev); err != nil {
+			t.Errorf("restore CPU affinity: %v", err)
+		}
+	}()
 	var set unix.CPUSet
 	set.Set(0)
 	if err := unix.SchedSetaffinity(0, &set); err != nil {
