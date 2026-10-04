@@ -74,6 +74,12 @@ func TestValidateModeConfig(t *testing.T) {
 		"syn cookies auto, 0pps":  {func(c *Config) { c.SynCookies = ebpf.SynCookiesAuto; c.SynCookieTTL = time.Minute }, false, 0},
 		"syn cookie ttl < 1s":     {func(c *Config) { c.SynCookies = ebpf.SynCookiesOn; c.SynCookieTTL = time.Millisecond }, false, 0},
 		"syn cookies off, no ttl": {func(c *Config) { c.SynCookies = ebpf.SynCookiesOff }, true, 0},
+		"handshake lru empty":     {func(c *Config) { c.ScrubHandshakeLRU = "" }, true, 0},
+		"handshake lru auto":      {func(c *Config) { c.ScrubHandshakeLRU = ebpf.HandshakeLRUAuto }, true, 0},
+		"handshake lru percpu":    {func(c *Config) { c.ScrubHandshakeLRU = ebpf.HandshakeLRUPerCPU }, true, 0},
+		"handshake lru common":    {func(c *Config) { c.ScrubHandshakeLRU = ebpf.HandshakeLRUCommon }, true, 0},
+		"handshake lru invalid":   {func(c *Config) { c.ScrubHandshakeLRU = "shared" }, false, 0},
+		"host with handshake lru": {func(c *Config) { host(c); c.ScrubHandshakeLRU = ebpf.HandshakeLRUCommon }, true, 1},
 	} {
 		cfg := scrub
 		tc.mutate(&cfg)

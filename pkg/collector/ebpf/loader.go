@@ -30,13 +30,15 @@ type LoaderConfig struct {
 	Interface    string // the protected host's interface, or the outside port in scrub mode
 	InsideIface  string // scrub mode only
 	XDPMode      XDPMode
-	AllowGeneric bool // scrub mode only
-	Fingerprints bool // scrub mode only
-	SynCookies   bool // scrub mode only
+	AllowGeneric bool         // scrub mode only
+	Fingerprints bool         // scrub mode only
+	SynCookies   bool         // scrub mode only
+	HandshakeLRU HandshakeLRU // scrub mode only; zero value is auto
 }
 
 type Loader struct {
 	cfg        LoaderConfig
+	handshakes HandshakeSizing
 	coll       *ebpf.Collection
 	maps       *Maps
 	links      []link.Link // XDP
@@ -62,6 +64,39 @@ func NewLoader(cfg LoaderConfig) *Loader {
 		iface: cfg.Interface,
 	}
 }
+
+// sizeScrubHandshakes applies SizeScrubHandshakes to both families alike.
+func (l *Loader) sizeScrubHandshakes(spec *ebpf.CollectionSpec, names ...string) error {
+	possible, err := ebpf.PossibleCPU()
+	if err != nil {
+		return fmt.Errorf("count possible CPUs: %w", err)
+	}
+	// On failure assume all possible CPUs are online: that only costs
+	// per-CPU capacity on hotplug-capable hosts. The collector logs it.
+	online, onlineErr := OnlineCPUs()
+	if onlineErr != nil {
+		online = possible
+	}
+	l.handshakes = SizeScrubHandshakes(l.cfg.HandshakeLRU, possible, online)
+	l.handshakes.OnlineErr = onlineErr
+	for _, name := range names {
+		m, ok := spec.Maps[name]
+		if !ok {
+			return fmt.Errorf("BPF object has no %s map", name)
+		}
+		m.MaxEntries = l.handshakes.Entries
+		if l.handshakes.PerCPU {
+			m.Flags |= unix.BPF_F_NO_COMMON_LRU
+		} else {
+			m.Flags &^= unix.BPF_F_NO_COMMON_LRU
+		}
+	}
+	return nil
+}
+
+// HandshakeSizing reports the scrub handshake map layout Load chose; zero
+// outside scrub mode.
+func (l *Loader) HandshakeSizing() HandshakeSizing { return l.handshakes }
 
 // Only the mode's own programs are loaded, so scrub-only code can never make
 // host mode fail verification, and vice versa.
@@ -99,6 +134,11 @@ func (l *Loader) Load() error {
 	}
 	for _, name := range unused {
 		delete(spec.Maps, name)
+	}
+	if l.cfg.Mode == ModeScrub {
+		if err := l.sizeScrubHandshakes(spec, handshakes, handshakesV6); err != nil {
+			return err
+		}
 	}
 
 	// The fingerprint maps preallocate per-CPU values (2 MiB per CPU for
@@ -153,8 +193,7 @@ func (l *Loader) Load() error {
 		AllowListV6:         l.coll.Maps["allowlist_v6"],
 		PolicyV4:            l.coll.Maps["policy_v4"],
 		PolicyV6:            l.coll.Maps["policy_v6"],
-		PolicyBlocks:        l.coll.Maps["policy_blocks"],
-		PolicyBlocksV6:      l.coll.Maps["policy_blocks_v6"],
+		PolicyBlockStats:    l.coll.Maps["policy_block_stats"],
 		Events:              l.coll.Maps["events"],
 		Incidents:           l.coll.Maps["incidents"],
 		EgressBytes:         l.coll.Maps["egress_bytes"],

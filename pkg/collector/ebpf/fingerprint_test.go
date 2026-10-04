@@ -2,11 +2,14 @@ package ebpf
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"net"
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/cilium/ebpf"
 )
 
 func TestFingerprintLayout(t *testing.T) {
@@ -95,5 +98,103 @@ func TestSumFingerprints(t *testing.T) {
 	}
 	if got[1].Key.Proto != 6 || got[1].Packets != 5 || got[1].Bytes != 300 {
 		t.Errorf("second = %+v, want proto 6, 5 packets, 300 bytes", got[1])
+	}
+}
+
+// fakeFPMap is a per-CPU fingerprint map on a kernel without batch ops.
+type fakeFPMap struct {
+	entries map[FingerprintKey][]ScrubCounter
+	order   []FingerprintKey
+	deleted []FingerprintKey
+	failAt  int // iteration fails before this position when > 0
+}
+
+func (m *fakeFPMap) String() string { return "fake-fp" }
+
+func (m *fakeFPMap) BatchLookupAndDelete(*ebpf.MapBatchCursor, any, any, *ebpf.BatchOptions) (int, error) {
+	return 0, fmt.Errorf("map batch lookup and delete: %w", ebpf.ErrNotSupported)
+}
+
+func (m *fakeFPMap) Delete(key any) error {
+	k := *key.(*FingerprintKey)
+	if _, ok := m.entries[k]; !ok {
+		return ebpf.ErrKeyNotExist
+	}
+	delete(m.entries, k)
+	m.deleted = append(m.deleted, k)
+	return nil
+}
+
+type fakeFPIter struct {
+	m   *fakeFPMap
+	pos int
+	err error
+}
+
+func (it *fakeFPIter) Next(k, v any) bool {
+	for it.pos < len(it.m.order) {
+		if it.m.failAt > 0 && it.pos == it.m.failAt {
+			it.err = errors.New("iteration aborted")
+			return false
+		}
+		key := it.m.order[it.pos]
+		it.pos++
+		if val, ok := it.m.entries[key]; ok {
+			*k.(*FingerprintKey) = key
+			*v.(*[]ScrubCounter) = append([]ScrubCounter(nil), val...)
+			return true
+		}
+	}
+	return false
+}
+
+func (it *fakeFPIter) Err() error { return it.err }
+
+func (m *fakeFPMap) iterate() entryIterator { return &fakeFPIter{m: m} }
+
+func TestDrainFingerprintsWithoutBatchOps(t *testing.T) {
+	m := &fakeFPMap{entries: map[FingerprintKey][]ScrubCounter{}}
+	for i, pc := range [][]ScrubCounter{
+		{{1, 100}, {2, 200}},
+		{{0, 0}, {4, 400}},
+		{{0, 0}, {0, 0}},
+	} {
+		k := FingerprintKey{Proto: uint8(i + 1)}
+		m.entries[k] = pc
+		m.order = append(m.order, k)
+	}
+
+	got, err := drainFingerprints(m, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].Packets != 3 || got[0].Bytes != 300 || got[1].Packets != 4 {
+		t.Fatalf("drained %+v, want 3 and 4 packets", got)
+	}
+	if len(m.entries) != 0 || len(m.deleted) != 3 {
+		t.Fatalf("%d entries left, %d deleted; want the map emptied", len(m.entries), len(m.deleted))
+	}
+}
+
+func TestDrainFingerprintsIterErrorDeletesWhatWasRead(t *testing.T) {
+	m := &fakeFPMap{entries: map[FingerprintKey][]ScrubCounter{}, failAt: 2}
+	for i := range 3 {
+		k := FingerprintKey{Proto: uint8(i + 1)}
+		m.entries[k] = []ScrubCounter{{1, 10}}
+		m.order = append(m.order, k)
+	}
+
+	got, err := drainFingerprints(m, 1)
+	if err == nil {
+		t.Fatal("iteration error not returned")
+	}
+	if len(got) != 2 || len(m.deleted) != 2 || len(m.entries) != 1 {
+		t.Fatalf("got %d fps, deleted %d, %d left; want 2 read and deleted, 1 left", len(got), len(m.deleted), len(m.entries))
+	}
+
+	m.failAt = 0
+	got, err = drainFingerprints(m, 1)
+	if err != nil || len(got) != 1 || len(m.entries) != 0 {
+		t.Fatalf("retry: %d fps, err %v, %d left; want the rest drained", len(got), err, len(m.entries))
 	}
 }

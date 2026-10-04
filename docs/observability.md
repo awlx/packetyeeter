@@ -360,13 +360,19 @@ time:
 - `packetyeeter_scrub_fingerprint_buckets` (gauge): fingerprint buckets read
   in the last `-fingerprint-interval`, before the caps.
 - `packetyeeter_scrub_fingerprint_overflow_total` (counter): packets not
-  fingerprinted because the map was full (a new bucket that did not fit). A
-  rising rate is expected under spoofed-source floods; the sent top buckets
+  fingerprinted because the map was full (a new bucket that did not fit), or,
+  rarely, because the insert lost a bucket-lock race. A full map or a
+  timed-out bucket lock stops new buckets on that CPU until the next interval;
+  existing buckets keep counting. A rising rate is expected under spoofed-source floods; the sent top buckets
   then reflect the earliest traffic of each interval.
 - `packetyeeter_scrub_fingerprint_capped_total{kind}` (counter): buckets
   (`kind="bucket"`) and destinations (`kind="destination"`) not sent because of
   `-fingerprint-top` or the 256-destination cap per interval. Buckets of cut
   destinations count as cut buckets too.
+- `packetyeeter_scrub_fingerprint_drain_errors_total` (counter): intervals
+  in which switching or draining a fingerprint map failed. What was read is
+  still sent; the rest of the map is drained before XDP writes to it again
+  and reported with the next interval.
 
 The fingerprint metrics are only exported when `-fingerprint-interval` is
 non-zero.
@@ -397,6 +403,34 @@ With `-scrub-syn-cookies` on or auto (see
   `packetyeeter_scrub_packets_total{verdict="drop"}`.
 - `packetyeeter_scrub_syncookie_verified_sources{family}` (gauge): sources
   verified less than `-scrub-syn-cookie-ttl` ago, counted at scrape time.
+
+## Collector policy counters
+
+`packetyeeter_policy_blocked_packets_total{family}` and
+`packetyeeter_policy_blocked_bytes_total{family}` count packets matching a
+`-policy CIDR=block` rule, in host and scrub mode. `family` is `ipv4` or
+`ipv6`. They are per-CPU kernel counters summed at scrape time, so unlike
+`packetyeeter_kernel_incidents_total{reason="policy_block"}` they are not
+capped by the incident emit budget. In monitor mode (`-dry-run`) they count
+matches that were passed instead of dropped. Packets skip the counters, and
+the policy check, when they are:
+
+- from an allowlisted source;
+- from a source whose most specific `-policy` match is a `monitor` rule;
+- not IPv4 or IPv6 (ARP and other non-IP frames), have an Ethernet/VLAN header
+  that does not parse, or are stacked deeper than the parsed VLAN tags (host
+  mode passes unparseable frames and, outside monitor mode, drops over-stacked
+  VLAN frames fail-closed; scrub mode counts both as malformed);
+- truncated before the end of the fixed IPv4/IPv6 header (host mode passes
+  them), or in scrub mode have a bad IP version or IPv4 IHL (malformed);
+- in scrub mode, addressed to a multicast, broadcast, or IPv6 link-local
+  destination, or IPv6 neighbour discovery (ICMPv6 133-137) to one of the
+  node's own addresses;
+- in scrub mode, matched first by a scrub PASS or DROP rule.
+
+Bytes cover the linear part of each frame, so multi-buffer (jumbo) frames are
+undercounted. There is no per-source breakdown; use incidents for sampled
+source addresses.
 
 ## Collector perf-ring health
 

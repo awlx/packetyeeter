@@ -3,6 +3,7 @@ package collector
 import (
 	"bytes"
 	"cmp"
+	"errors"
 	"fmt"
 	"slices"
 	"time"
@@ -37,6 +38,7 @@ type fingerprintStore interface {
 type fingerprinter struct {
 	store  fingerprintStore
 	gen    uint32
+	retry  uint32 // generation whose map was not fully drained; 0 = none
 	since  time.Time
 	settle time.Duration
 	sleep  func(time.Duration)
@@ -71,8 +73,20 @@ func nextGeneration(gen uint32) uint32 {
 func (f *fingerprinter) flip() ([]ebpf.Fingerprint, time.Duration, error) {
 	old := f.gen
 	next := nextGeneration(old)
+	// A map left partly drained is idle until XDP switches back to it:
+	// finish draining it first, so stale entries are not mixed into the
+	// new interval. Its leftovers are reported with this interval.
+	var leftover []ebpf.Fingerprint
+	var retryErr error
+	if f.retry != 0 {
+		leftover, retryErr = f.store.DrainFingerprints(f.retry)
+		if retryErr != nil {
+			retryErr = fmt.Errorf("retry fingerprint drain: %w", retryErr)
+		}
+		f.retry = 0
+	}
 	if err := f.store.SetFingerprintGeneration(next); err != nil {
-		return nil, 0, fmt.Errorf("switch fingerprint map: %w", err)
+		return leftover, 0, errors.Join(retryErr, fmt.Errorf("switch fingerprint map: %w", err))
 	}
 	f.gen = next
 	now := f.now()
@@ -80,7 +94,10 @@ func (f *fingerprinter) flip() ([]ebpf.Fingerprint, time.Duration, error) {
 	f.since = now
 	f.sleep(f.settle)
 	fps, err := f.store.DrainFingerprints(old)
-	return fps, elapsed, err
+	if err != nil {
+		f.retry = old
+	}
+	return append(leftover, fps...), elapsed, errors.Join(retryErr, err)
 }
 
 type fingerprintCut struct {
@@ -206,6 +223,7 @@ func (c *Collector) flushFingerprints() {
 	if err != nil {
 		// A partial drain still yields what it read; the rest is reported
 		// with a later interval.
+		metrics.ScrubFingerprintDrainErrors.Inc()
 		c.Logger.WithError(err).Warn("Failed to read scrub fingerprints")
 		if len(fps) == 0 {
 			return

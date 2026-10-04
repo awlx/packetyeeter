@@ -95,6 +95,10 @@ type Config struct {
 	SynCookieSynPPS uint32        // auto mode: per-destination SYNs/s that start challenges
 	SynCookieTTL    time.Duration // how long a source stays verified
 	SynCookieMaxPPS uint32        // challenges per second across all CPUs, 0 = unlimited
+
+	// ScrubHandshakeLRU picks per-CPU or common LRU lists for the scrub
+	// handshake maps (zero value: auto).
+	ScrubHandshakeLRU ebpf.HandshakeLRU
 }
 
 // Collector is a thin relay layer that:
@@ -295,11 +299,32 @@ func (c *Collector) Start(ctx context.Context) error {
 		AllowGeneric: c.Config.AllowGeneric,
 		Fingerprints: scrub && c.Config.FingerprintInterval > 0,
 		SynCookies:   c.synCookiesEnabled(),
+		HandshakeLRU: c.Config.ScrubHandshakeLRU,
 	})
 	if err := c.Loader.Load(); err != nil {
 		return fmt.Errorf("failed to load eBPF: %w", err)
 	}
 	c.Maps = c.Loader.GetMaps()
+	if scrub {
+		hs := c.Loader.HandshakeSizing()
+		if hs.OnlineErr != nil {
+			c.Logger.WithError(hs.OnlineErr).WithField("assumed_online_cpus", hs.Online).
+				Warn("Could not count online CPUs; sizing scrub handshake maps for all possible CPUs")
+		}
+		mode := c.Config.ScrubHandshakeLRU
+		if mode == "" {
+			mode = ebpf.HandshakeLRUAuto
+		}
+		c.Logger.WithFields(logrus.Fields{
+			"mode":          mode,
+			"est_memory":    fmt.Sprintf("%.0f MiB", float64(hs.EstimatedBytes())/(1<<20)),
+			"entries":       hs.Entries,
+			"per_cpu_lru":   hs.PerCPU,
+			"per_cpu_share": hs.PerCPUShare(),
+			"possible_cpus": hs.Possible,
+			"online_cpus":   hs.Online,
+		}).Info("Scrub handshake maps sized")
+	}
 
 	// Enable kernel-space monitor/dry-run mode if requested. This is
 	// independent of the analyzer's own -dry-run flag: it governs whether
@@ -2093,6 +2118,30 @@ func (c *Collector) emitSignal(signal *apiv1.Signal) {
 	c.sendSignal(signal)
 }
 
+// policyBlockMetrics reads the kernel counters at scrape time, so the
+// exported counters are exact rather than sampled by a poll loop.
+type policyBlockMetrics struct {
+	read   func() ([]ebpf.PolicyCounter, error)
+	logger *logrus.Logger
+}
+
+func (m *policyBlockMetrics) Describe(ch chan<- *prometheus.Desc) {
+	ch <- metrics.PolicyBlockedPacketsDesc
+	ch <- metrics.PolicyBlockedBytesDesc
+}
+
+func (m *policyBlockMetrics) Collect(ch chan<- prometheus.Metric) {
+	st, err := m.read()
+	if err != nil {
+		m.logger.WithError(err).Warn("Failed to read policy block counters")
+		return
+	}
+	for i, family := range ebpf.PolicyFamilyNames {
+		ch <- prometheus.MustNewConstMetric(metrics.PolicyBlockedPacketsDesc, prometheus.CounterValue, float64(st[i].Packets), family)
+		ch <- prometheus.MustNewConstMetric(metrics.PolicyBlockedBytesDesc, prometheus.CounterValue, float64(st[i].Bytes), family)
+	}
+}
+
 // startCollectorMetricsServer creates a metrics server that only exposes SPOE-related metrics
 func (c *Collector) startCollectorMetricsServer() *http.Server {
 	// Create a custom registry that only includes SPOE handler metrics
@@ -2112,6 +2161,9 @@ func (c *Collector) startCollectorMetricsServer() *http.Server {
 	// observable here -- the analyzer's registry would report a constant 0.
 	registry.MustRegister(metrics.EgressVolumeSignals)
 	registry.MustRegister(metrics.EgressBytesReported)
+	if c.Maps != nil {
+		registry.MustRegister(&policyBlockMetrics{read: c.Maps.ReadPolicyBlockStats, logger: c.Logger})
+	}
 
 	mux := http.NewServeMux()
 	if c.Config.Mode == ebpf.ModeScrub {
@@ -2138,6 +2190,7 @@ func (c *Collector) startCollectorMetricsServer() *http.Server {
 			registry.MustRegister(&fingerprintOverflowMetric{read: c.Maps.FingerprintOverflow, logger: c.Logger})
 			registry.MustRegister(metrics.ScrubFingerprintBuckets)
 			registry.MustRegister(metrics.ScrubFingerprintCapped)
+			registry.MustRegister(metrics.ScrubFingerprintDrainErrors)
 			metrics.ScrubFingerprintCapped.WithLabelValues("bucket").Add(0)
 			metrics.ScrubFingerprintCapped.WithLabelValues("destination").Add(0)
 		}

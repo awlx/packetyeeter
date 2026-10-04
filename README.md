@@ -313,6 +313,7 @@ sudo ./packetyeeter-collector -i eth0 -analyzer-addr 127.0.0.1:9090
 | `-scrub-syn-cookie-syn-pps` | `10000` | Scrub mode: SYNs per second to one destination, across all CPUs, that start challenges in `auto` (held 30 s). |
 | `-scrub-syn-cookie-max-pps` | `0` | Scrub mode: max challenges sent per second across all CPUs; unverified SYNs over it are dropped unanswered and counted as `suppressed`. `0` = unlimited. |
 | `-scrub-syn-cookie-ttl` | `10m` | Scrub mode: how long a source that answered a challenge stays verified. |
+| `-scrub-handshake-lru` | `auto` | Scrub mode: LRU lists of the handshake maps. `auto` uses per-CPU lists sized for the online CPUs, or one common list when that would need over 1M entries per family; `percpu` or `common` force one. See [scrub handshakes](docs/operations.md#scrub-mode). |
 | `-analyzer-addr` | `127.0.0.1:9090` | Analyzer gRPC address to connect to. |
 | `-analyzer-tls-ca` | `""` | PEM CA bundle that verifies the analyzer's certificate. Enables TLS to the analyzer; unset = plaintext. See [TLS and mTLS](docs/operations.md#tls-and-mtls). |
 | `-analyzer-tls-cert` | `""` | PEM client certificate for mTLS. Requires `-analyzer-tls-key` and `-analyzer-tls-ca`. |
@@ -409,6 +410,7 @@ PacketYeeter is designed to be monitored via **Prometheus** and **Grafana**.
     *   `packetyeeter_tcp_syn_flood_blocks_total`: SYN flood blocks.
     *   `packetyeeter_tcp_bad_flags_blocks_total`: invalid TCP flag blocks.
     *   `packetyeeter_kernel_incidents_total{reason}`: structured kernel-space incident records (collector endpoint), broken down by reason (`blocked_ip`, `policy_block`, `icmp_rate`, `udp_rate`, `udp_frag`, `bad_flags`). See "Structured Incident Logging" above.
+    *   `packetyeeter_policy_blocked_packets_total{family}`, `packetyeeter_policy_blocked_bytes_total{family}`: packets/bytes matching a `-policy` block rule (collector endpoint).
     *   `packetyeeter_udp_max_rate_pps`, `packetyeeter_icmp_max_rate_pps`: peak UDP/ICMP PPS.
     *   `packetyeeter_ja4t_suspicious_total`: suspicious JA4T abuse events.
     *   `packetyeeter_high_latency_handshakes_total`, `packetyeeter_high_latency_max_ms`, `packetyeeter_latency_ewma_by_asn_ms`: JA4L latency signals.

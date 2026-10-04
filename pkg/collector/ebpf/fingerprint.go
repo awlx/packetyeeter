@@ -114,20 +114,68 @@ func (m *Maps) DrainFingerprints(gen uint32) ([]Fingerprint, error) {
 	if err != nil {
 		return nil, err
 	}
+	return drainFingerprints(ciliumDrainMap{fm}, cpus)
+}
+
+type drainMap interface {
+	BatchLookupAndDelete(cursor *ebpf.MapBatchCursor, keysOut, valuesOut any, opts *ebpf.BatchOptions) (int, error)
+	Delete(key any) error
+	iterate() entryIterator
+	String() string
+}
+
+type ciliumDrainMap struct{ *ebpf.Map }
+
+func (m ciliumDrainMap) iterate() entryIterator { return m.Map.Iterate() }
+
+func drainFingerprints(fm drainMap, cpus int) ([]Fingerprint, error) {
 	keys := make([]FingerprintKey, fingerprintBatch)
 	vals := make([]ScrubCounter, fingerprintBatch*cpus)
 	var out []Fingerprint
 	var cursor ebpf.MapBatchCursor
-	for {
+	for first := true; ; first = false {
 		n, err := fm.BatchLookupAndDelete(&cursor, keys, vals, nil)
+		if first && errors.Is(err, ebpf.ErrNotSupported) {
+			// Batch map ops need Linux 5.6+.
+			return drainFingerprintsIter(fm)
+		}
 		out = append(out, sumFingerprints(keys[:n], vals[:n*cpus], cpus)...)
 		if errors.Is(err, ebpf.ErrKeyNotExist) {
 			return out, nil
 		}
 		if err != nil {
-			return out, fmt.Errorf("drain %s: %w", fm.String(), err)
+			return out, fmt.Errorf("drain %s: %w", fm, err)
 		}
 	}
+}
+
+// drainFingerprintsIter reads every entry, then deletes the keys it read:
+// deleting during iteration can make the iterator restart or skip keys.
+func drainFingerprintsIter(fm drainMap) ([]Fingerprint, error) {
+	var (
+		k      FingerprintKey
+		perCPU []ScrubCounter
+		keys   []FingerprintKey
+		out    []Fingerprint
+	)
+	it := fm.iterate()
+	for it.Next(&k, &perCPU) {
+		keys = append(keys, k)
+		out = append(out, sumFingerprints([]FingerprintKey{k}, perCPU, len(perCPU))...)
+	}
+	// Delete what was read even if iteration failed: those entries are
+	// returned now and must not be reported again. The caller retries the
+	// rest before XDP writes to this map again.
+	var iterErr, delErr error
+	if err := it.Err(); err != nil {
+		iterErr = fmt.Errorf("iterate %s: %w", fm, err)
+	}
+	for i := range keys {
+		if err := fm.Delete(&keys[i]); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) && delErr == nil {
+			delErr = fmt.Errorf("delete from %s: %w", fm, err)
+		}
+	}
+	return out, errors.Join(iterErr, delErr)
 }
 
 // sumFingerprints folds per-CPU values (cpus consecutive values per key).
@@ -147,7 +195,7 @@ func sumFingerprints(keys []FingerprintKey, perCPU []ScrubCounter, cpus int) []F
 }
 
 // FingerprintOverflow returns the packets not fingerprinted because the
-// active map was full, summed over CPUs.
+// active map was full (or an insert failed), summed over CPUs.
 func (m *Maps) FingerprintOverflow() (uint64, error) {
 	if m.FPOverflow == nil {
 		return 0, errors.New("fingerprint_overflow map not loaded")

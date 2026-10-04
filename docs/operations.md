@@ -435,13 +435,39 @@ apply. Signals reach the analyzer after
 threshold as host mode. Handshake RTT (JA4L) needs the SYN-ACK and is not
 available in scrub mode.
 
-Scrub nodes keep these entries in `scrub_handshakes(_v6)` (500k entries per
-family; `bpftool` truncates both names to `scrub_handshake`) with per-CPU LRU
-lists. The kernel gives every possible CPU (`/sys/devices/system/cpu/possible`)
-an equal share, and under a random-source SYN flood each CPU evicts its own
-oldest entries: a CPU taking most of the flood, or a host with far fewer online
-than possible CPUs, evicts sooner than the total size suggests. A SYN evicted
-before its ACK is never reported.
+Scrub nodes keep these entries in `scrub_handshakes(_v6)` (`bpftool`
+truncates both names to `scrub_handshake`). By default they use per-CPU LRU
+lists, which keep a random-source SYN flood from serialising every CPU on one
+LRU lock. The kernel splits a per-CPU LRU map's entries evenly over every
+possible CPU (`/sys/devices/system/cpu/possible`), and a CPU only evicts its
+own, so the collector sizes the maps at start-up for the online CPUs: each
+online CPU gets 1/n of 500k entries per family, and the map has that share
+times the possible CPUs. On hosts where all possible CPUs are online that is
+500k, as before. `-scrub-handshake-lru` selects the layout:
+
+- `auto` (default): per-CPU lists sized as above, up to 1M entries per family.
+  If that is not enough (more than twice as many possible as online CPUs,
+  typical of VMs with CPU hotplug headroom), the maps fall back to one common
+  LRU list with 500k entries.
+- `percpu`: always per-CPU lists, at most 1M entries (rounded down to a
+  multiple of the possible CPUs, as the kernel does); with many more possible
+  than online CPUs each online CPU then holds less than its share.
+- `common`: one LRU list with 500k entries shared by all CPUs. No CPU evicts
+  early, but inserts contend on one lock: on the veth bench (3 sender CPUs) a
+  random-source SYN flood cost 41% of the forwarding rate with it against 34%
+  with per-CPU lists.
+
+The maps preallocate about 105 bytes per IPv4 and 129 bytes per IPv6 entry:
+about 111 MiB for the pair at 500k entries, 223 MiB at 1M. With `auto` or
+`percpu`, a host with more possible than online CPUs (but at most twice as
+many) gets more than 500k entries, up to twice the memory of earlier releases;
+set `-scrub-handshake-lru common` to keep 500k entries per family if that
+memory matters more than lock contention. The collector logs the chosen mode,
+entries, per-CPU share and estimated memory at start-up ("Scrub handshake maps
+sized"), and warns if it cannot read `/sys/devices/system/cpu/online` (it then
+sizes for all possible CPUs). With per-CPU
+lists a CPU taking most of a flood still evicts its own oldest entries sooner
+than the total size suggests. A SYN evicted before its ACK is never reported.
 
 A connection's SYN and first ACK must cross the same scrub node. With several
 nodes, keep ECMP hashing on the 5-tuple, and expect a short burst of
