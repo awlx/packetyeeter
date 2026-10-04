@@ -664,14 +664,15 @@ outside port, so a spoofed SYN flood turns into an equal flood of SYN-ACKs
 towards the spoofed sources. On cloud instances and metered or policed
 transit that egress costs money or hits the provider's packet-rate limits.
 `-scrub-syn-cookie-max-pps` (default `0`, unlimited) caps challenges per second
-across all CPUs; as with `-scrub-slow-path-pps` the budget is split evenly over
-the possible CPUs (at least 1 each), so SYNs concentrated on few RX queues hit
-their share sooner and the sum can be well below the flag on NICs with fewer
-queues than CPUs. A SYN from an unverified source over the cap is dropped unanswered (not
-forwarded) and counted as `event="suppressed"`. The tradeoff: while the cap is
-reached, real clients' SYNs are suppressed at the same rate as spoofed ones,
-so new clients only get through when a retransmission lands in a second with
-budget left; already verified sources are unaffected. Size it from the
+for the node as a whole: unlike `-scrub-slow-path-pps` the budget is shared by
+all CPUs, so it holds however many RX queues the NIC has. Challenges are paced
+with a burst of a tenth of a second's budget, so any one second carries at
+most about 1.1 times the cap. A SYN from an unverified source over the cap is
+dropped unanswered (not forwarded) and counted as `event="suppressed"`. The
+tradeoff: while the cap is reached, real clients' SYNs are suppressed at the
+same rate as spoofed ones (each SYN gets a challenge with a probability of
+roughly cap / SYN rate), so new clients only get through when a retransmission
+finds budget; already verified sources are unaffected. Size it from the
 egress you can afford, well above the normal rate of new clients
 (`event="challenge"` outside attacks). In `-dry-run`, would-be challenges over
 the cap count as `suppressed` instead of `dry_run`.

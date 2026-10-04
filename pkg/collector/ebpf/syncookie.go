@@ -118,7 +118,7 @@ func synCookieConfigValues(cfg SynCookieConfig, cpus int) (map[uint32]uint32, er
 		configKeySCSynPPS: scrubSlowPathPerCPU(cfg.SynPPS, cpus),
 		configKeySCTTL:    uint32(ttl),
 		configKeySCStyle:  style,
-		configKeySCMaxPPS: scrubSlowPathPerCPU(cfg.MaxPPS, cpus),
+		configKeySCMaxPPS: cfg.MaxPPS, // one budget shared by all CPUs
 	}, nil
 }
 

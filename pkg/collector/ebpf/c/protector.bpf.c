@@ -2070,7 +2070,7 @@ volatile const __u32 scrub_syncookies = 0;
 #define CONFIG_KEY_SC_SYN_PPS 8   // auto mode: SYNs per second, per CPU and destination
 #define CONFIG_KEY_SC_TTL     9   // seconds a source stays verified
 #define CONFIG_KEY_SC_STYLE   10
-#define CONFIG_KEY_SC_MAX_PPS 11  // challenges per second, per CPU (0 = unlimited)
+#define CONFIG_KEY_SC_MAX_PPS 11  // challenges per second, all CPUs together (0 = unlimited)
 
 #define SC_MODE_AUTO 1
 #define SC_MODE_ON   2
@@ -2196,29 +2196,41 @@ static __always_inline int sc_active(struct rule_pkt *p, int syn, __u64 now) {
     return *until > now;
 }
 
-// Per-CPU window over challenges sent, like scrub_slow_budget.
+// When the challenge budget is next empty (GCRA theoretical arrival time).
+// One entry for all CPUs, so the cap holds however few RX queues a flood
+// lands on; only challenge candidates touch it.
 struct {
-    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(type, BPF_MAP_TYPE_ARRAY);
     __uint(max_entries, 1);
     __type(key, __u32);
-    __type(value, struct scrub_slow_window);
+    __type(value, __u64);
 } syncookie_challenge_budget SEC(".maps");
+
+// Burst allowance: a tenth of a second's budget, so any one second carries
+// at most about 1.1x the cap (a fixed one-second window allows 2x across
+// its boundary).
+#define SC_CAP_BURST_NS (SC_SEC_NS / 10)
 
 // Bounds challenge egress: every challenge is a SYN-ACK sent back towards
 // the (often spoofed) source, which cloud and transit egress bill or police.
+// A lost compare-and-swap means another CPU took the slot just then, so it
+// suppresses rather than retries: contention can only under-send.
 static __always_inline int sc_over_cap(__u64 now) {
     __u32 limit = sc_cfg(CONFIG_KEY_SC_MAX_PPS);
     if (limit == 0)
         return 0;
     __u32 zero = 0;
-    struct scrub_slow_window *w = bpf_map_lookup_elem(&syncookie_challenge_budget, &zero);
-    if (!w)
+    __u64 *tat = bpf_map_lookup_elem(&syncookie_challenge_budget, &zero);
+    if (!tat)
         return 0;
-    if (now - w->start_ns >= SC_SEC_NS) {
-        w->start_ns = now;
-        w->count = 0;
-    }
-    return ++w->count > limit;
+    __u64 old = *(volatile __u64 *)tat;
+    __u64 base = old > now ? old : now;
+    if (base - now > SC_CAP_BURST_NS)
+        return 1;
+    __u64 interval = SC_SEC_NS / limit;
+    if (interval == 0)
+        interval = 1;
+    return __sync_val_compare_and_swap(tat, old, base + interval) != old;
 }
 
 static __always_inline int sc_verified(struct rule_pkt *p, __u64 now) {

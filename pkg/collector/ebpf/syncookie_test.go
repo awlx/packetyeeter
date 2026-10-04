@@ -29,7 +29,7 @@ func TestSynCookieConfigValues(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := map[uint32]uint32{configKeySCMode: scModeAuto, configKeySCSynPPS: 1250, configKeySCTTL: 90, configKeySCStyle: scStyleReset, configKeySCMaxPPS: 2500}
+	want := map[uint32]uint32{configKeySCMode: scModeAuto, configKeySCSynPPS: 1250, configKeySCTTL: 90, configKeySCStyle: scStyleReset, configKeySCMaxPPS: 20000}
 	for k, v := range want {
 		if got[k] != v {
 			t.Errorf("config_map[%d] = %d, want %d", k, got[k], v)

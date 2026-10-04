@@ -497,14 +497,9 @@ func TestScrubSynCookieAuto(t *testing.T) {
 }
 
 func TestScrubSynCookieCap(t *testing.T) {
-	pinCPU(t)
-	cpus, err := cebpf.PossibleCPU()
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Two challenges per CPU; the window opens at the first SYN, and the
-	// steps below take far less than its second.
-	m, prog := loadSynCookieScrub(t, ebpf.SynCookieConfig{Mode: ebpf.SynCookiesOn, MaxPPS: uint32(2 * cpus)})
+	// 10/s with a 100 ms burst admits two back to back; the steps below take
+	// far less than the 100 ms that frees the next slot.
+	m, prog := loadSynCookieScrub(t, ebpf.SynCookieConfig{Mode: ebpf.SynCookiesOn, MaxPPS: 10})
 	v4, v6 := scFamilies[0], scFamilies[1]
 	syn := func(f scFamily, src netip.Addr) tcpSeg {
 		return tcpSeg{src: src, dst: f.dst, sport: 40001, dport: 443, seq: 1000, flags: tcpSYN}
@@ -533,12 +528,8 @@ func TestScrubSynCookieCap(t *testing.T) {
 }
 
 func TestScrubSynCookieCapDryRun(t *testing.T) {
-	pinCPU(t)
-	cpus, err := cebpf.PossibleCPU()
-	if err != nil {
-		t.Fatal(err)
-	}
-	m, prog := loadSynCookieScrub(t, ebpf.SynCookieConfig{Mode: ebpf.SynCookiesOn, MaxPPS: uint32(cpus)})
+	// 5/s: one slot per 200 ms, longer than the burst allowance.
+	m, prog := loadSynCookieScrub(t, ebpf.SynCookieConfig{Mode: ebpf.SynCookiesOn, MaxPPS: 5})
 	if err := m.SetMonitorMode(true); err != nil {
 		t.Fatal(err)
 	}
@@ -550,4 +541,31 @@ func TestScrubSynCookieCapDryRun(t *testing.T) {
 		}
 	}
 	wantEvents(t, m, false, map[string]uint64{"dry_run": 1, "suppressed": 1})
+}
+
+func TestScrubSynCookieCapAllCPUs(t *testing.T) {
+	if runtime.NumCPU() < 2 {
+		t.Skip("needs two CPUs")
+	}
+	runtime.LockOSThread()
+	t.Cleanup(runtime.UnlockOSThread)
+	onCPU := func(cpu int) {
+		var set unix.CPUSet
+		set.Set(cpu)
+		if err := unix.SchedSetaffinity(0, &set); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m, prog := loadSynCookieScrub(t, ebpf.SynCookieConfig{Mode: ebpf.SynCookiesOn, MaxPPS: 10})
+	f := scFamilies[0]
+	syn := tcpSeg{src: f.attacker, dst: f.dst, sport: 40001, dport: 443, seq: 1000, flags: tcpSYN}
+	// CPU 0 takes the whole burst; CPU 1 has no share of its own.
+	onCPU(0)
+	runTX(t, prog, syn)
+	runTX(t, prog, syn)
+	onCPU(1)
+	if ret, _ := run(t, prog, syn.frame()); ret != xdpDrop {
+		t.Fatalf("SYN on another CPU over the cap verdict %d, want XDP_DROP", ret)
+	}
+	wantEvents(t, m, false, map[string]uint64{"challenge": 2, "suppressed": 1})
 }
