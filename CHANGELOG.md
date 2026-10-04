@@ -1,5 +1,16 @@
 # PacketYeeter Changelog
 
+## 2026-10-04 - Policy block counters
+
+- New collector metrics `packetyeeter_policy_blocked_packets_total{family}`
+  and `packetyeeter_policy_blocked_bytes_total{family}` count packets matching
+  a `-policy` block rule, in host and scrub mode. See
+  `docs/observability.md#collector-policy-counters`.
+- The unread per-source `policy_blocks` and `policy_blocks_v6` eBPF maps are
+  removed. Under a spoofed flood from a policy-blocked prefix they inserted
+  into and evicted from a shared 4096-entry LRU on every packet; the
+  replacement is a per-CPU counter per family.
+
 ## 2026-10-04 - SYN cookie challenge rate cap
 
 - New collector flag `-scrub-syn-cookie-max-pps` (default `0`, unlimited)

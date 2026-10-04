@@ -408,6 +408,7 @@ PacketYeeter is designed to be monitored via **Prometheus** and **Grafana**.
     *   `packetyeeter_tcp_syn_flood_blocks_total`: SYN flood blocks.
     *   `packetyeeter_tcp_bad_flags_blocks_total`: invalid TCP flag blocks.
     *   `packetyeeter_kernel_incidents_total{reason}`: structured kernel-space incident records (collector endpoint), broken down by reason (`blocked_ip`, `policy_block`, `icmp_rate`, `udp_rate`, `udp_frag`, `bad_flags`). See "Structured Incident Logging" above.
+    *   `packetyeeter_policy_blocked_packets_total{family}`, `packetyeeter_policy_blocked_bytes_total{family}`: packets/bytes matching a `-policy` block rule (collector endpoint).
     *   `packetyeeter_udp_max_rate_pps`, `packetyeeter_icmp_max_rate_pps`: peak UDP/ICMP PPS.
     *   `packetyeeter_ja4t_suspicious_total`: suspicious JA4T abuse events.
     *   `packetyeeter_high_latency_handshakes_total`, `packetyeeter_high_latency_max_ms`, `packetyeeter_latency_ewma_by_asn_ms`: JA4L latency signals.

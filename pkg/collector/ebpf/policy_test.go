@@ -68,3 +68,16 @@ func TestSetPoliciesInvalidNet(t *testing.T) {
 		t.Error("SetPolicies with nil Net expected an error, got nil")
 	}
 }
+
+func TestReadPolicyBlockStatsUnloaded(t *testing.T) {
+	if _, err := (&Maps{}).ReadPolicyBlockStats(); err == nil {
+		t.Fatal("ReadPolicyBlockStats with no map: want error")
+	}
+}
+
+func TestSumPolicyCounters(t *testing.T) {
+	got := sumPolicyCounters([]PolicyCounter{{1, 60}, {2, 120}, {0, 0}})
+	if got != (PolicyCounter{Packets: 3, Bytes: 180}) {
+		t.Fatalf("sum = %+v, want {3 180}", got)
+	}
+}
