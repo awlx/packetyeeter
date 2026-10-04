@@ -1,5 +1,20 @@
 # PacketYeeter Changelog
 
+## 2026-10-04 - Analyzer blocks reach every scrub node
+
+- A `BLOCK_IP` decided from a scrub collector's signals is now sent to every
+  connected scrub collector, not only the one whose signals crossed the
+  threshold. With ECMP each node sees part of a source, so the other nodes
+  used to keep forwarding a blocked source. Dry-run, the kill switch and the
+  block dedup still apply once per decision, and `WatchDecisions` publishes
+  each block once. Blocks decided from host-mode collectors are unchanged.
+- New counter `packetyeeter_scrub_command_fanout_total`: block commands sent
+  to scrub collectors other than the one that triggered them.
+- The analyzer's per-source evidence was already keyed by source address, so
+  a source split over several nodes is judged on its total. Collector-side
+  UDP/ICMP rate limits and the 1000 pps flood-signal gate remain per node;
+  see `docs/operations.md#scrub-mode`.
+
 ## 2026-10-04 - Scrub nodes report a lost analyzer stream as degraded
 
 - A scrub node without its analyzer stream keeps filtering, so readiness does

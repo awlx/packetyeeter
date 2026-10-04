@@ -178,6 +178,10 @@ Analyzer-side, for `PushRules`:
 - `packetyeeter_rule_deltas_sent_total` (counter): complete rule sets sent to
   scrub collectors (on each push, on connect and once a minute). Compare with
   the collectors' `packetyeeter_scrub_rules_active` to confirm they converged.
+- `packetyeeter_scrub_command_fanout_total` (counter): block commands sent to
+  scrub collectors other than the one whose signals triggered them, one per
+  extra collector: a block decided with three scrub collectors connected adds
+  2. Zero without scrub collectors.
 - `packetyeeter_collector_send_stalls_total` (counter): collector streams the
   analyzer closed because a command send (rules or blocks) blocked for 30
   seconds: the collector stopped reading. It reconnects and is resynced.

@@ -129,6 +129,11 @@ var (
 		Help: "Complete rule sets sent to scrub collectors",
 	})
 
+	ScrubCommandFanout = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "packetyeeter_scrub_command_fanout_total",
+		Help: "Block and unblock commands sent to scrub collectors other than the one whose signals triggered them",
+	})
+
 	CollectorSendStalls = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "packetyeeter_collector_send_stalls_total",
 		Help: "Collector streams closed by the analyzer because a command send blocked past the send timeout",

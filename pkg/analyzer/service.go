@@ -1245,7 +1245,42 @@ func (a *Analyzer) sendCommand(cs *collectorStream, cmd *apiv1.Command) {
 	}
 
 	a.publishCommand(cmd)
+	if cs.isScrub() && fansOutToScrub(cmd) {
+		a.sendToScrubPeers(cs, cmd)
+	}
 	a.sendToStream(cs, cmd)
+}
+
+// fansOutToScrub reports whether cmd must reach every scrub collector rather
+// than only the one whose signals caused it.
+func fansOutToScrub(cmd *apiv1.Command) bool {
+	switch cmd.GetType() {
+	case apiv1.CommandType_COMMAND_BLOCK_IP, apiv1.CommandType_COMMAND_BLOCK_CIDR,
+		apiv1.CommandType_COMMAND_UNBLOCK_IP, apiv1.CommandType_COMMAND_UNBLOCK_CIDR:
+		return true
+	}
+	return false
+}
+
+// sendToScrubPeers sends cmd to every scrub collector except origin. ECMP
+// splits a source's traffic across scrub nodes, so a block on one node alone
+// leaves the rest forwarding it. Asynchronous so a stalled peer cannot hold
+// up origin's signal stream.
+func (a *Analyzer) sendToScrubPeers(origin *collectorStream, cmd *apiv1.Command) {
+	a.collectorsMu.RLock()
+	var peers []*collectorStream
+	for _, cs := range a.collectors {
+		if cs != origin && cs.isScrub() {
+			peers = append(peers, cs)
+		}
+	}
+	a.collectorsMu.RUnlock()
+
+	for _, cs := range peers {
+		if a.goTracked(func() { a.sendToStream(cs, cmd) }) {
+			metrics.ScrubCommandFanout.Inc()
+		}
+	}
 }
 
 // isDuplicateBlockCommand dedups block commands per IP for a short TTL,
