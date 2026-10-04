@@ -665,7 +665,9 @@ towards the spoofed sources. On cloud instances and metered or policed
 transit that egress costs money or hits the provider's packet-rate limits.
 `-scrub-syn-cookie-max-pps` (default `0`, unlimited) caps challenges per second
 across all CPUs; as with `-scrub-slow-path-pps` the budget is split evenly over
-CPUs. A SYN from an unverified source over the cap is dropped unanswered (not
+the possible CPUs (at least 1 each), so SYNs concentrated on few RX queues hit
+their share sooner and the sum can be well below the flag on NICs with fewer
+queues than CPUs. A SYN from an unverified source over the cap is dropped unanswered (not
 forwarded) and counted as `event="suppressed"`. The tradeoff: while the cap is
 reached, real clients' SYNs are suppressed at the same rate as spoofed ones,
 so new clients only get through when a retransmission lands in a second with

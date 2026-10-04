@@ -495,3 +495,59 @@ func TestScrubSynCookieAuto(t *testing.T) {
 		wantEvents(t, m, f.client.Is6(), map[string]uint64{"challenge": 2, "activated": 1})
 	}
 }
+
+func TestScrubSynCookieCap(t *testing.T) {
+	pinCPU(t)
+	cpus, err := cebpf.PossibleCPU()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Two challenges per CPU; the window opens at the first SYN, and the
+	// steps below take far less than its second.
+	m, prog := loadSynCookieScrub(t, ebpf.SynCookieConfig{Mode: ebpf.SynCookiesOn, MaxPPS: uint32(2 * cpus)})
+	v4, v6 := scFamilies[0], scFamilies[1]
+	syn := func(f scFamily, src netip.Addr) tcpSeg {
+		return tcpSeg{src: src, dst: f.dst, sport: 40001, dport: 443, seq: 1000, flags: tcpSYN}
+	}
+	// Both families draw on one budget.
+	_, ack, _ := runTX(t, prog, syn(v4, v4.client))
+	runTX(t, prog, syn(v6, v6.client))
+	for _, f := range scFamilies {
+		if ret, _ := run(t, prog, syn(f, f.attacker).frame()); ret != xdpDrop {
+			t.Fatalf("%s: SYN over the cap verdict %d, want XDP_DROP", f.name, ret)
+		}
+	}
+	// Answers and verified sources are not capped.
+	rst := tcpSeg{src: v4.client, dst: v4.dst, sport: 40001, dport: 443, seq: ack, flags: tcpRST}
+	if ret, _ := run(t, prog, rst.frame()); ret != xdpDrop || !verified(t, m, v4.client) {
+		t.Fatalf("valid RST over the cap verdict %d, verified %v", ret, verified(t, m, v4.client))
+	}
+	if ret, _ := run(t, prog, syn(v4, v4.client).frame()); ret == xdpDrop || ret == xdpTX {
+		t.Fatalf("verified SYN over the cap verdict %d, want it forwarded", ret)
+	}
+	wantEvents(t, m, false, map[string]uint64{"challenge": 1, "suppressed": 1, "valid": 1, "passed": 1})
+	wantEvents(t, m, true, map[string]uint64{"challenge": 1, "suppressed": 1})
+
+	time.Sleep(1100 * time.Millisecond)
+	runTX(t, prog, syn(v6, v6.attacker))
+}
+
+func TestScrubSynCookieCapDryRun(t *testing.T) {
+	pinCPU(t)
+	cpus, err := cebpf.PossibleCPU()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, prog := loadSynCookieScrub(t, ebpf.SynCookieConfig{Mode: ebpf.SynCookiesOn, MaxPPS: uint32(cpus)})
+	if err := m.SetMonitorMode(true); err != nil {
+		t.Fatal(err)
+	}
+	f := scFamilies[0]
+	for _, port := range []uint16{40001, 40002} {
+		syn := tcpSeg{src: f.attacker, dst: f.dst, sport: port, dport: 443, seq: 1000, flags: tcpSYN}
+		if ret, _ := run(t, prog, syn.frame()); ret == xdpDrop || ret == xdpTX {
+			t.Fatalf("dry-run verdict %d, want the SYN forwarded", ret)
+		}
+	}
+	wantEvents(t, m, false, map[string]uint64{"dry_run": 1, "suppressed": 1})
+}

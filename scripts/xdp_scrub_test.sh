@@ -699,7 +699,9 @@ if command -v trafgen >/dev/null; then
   (( A4 + A6 <= 400 && sup >= 2 * FLOOD - 400 )) && pass "cap: challenges bounded (sent $((A4 + A6)), suppressed $sup)" \
     || bad "cap: SYN-ACKs v4 $A4, v6 $A6, suppressed $sup of $((2 * FLOOD))"
   sleep 1
-  http_ok "http://$DST4:8080/" && pass "cap: clean client challenged after the flood" || bad "cap: clean client failed"
+  ch=$(sc ipv4 challenge)
+  http_ok "http://$DST4:8080/" && increased "$ch" "$(sc ipv4 challenge)" \
+    && pass "cap: clean client challenged after the flood" || bad "cap: clean client not challenged or failed"
 
   stop_collector
   start_collector -scrub-syn-cookies on -scrub-syn-cookie-max-pps 100 -dry-run
