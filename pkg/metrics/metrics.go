@@ -353,6 +353,12 @@ var (
 	ScrubReadyDesc = prometheus.NewDesc("packetyeeter_scrub_ready",
 		"1 when /readyz reports the scrub node ready, else 0",
 		nil, nil)
+	ScrubAnalyzerStreamUpDesc = prometheus.NewDesc("packetyeeter_scrub_analyzer_stream_up",
+		"1 while the analyzer stream is connected, else 0 (node degraded: no new rules or blocks, filtering continues)",
+		nil, nil)
+	ScrubAnalyzerStreamDownDesc = prometheus.NewDesc("packetyeeter_scrub_analyzer_stream_down_seconds",
+		"Seconds the analyzer stream has been down (since start-up if it never connected), 0 while up",
+		nil, nil)
 	ScrubSynCookieDesc = prometheus.NewDesc("packetyeeter_scrub_syncookie_total",
 		"SYN cookie events by family: challenge (SYN-ACK sent), dry_run (would challenge), valid (source verified), "+
 			"invalid (answer without a valid cookie, forwarded), passed (SYN from a verified source), "+

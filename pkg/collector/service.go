@@ -69,8 +69,9 @@ type Config struct {
 	// ReadyzDrain is how long a scrub node reports not-ready before detaching
 	// on shutdown, so the controller can move traffic away first.
 	ReadyzDrain time.Duration
-	// ReadyzAnalyzerGrace is how long a scrub node stays ready after the
-	// analyzer stream breaks. 0 leaves the analyzer out of readiness.
+	// ReadyzAnalyzerGrace, when > 0, makes /readyz require the analyzer
+	// stream, tolerating a break this long. 0 (default) only reports the
+	// node degraded.
 	ReadyzAnalyzerGrace time.Duration
 
 	// HandshakeTimeout is how long a SYN may go without the client's ACK
@@ -2111,6 +2112,7 @@ func (c *Collector) startCollectorMetricsServer() *http.Server {
 		sm := &scrubMetrics{
 			stats:       c.Maps.ReadScrubStats,
 			ready:       c.scrubReady,
+			analyzer:    c.analyzerReady.status,
 			ruleMatches: c.Maps.RuleMatches,
 			ruleCounts:  c.rules.Counts,
 			logger:      c.Logger,
@@ -2133,7 +2135,7 @@ func (c *Collector) startCollectorMetricsServer() *http.Server {
 			metrics.ScrubFingerprintCapped.WithLabelValues("bucket").Add(0)
 			metrics.ScrubFingerprintCapped.WithLabelValues("destination").Add(0)
 		}
-		mux.Handle("/readyz", readyzHandler(c.scrubReady))
+		mux.Handle("/readyz", readyzHandler(c.scrubReady, c.analyzerReady.degraded))
 	}
 	mux.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
 

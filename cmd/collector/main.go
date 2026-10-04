@@ -26,7 +26,7 @@ func main() {
 		xdpMode         = flag.String("xdp-mode", "auto", "XDP attach mode: auto, native or generic")
 		allowGeneric    = flag.Bool("allow-generic", false, "Scrub mode: allow generic XDP (labs only, far slower)")
 		readyzDrain     = flag.Duration("readyz-drain", collector.DefaultReadyzDrain, "Scrub mode: how long /readyz reports not ready on shutdown before detaching")
-		readyzAnalyzer  = flag.Duration("readyz-analyzer-grace", collector.DefaultReadyzAnalyzerGrace, "Scrub mode: /readyz needs the analyzer stream; how long it stays ready after the stream breaks (0 = analyzer not required)")
+		readyzAnalyzer  = flag.Duration("readyz-analyzer-grace", collector.DefaultReadyzAnalyzerGrace, "Scrub mode: >0 makes /readyz require the analyzer stream, staying ready this long after it breaks; 0 = analyzer only reported as degraded")
 		hsTimeout       = flag.Duration("handshake-timeout", collector.DefaultHandshakeTimeout, "How long a SYN may go without the client's ACK before it is reported as an incomplete handshake")
 		slowPathPPS     = flag.Uint("scrub-slow-path-pps", collector.DefaultScrubSlowPathPPS, "Scrub mode: max packets/s handed to the kernel slow path across all CPUs, excess dropped (0 = unlimited)")
 		fpInterval      = flag.Duration("fingerprint-interval", collector.DefaultFingerprintInterval, "Scrub mode: how often per-destination traffic fingerprints are sent to the analyzer (0 = off)")

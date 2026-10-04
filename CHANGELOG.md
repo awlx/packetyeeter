@@ -1,13 +1,15 @@
 # PacketYeeter Changelog
 
-## 2026-10-04 - Scrub readiness follows the analyzer stream
+## 2026-10-04 - Scrub nodes report a lost analyzer stream as degraded
 
-- Scrub-mode `/readyz` (and `packetyeeter_scrub_ready`) now also needs the
-  analyzer stream: 503 until it first connects, and 503 once it has been down
-  longer than the new `-readyz-analyzer-grace` (default `30s`). Forwarding
-  does not depend on the analyzer; this only tells the controller to prefer
-  nodes that still receive rules. `-readyz-analyzer-grace 0` restores the
-  previous behaviour. See `docs/operations.md#scrub-mode`.
+- A scrub node without its analyzer stream keeps filtering, so readiness does
+  not depend on the analyzer by default. The node reports itself degraded
+  instead: `/readyz` stays 200 and adds `degraded: analyzer stream down for
+  Ns`, and the new gauges `packetyeeter_scrub_analyzer_stream_up` and
+  `packetyeeter_scrub_analyzer_stream_down_seconds` expose it for alerting.
+- New flag `-readyz-analyzer-grace` (default `0`, off): above 0, `/readyz`
+  requires the stream, staying ready that long after it breaks. See
+  `docs/operations.md#scrub-mode`.
 
 ## 2026-10-03 - Scrub-mode SYN cookies
 

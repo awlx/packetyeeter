@@ -203,7 +203,7 @@ func TestScrubReadyz(t *testing.T) {
 	}}
 
 	rec := httptest.NewRecorder()
-	readyzHandler(c.scrubReady)(rec, httptest.NewRequest("GET", "/readyz", nil))
+	readyzHandler(c.scrubReady, nil)(rec, httptest.NewRequest("GET", "/readyz", nil))
 	body, _ := io.ReadAll(rec.Body)
 	if rec.Code != 503 || !strings.Contains(string(body), "inside port: eth1 is down") {
 		t.Fatalf("got %d %q, want 503 naming the failed check", rec.Code, body)
@@ -211,7 +211,7 @@ func TestScrubReadyz(t *testing.T) {
 
 	c.readinessChecks[1].check = func() error { return nil }
 	rec = httptest.NewRecorder()
-	readyzHandler(c.scrubReady)(rec, httptest.NewRequest("GET", "/readyz", nil))
+	readyzHandler(c.scrubReady, nil)(rec, httptest.NewRequest("GET", "/readyz", nil))
 	if rec.Code != 200 {
 		t.Fatalf("got %d, want 200", rec.Code)
 	}
@@ -251,6 +251,55 @@ func TestAnalyzerReadiness(t *testing.T) {
 	a.set(true)
 	if err := a.check(); err != nil {
 		t.Fatalf("reconnected: %v", err)
+	}
+}
+
+func TestAnalyzerDegraded(t *testing.T) {
+	start := time.Unix(1000, 0)
+	now := start
+	a := &analyzerReadiness{now: func() time.Time { return now }, downSince: start}
+
+	now = now.Add(5 * time.Second)
+	if up, down := a.status(); up || down != 5*time.Second {
+		t.Fatalf("never connected: up=%v down=%s, want false 5s", up, down)
+	}
+	if err := a.degraded(); err == nil || !strings.Contains(err.Error(), "not connected yet (5s)") {
+		t.Fatalf("never connected: %v", err)
+	}
+	a.set(true)
+	if up, down := a.status(); !up || down != 0 || a.degraded() != nil {
+		t.Fatalf("connected: up=%v down=%s degraded=%v", up, down, a.degraded())
+	}
+	a.set(false)
+	now = now.Add(12 * time.Second)
+	if err := a.degraded(); err == nil || !strings.Contains(err.Error(), "analyzer stream down for 12s") {
+		t.Fatalf("after loss: %v", err)
+	}
+	// Grace 0 (the default) never gates readiness, however long the stream is down.
+	c := &Collector{readinessChecks: []readinessCheck{{"xdp_scrub", func() error { return nil }}}, analyzerReady: a}
+	rec := httptest.NewRecorder()
+	readyzHandler(c.scrubReady, a.degraded)(rec, httptest.NewRequest("GET", "/readyz", nil))
+	body, _ := io.ReadAll(rec.Body)
+	if rec.Code != 200 || string(body) != "ready\ndegraded: analyzer stream down for 12s\n" {
+		t.Fatalf("got %d %q, want 200 with the degraded line", rec.Code, body)
+	}
+
+	m := &scrubMetrics{
+		stats:    func() (ebpf.ScrubStats, error) { return ebpf.ScrubStats{}, nil },
+		ready:    func() error { return nil },
+		analyzer: a.status,
+		logger:   logrus.New(),
+	}
+	want := `
+# HELP packetyeeter_scrub_analyzer_stream_down_seconds Seconds the analyzer stream has been down (since start-up if it never connected), 0 while up
+# TYPE packetyeeter_scrub_analyzer_stream_down_seconds gauge
+packetyeeter_scrub_analyzer_stream_down_seconds 12
+# HELP packetyeeter_scrub_analyzer_stream_up 1 while the analyzer stream is connected, else 0 (node degraded: no new rules or blocks, filtering continues)
+# TYPE packetyeeter_scrub_analyzer_stream_up gauge
+packetyeeter_scrub_analyzer_stream_up 0
+`
+	if err := testutil.CollectAndCompare(m, strings.NewReader(want), "packetyeeter_scrub_analyzer_stream_up", "packetyeeter_scrub_analyzer_stream_down_seconds"); err != nil {
+		t.Error(err)
 	}
 }
 

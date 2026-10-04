@@ -23,9 +23,9 @@ import (
 // Defaults of the scrub-only flags, so host mode can warn when they are set.
 const (
 	DefaultReadyzDrain = 5 * time.Second
-	// Covers an analyzer restart and the 1s reconnect after a stable stream
-	// breaks, so a blip does not move traffic off the node.
-	DefaultReadyzAnalyzerGrace = 30 * time.Second
+	// 0: the data plane keeps filtering without the analyzer, so losing the
+	// stream only marks the node degraded (metrics, /readyz body).
+	DefaultReadyzAnalyzerGrace = 0
 	DefaultScrubSlowPathPPS    = 100000
 	DefaultSynCookieSynPPS     = 10000
 	DefaultSynCookieTTL        = 10 * time.Minute
@@ -300,9 +300,9 @@ func (c *Collector) scrubReadinessChecks() []readinessCheck {
 	return checks
 }
 
-// analyzerReadiness gates readiness on the analyzer stream: without it the
-// node gets no new rules or blocks, so the controller should prefer another
-// node. Forwarding itself never depends on the analyzer.
+// analyzerReadiness tracks the analyzer stream. Without it the node gets no
+// new rules or blocks but keeps filtering with what it has, so by default it
+// only reports the node degraded; -readyz-analyzer-grace opts into gating.
 type analyzerReadiness struct {
 	grace time.Duration
 	now   func() time.Time
@@ -310,11 +310,37 @@ type analyzerReadiness struct {
 	mu        sync.Mutex
 	up        bool
 	everUp    bool
-	downSince time.Time
+	downSince time.Time // start-up until the first connect
 }
 
 func newAnalyzerReadiness(grace time.Duration) *analyzerReadiness {
-	return &analyzerReadiness{grace: grace, now: time.Now}
+	return &analyzerReadiness{grace: grace, now: time.Now, downSince: time.Now()}
+}
+
+// status reports whether the stream is up and, if not, for how long it has
+// been down (since start-up if it never connected).
+func (a *analyzerReadiness) status() (up bool, down time.Duration) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.up {
+		return true, 0
+	}
+	return false, a.now().Sub(a.downSince)
+}
+
+// degraded is non-nil while the stream is down, whether or not readiness
+// depends on it.
+func (a *analyzerReadiness) degraded() error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.up {
+		return nil
+	}
+	down := a.now().Sub(a.downSince)
+	if !a.everUp {
+		return fmt.Errorf("analyzer stream not connected yet (%s)", down.Truncate(time.Second))
+	}
+	return fmt.Errorf("analyzer stream down for %s", down.Truncate(time.Second))
 }
 
 func (a *analyzerReadiness) set(up bool) {
@@ -356,7 +382,9 @@ func (c *Collector) scrubReady() error {
 	return nil
 }
 
-func readyzHandler(ready func() error) http.HandlerFunc {
+// degraded may be nil. A degraded node still answers 200: the first line
+// stays "ready" so status-code and body checks keep working.
+func readyzHandler(ready, degraded func() error) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		if err := ready(); err != nil {
 			w.WriteHeader(http.StatusServiceUnavailable)
@@ -364,6 +392,11 @@ func readyzHandler(ready func() error) http.HandlerFunc {
 			return
 		}
 		fmt.Fprintln(w, "ready")
+		if degraded != nil {
+			if err := degraded(); err != nil {
+				fmt.Fprintf(w, "degraded: %v\n", err)
+			}
+		}
 	}
 }
 
@@ -408,6 +441,7 @@ func (c *Collector) reportLocalAddrsSync(err error) {
 type scrubMetrics struct {
 	stats       func() (ebpf.ScrubStats, error)
 	ready       func() error
+	analyzer    func() (up bool, down time.Duration) // nil: not exported
 	ruleMatches func() (map[uint8]uint64, error)
 	ruleCounts  func() (v4, v6 int)
 	synCookies  func() (ebpf.SynCookieStats, error) // nil: SYN cookies off
@@ -422,6 +456,8 @@ func (s *scrubMetrics) Describe(ch chan<- *prometheus.Desc) {
 	ch <- metrics.ScrubTTLExpiredDesc
 	ch <- metrics.ScrubSlowPathLimitedDesc
 	ch <- metrics.ScrubReadyDesc
+	ch <- metrics.ScrubAnalyzerStreamUpDesc
+	ch <- metrics.ScrubAnalyzerStreamDownDesc
 	ch <- metrics.ScrubRuleMatchesDesc
 	ch <- metrics.ScrubRulesActiveDesc
 	ch <- metrics.ScrubSynCookieDesc
@@ -434,6 +470,15 @@ func (s *scrubMetrics) Collect(ch chan<- prometheus.Metric) {
 		ready = 1
 	}
 	ch <- prometheus.MustNewConstMetric(metrics.ScrubReadyDesc, prometheus.GaugeValue, ready)
+	if s.analyzer != nil {
+		up, down := s.analyzer()
+		v := 0.0
+		if up {
+			v = 1
+		}
+		ch <- prometheus.MustNewConstMetric(metrics.ScrubAnalyzerStreamUpDesc, prometheus.GaugeValue, v)
+		ch <- prometheus.MustNewConstMetric(metrics.ScrubAnalyzerStreamDownDesc, prometheus.GaugeValue, down.Seconds())
+	}
 
 	if s.ruleCounts != nil {
 		v4, v6 := s.ruleCounts()
