@@ -429,7 +429,12 @@ acknowledge rules: a collector that rejected or missed a set converges within
 a minute, and rules a restarted analyzer no longer knows are removed.
 `PushRulesAck.collectors` says how many scrub collectors were sent the set
 within 10 seconds; it does not confirm they applied it, so compare
-`packetyeeter_scrub_rules_active` on the collectors. All scopes together must
+`packetyeeter_scrub_rules_active` on the collectors. At most one send runs
+per collector; pushes and resyncs made meanwhile are folded into one more send
+of the then-current set. A collector that stops reading commands for 30
+seconds has its stream closed by the analyzer
+(`packetyeeter_collector_send_stalls_total`) and gets the full set again when
+it reconnects. All scopes together must
 also encode to at most 3 MiB. A rule is withdrawn from collectors 5 seconds
 before its `expires_at`, so a collector whose clock runs slightly ahead does
 not reject the whole set.

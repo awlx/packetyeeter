@@ -129,6 +129,11 @@ var (
 		Help: "Complete rule sets sent to scrub collectors",
 	})
 
+	CollectorSendStalls = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "packetyeeter_collector_send_stalls_total",
+		Help: "Collector streams closed by the analyzer because a command send blocked past the send timeout",
+	})
+
 	EnforcementSuppressedCommands = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "packetyeeter_enforcement_suppressed_commands_total",
 		Help: "Block commands not issued because the runtime enforcement kill switch is pulled",
