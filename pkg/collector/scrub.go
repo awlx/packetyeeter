@@ -105,6 +105,9 @@ func validateScrubConfig(cfg Config) error {
 		(cfg.SynCookieTTL < time.Second || cfg.SynCookieTTL/time.Second > math.MaxUint32):
 		return fmt.Errorf("-scrub-syn-cookie-ttl must be between 1s and %ds, got %s", uint32(math.MaxUint32), cfg.SynCookieTTL)
 	}
+	if _, err := ebpf.ParseHandshakeLRU(string(cfg.ScrubHandshakeLRU)); err != nil {
+		return err
+	}
 	return nil
 }
 
