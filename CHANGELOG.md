@@ -10,28 +10,48 @@
   the scrub collectors' certificate names. **Empty (the default) disables
   cross-node fan-out**: each scrub node gets only the blocks decided from its
   own signals.
-- A block fans out only when a trusted-only rate limiter or reputation score
-  (fed by listed scrub streams alone) crosses the threshold, and only from
-  and to listed scrub streams. Sources split across trusted nodes are still
-  judged on their total.
-- Not covered: any connected collector still feeds the shared per-source
-  state, so it can get a source blocked on whichever single stream next
-  reports it, including a scrub node. AI-detection and sustained-download
-  blocks (`Broadcast`) still go to every collector, except that with the
-  allowlist set they skip trusted scrub nodes unless a trusted scrub stream
-  reported that source in the last 10 minutes. That evidence is global: one
-  trusted scrub report admits the `Broadcast` to all trusted scrub nodes.
+- With the allowlist set, listed scrub streams get rate-limit and reputation
+  blocks only when a trusted-only rate limiter or reputation score (fed by
+  listed scrub streams alone) crosses the threshold, and such a block goes to
+  every listed scrub stream. Sources split across trusted nodes are still
+  judged on their total. When only the shared state tripped, a listed scrub
+  stream gets no block (counted in the new
+  `packetyeeter_scrub_shared_only_blocks_skipped_total{kind}`), so a collector
+  outside the allowlist can no longer get a source blocked on any trusted
+  scrub node through the rate limit or reputation. Host-mode and unlisted
+  streams are still judged on the shared state and blocked on it themselves.
+  With the allowlist empty nothing changes.
+- Trusted scrub nodes now get reputation blocks only from repeated trusted
+  rate-limit trips: AI and bot-verification penalties feed only the shared
+  reputation.
+- Not covered: AI-detection and sustained-download blocks (`Broadcast`) are
+  judged on shared evidence from every collector and still go to every
+  collector, except that with the allowlist set they skip trusted scrub nodes
+  unless a trusted scrub stream sent any signal (egress-volume reports
+  included) for that source in the last 10 minutes. That evidence is global:
+  one trusted scrub report admits the `Broadcast` to all trusted scrub nodes,
+  after which untrusted streams can drive it. Sustained-download re-broadcasts
+  stop reaching scrub nodes 10 minutes after they last reported the source,
+  e.g. once they drop it. New `packetyeeter_scrub_evidence_entries` gauge and
+  `packetyeeter_scrub_evidence_evictions_total` counter (set capped at
+  200000).
 - The 60-second block dedup is now per collector: a block one collector got
   no longer swallows another node's own block, a trusted fan-out or a
   `Broadcast` of the same source within the window. Before, an ECMP cluster
   without fan-out blocked a source on about one node per minute.
-  `WatchDecisions` publishes a source once per scope (local, fan-out,
-  broadcast) per window.
+  `WatchDecisions` publishes a source at most once per scope (local, fan-out,
+  broadcast) per 60 seconds, and again about every 60 seconds while blocks
+  for it keep being sent, as before.
 - Fan-out commands go through one ordered, bounded queue (256) per scrub
   peer, so fan-out blocks reach each peer in decision order. The ordering
   covers fan-out blocks only, not other command paths (only blocks are
   fanned out today; unblocks would use the same queue). New counter
   `packetyeeter_scrub_command_fanout_dropped_total{reason="queue_full"|"role_changed"|"peer_gone"}`.
+  Label-schema change: this counter had no labels before and now carries
+  `reason`. Plain selectors such as
+  `rate(packetyeeter_scrub_command_fanout_dropped_total[5m])` still match
+  (now one series per reason); aggregations, alerts and dashboards that
+  expect a single series should wrap it in `sum(...)` or group `by (reason)`.
 - `packetyeeter_scrub_command_fanout_total` now counts only sends the
   transport accepted.
 

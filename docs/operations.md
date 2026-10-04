@@ -491,51 +491,74 @@ only gets the blocks decided from its own signals. A stream that announces
 scrub mode with an unlisted certificate is logged once and still gets its own
 blocks and runtime rules.
 
-What decides a fan-out: the analyzer keeps a second rate limiter (same
-limits) and a second reputation score that only trusted scrub streams feed.
-A block fans out only when that trusted-only state crosses the threshold, the
-originating stream is a trusted scrub stream, and it goes only to other
-trusted scrub streams. Signals from several trusted nodes still add up, so a
-source split across them is judged on their total.
+What decides a block on a trusted scrub node: the analyzer keeps a second
+rate limiter (same limits) and a second reputation score that only trusted
+scrub streams feed. A rate-limit or reputation block is sent to a trusted
+scrub stream only when that trusted-only state crosses the threshold, and
+then it also fans out to every other trusted scrub stream. Signals from
+several trusted nodes still add up, so a source split across them is judged
+on their total. When only the shared state (fed by every stream) crossed the
+threshold, a trusted scrub stream gets no block; the signal is still counted
+as rate limited and the shared reputation is still penalized, and
+`packetyeeter_scrub_shared_only_blocks_skipped_total{kind}` counts the skip.
+Host-mode collectors and untrusted streams are judged on the shared state as
+before and get their own blocks. With `-scrub-client-names` empty no stream
+is trusted and all of this is off: every stream is judged on the shared
+state, exactly as without this feature.
 
-What is and is not protected:
+What is and is not protected (with `-scrub-client-names` set):
 
 - A collector outside the allowlist (a host-mode collector, an unlisted
-  certificate, or any client on a plaintext listener) cannot cause a block on
-  any scrub node other than the one whose signal crossed the threshold, and
-  cannot stop another collector's block: the 60-second dedup is per
-  collector, so a block it got does not suppress another node's own block, a
-  trusted fan-out or a `Broadcast` of the same source, which still reach every
-  collector that has not had it.
+  certificate, or any client on a plaintext listener) cannot get a source
+  blocked on any trusted scrub node through the rate limit or reputation:
+  draining the shared bucket or pushing the shared reputation over the
+  threshold blocks the source only on streams outside the allowlist that
+  report it, never on a trusted scrub node. It also cannot stop another
+  collector's block: the 60-second dedup is per collector, so a block it got
+  does not suppress another node's own block, a trusted fan-out or a
+  `Broadcast` of the same source.
 - It still feeds the shared per-source state (rate limit, reputation, AI
-  windows). It can push a source over the shared threshold, and the next
-  signal for that source from any stream, including a trusted scrub node, then
-  blocks it *on that stream only*. So an untrusted collector can get a
-  victim blocked on one scrub node at a time, not on all of them. Only
-  rate-limit trips from trusted streams feed the trusted reputation; AI and
-  bot-verification penalties do not, so reputation blocks rarely fan out.
-- AI detections and sustained-download holds use `Broadcast`, which sends to
-  every collector as before (host-mode included). With `-scrub-client-names`
-  set it skips trusted scrub collectors unless a trusted scrub stream
-  reported that source in the last 10 minutes, so evidence from untrusted
-  streams alone does not reach them through this path either. That evidence
-  is global, not per node: one trusted scrub report for a source admits the
-  `Broadcast` to *all* trusted scrub nodes. A `Broadcast` sent before the
-  trusted report is sent again to the scrub nodes when the AI engine repeats
-  it within 60 seconds. With the list empty `Broadcast` reaches every
-  collector, as before.
+  windows) and is blocked on that state itself.
+- Only rate-limit trips from trusted streams feed the trusted reputation; AI
+  and bot-verification penalties do not. So with the list set, trusted scrub
+  nodes get reputation blocks only from repeated trusted rate-limit trips;
+  other reputation-driven blocks reach them only through `Broadcast`.
+- AI detections and sustained-download holds use `Broadcast`, which is judged
+  on the *shared* evidence (AI windows fed by every stream) and sends to every
+  collector (host-mode included). With the list set it skips trusted scrub
+  collectors unless a trusted scrub stream sent *any* signal for that source
+  in the last 10 minutes; any signal type counts, including
+  `SIGNAL_EGRESS_VOLUME` reports. That evidence is global, not per node: one
+  trusted scrub report for a source admits the `Broadcast` to *all* trusted
+  scrub nodes. So this path differs from the rate-limit and reputation gate
+  above: once a trusted scrub node has reported a source, untrusted streams
+  can drive the AI detection that gets it blocked on every trusted scrub
+  node. A `Broadcast` sent before the trusted report is sent again to the
+  scrub nodes when the AI engine repeats it within 60 seconds.
+- Sustained-download holds re-broadcast while the download goes on. Once the
+  source is blocked at the scrub layer, scrub nodes drop its traffic and stop
+  reporting it, so after the 10-minute evidence window those re-broadcasts no
+  longer reach the scrub nodes (their own blocks expire after
+  `-block-duration`). Host collectors still get them.
+- With the list empty `Broadcast` reaches every collector, as before.
 - Restrict who can connect at all with mTLS and a firewall; the allowlist
   does not.
+
+The trusted-report set holds at most 200000 sources; at that size an insert
+evicts a sampled old entry (`packetyeeter_scrub_evidence_evictions_total`),
+and `packetyeeter_scrub_evidence_entries` shows its size.
 
 Each node expires a block from the time it received it and its own
 `-block-duration`, so nodes can drop a fanned-out block at slightly different
 times. Dry-run and the kill switch are checked before the dedup, once per
 decision. The dedup suppresses a repeat `BLOCK_IP` to a collector that got
-one for the same source in the last 60 seconds; with fan-out off each node
-still gets the blocks decided from its own signals. `WatchDecisions`
-publishes a source once per scope (local, fan-out, broadcast) within the
-dedup window, not once per collector: a trusted fan-out after a local block
-is published again, a second node's own local block is not.
+one for the same source in the last 60 seconds; every other collector still
+gets its own block, so with fan-out off each node is blocked by the decisions
+from its own signals. `WatchDecisions` publishes a source at most once per
+scope (local, fan-out, broadcast) per 60 seconds, not once per collector,
+and again every 60 seconds or so while blocks for it keep being sent: a
+trusted fan-out after a local block is published, a second node's own local
+block within the same 60 seconds is not.
 
 Each peer has its own ordered queue of 256 commands, sent by one worker, so a
 stalled peer does not delay the originating node and fan-out blocks reach
