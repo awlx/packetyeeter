@@ -383,7 +383,7 @@ func TestFingerprintSignalsArePublishedNotScored(t *testing.T) {
 	if score := a.Reputation.GetScore(srcIP.String(), reputation.TypeIP); score != 0 {
 		t.Fatalf("fingerprint changed reputation: %v", score)
 	}
-	if a.wasRecentlyBlocked(srcIP) {
+	if liveReservation(a, srcIP) != nil {
 		t.Fatal("fingerprint led to a block")
 	}
 	a.httpRateMu.Lock()

@@ -111,17 +111,23 @@ func (a *Analyzer) checkRateLimit(ip net.IP, asn string) bool {
 	// Enforce limiter
 	allowed := a.RateLimiter.Allow(ip, asn)
 	if !allowed {
-		if ip != nil {
-			metrics.RateLimitExceeded.WithLabelValues("ip").Inc()
-		}
-		if asn != "" && asn != "Unknown" {
-			metrics.RateLimitExceeded.WithLabelValues("asn").Inc()
-		}
-		if !a.Config.DryRun {
-			trackBlocked(ip, asn)
-		}
+		a.recordRateLimitTrip(ip, asn)
 	}
 	return !allowed
+}
+
+// recordRateLimitTrip counts a rate-limit trip in the metrics and the
+// blocked-source tracking.
+func (a *Analyzer) recordRateLimitTrip(ip net.IP, asn string) {
+	if ip != nil {
+		metrics.RateLimitExceeded.WithLabelValues("ip").Inc()
+	}
+	if asn != "" && asn != "Unknown" {
+		metrics.RateLimitExceeded.WithLabelValues("asn").Inc()
+	}
+	if !a.Config.DryRun {
+		trackBlocked(ip, asn)
+	}
 }
 
 // extractMLFeatures extracts features for ML model prediction

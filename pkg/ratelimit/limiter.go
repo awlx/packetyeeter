@@ -115,6 +115,9 @@ type Limiter struct {
 	cleanupInterval time.Duration
 	maxAge          time.Duration
 	lastCleanup     time.Time
+
+	stop     chan struct{}
+	stopOnce sync.Once
 }
 
 // Config holds configuration for the rate limiter
@@ -208,6 +211,7 @@ func NewLimiter(cfg Config) *Limiter {
 		cleanupInterval: cfg.CleanupInterval,
 		maxAge:          cfg.MaxAge,
 		lastCleanup:     time.Now(),
+		stop:            make(chan struct{}),
 	}
 
 	// Start cleanup goroutine
@@ -361,9 +365,20 @@ func (l *Limiter) cleanupLoop() {
 	ticker := time.NewTicker(l.cleanupInterval)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		l.cleanup()
+	for {
+		select {
+		case <-l.stop:
+			return
+		case <-ticker.C:
+			l.cleanup()
+		}
 	}
+}
+
+// Stop ends the cleanup goroutine. The limiter keeps working without it.
+// Safe to call more than once.
+func (l *Limiter) Stop() {
+	l.stopOnce.Do(func() { close(l.stop) })
 }
 
 // cleanup removes limiters that haven't been used recently

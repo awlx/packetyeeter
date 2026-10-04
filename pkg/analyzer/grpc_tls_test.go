@@ -42,11 +42,25 @@ func TestNewRejectsScrubClientNamesWithoutClientCA(t *testing.T) {
 			t.Fatalf("%s: error = %v", name, err)
 		}
 	}
-	if _, err := New(Config{
+	a, err := New(Config{
 		TLS:              grpctls.ServerConfig{CertFile: cert, KeyFile: key, ClientCAFile: ca.WriteCA(t, dir, "ca")},
 		ScrubClientNames: []string{"scrub-a"},
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("with mTLS: %v", err)
+	}
+	if a.ScrubRateLimiter == nil {
+		t.Fatal("trusted-only limiter not created with -scrub-client-names")
+	}
+	a.Close()
+
+	plain, err := New(Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer plain.Close()
+	if plain.ScrubRateLimiter != nil {
+		t.Fatal("trusted-only limiter created without -scrub-client-names")
 	}
 }
 

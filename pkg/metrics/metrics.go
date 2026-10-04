@@ -136,7 +136,7 @@ var (
 
 	ScrubCommandFanoutDropped = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "packetyeeter_scrub_command_fanout_dropped_total",
-		Help: "Fan-out commands (blocks; unblocks would take the same path) not sent to a scrub collector, by reason: queue_full (its outbound queue was full) or role_changed (it stopped being a trusted scrub collector after the command was queued)",
+		Help: "Fan-out commands (blocks; unblocks would take the same path) not sent to a scrub collector, by reason: queue_full (its outbound queue was full), role_changed (it stopped being a trusted scrub collector after the command was queued) or peer_gone (its stream ended with the command still queued)",
 	}, []string{"reason"})
 
 	CollectorSendStalls = promauto.NewCounter(prometheus.CounterOpts{
@@ -944,7 +944,7 @@ var highCardinalityEnabled atomic.Bool
 
 func init() {
 	// Export both fixed reasons at 0 so alerts see the series before a drop.
-	for _, reason := range []string{"queue_full", "role_changed"} {
+	for _, reason := range []string{"queue_full", "role_changed", "peer_gone"} {
 		ScrubCommandFanoutDropped.WithLabelValues(reason)
 	}
 	// Default off; allow env override for debugging

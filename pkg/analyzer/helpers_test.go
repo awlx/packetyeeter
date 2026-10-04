@@ -112,9 +112,19 @@ func TestTrackBlockedCapped(t *testing.T) {
 	}
 }
 
-// markBlocked reserves a local block of ip with no recipients.
+// markBlocked reserves a local block of ip for a throwaway collector.
 func (a *Analyzer) markBlocked(ip net.IP) {
-	a.reserveBlock(ip, scopeLocal, nil, time.Now())
+	a.reserveBlock(ip, scopeLocal, []*collectorStream{{}}, time.Now())
+}
+
+// liveReservation returns ip's block reservation if it is within the TTL.
+func liveReservation(a *Analyzer, ip net.IP) *blockReservation {
+	a.recentBlocksMu.Lock()
+	defer a.recentBlocksMu.Unlock()
+	if r, ok := a.recentBlocks[ip.String()]; ok && time.Since(r.at) < recentBlockTTL {
+		return r
+	}
+	return nil
 }
 
 func TestRecentBlocksTTLIndependentOfSweep(t *testing.T) {
@@ -136,10 +146,10 @@ func TestRecentBlocksTTLIndependentOfSweep(t *testing.T) {
 		t.Fatal("sweep ran again within recentBlocksSweepInterval")
 	}
 	// Past-TTL entries the sweep has not reached yet must still read as expired.
-	if a.wasRecentlyBlocked(expired) || a.wasRecentlyBlocked(stale) {
+	if liveReservation(a, expired) != nil || liveReservation(a, stale) != nil {
 		t.Fatal("entry past TTL treated as recently blocked before sweep")
 	}
-	if !a.wasRecentlyBlocked(live) {
+	if liveReservation(a, live) == nil {
 		t.Fatal("entry within TTL not treated as recently blocked")
 	}
 
