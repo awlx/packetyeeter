@@ -255,29 +255,40 @@ in-flight lookups are cancelled on analyzer shutdown.
 
 Until an IP has a cached verdict, its requests are handled as follows:
 
-- **Pending** (lookup queued or running, for at most the 5-second DNS
-  budget since it was queued): the request is unverified. It gets
-  neither the verified-bot exemption (no positive signal, no raised
-  sustained-download floors) nor the impersonation penalty. Heuristics that
-  presume a browser UA claim is false (header order, `sec-ch`, `Sec-Fetch-*`,
-  `Accept`, TLS version, JA4 rotation) are skipped, because a verified crawler
-  would be exempt from them. Everything else - rate limits, error tracking,
-  JA4DB, bot-keyword and missing-header signals, threat intel and the
-  reputation threshold - applies as for any unverified client.
-- **Dropped** (queue full, or the verdict cache is full): no lookup is started
-  and the request is handled as a plain unverified client, with all
-  heuristics. Treating it as pending would let a lookup flood switch those
-  heuristics off. The same applies once a lookup has been queued or running
-  for longer than the DNS budget, so a backlog cannot stretch the pending
-  window.
+- **Pending** (for at most the 5-second DNS budget per IP, counted from its
+  first pending request, whether the lookup is queued, running, or could not
+  be queued yet because the queue was full): the request is unverified. It
+  gets neither the verified-bot exemption (no positive signal, no raised
+  sustained-download floors) nor the impersonation penalty. The heuristics a
+  verified crawler would be exempt from are skipped: header order, `sec-ch`,
+  `Sec-Fetch-*`, `Accept`, TLS version, JA4 rotation, the bot-keyword
+  User-Agent signal, the known-bot JA4DB match and the missing
+  `Accept-Language`/cookies/`Referer` signals. Rate limits, error and path
+  tracking, threat intel and the reputation threshold apply as for any
+  client. An IP cannot get a new pending window until a minute after its
+  last one ended, unless a verdict arrived in between.
+- **Dropped** (the pending window is used up, or more than 65536 IPs are
+  pending at once): the request is handled as a plain unverified client, with
+  all heuristics, so a lookup flood cannot switch them off indefinitely. A
+  lookup that could not be queued is retried on the IP's next request.
+- **Revalidating** (verified before, verdict expired less than an hour ago):
+  pending until the new verdict arrives, without using up the window, so a
+  lookup flood cannot strip known crawlers of their exemption at expiry.
+
+Verdicts are cached in two pools of 50000 IPs each, one for verified crawlers
+and one for failed or incomplete verifications. When a pool is full its oldest
+verdict is evicted, so fake crawler claims can only push out other failed
+claims, never a verified crawler, and new verdicts are always cached.
 
 Requests after the lookup completes get the cached verdict: verified bots are
 exempt, impersonators are penalised. In practice the first request or few from
 a new crawler IP are unverified rather than verified or penalised. This errs
 towards neither blocking nor allowlisting on an unconfirmed claim.
 
-Watch `packetyeeter_bot_verification_queue_depth` and
-`packetyeeter_bot_verification_queue_drops_total`. Sustained drops mean
+Watch `packetyeeter_bot_verification_queue_depth`,
+`packetyeeter_bot_verification_queue_drops_total` and
+`packetyeeter_bot_verification_cache_evictions_total`. Sustained drops or
+unverified-pool evictions mean
 lookups are slow or a flood of new bot-claiming IPs is arriving; check
 resolver latency before anything else.
 
@@ -448,7 +459,12 @@ acknowledge rules: a collector that rejected or missed a set converges within
 a minute, and rules a restarted analyzer no longer knows are removed.
 `PushRulesAck.collectors` says how many scrub collectors were sent the set
 within 10 seconds; it does not confirm they applied it, so compare
-`packetyeeter_scrub_rules_active` on the collectors. All scopes together must
+`packetyeeter_scrub_rules_active` on the collectors. At most one send runs
+per collector; pushes and resyncs made meanwhile are folded into one more send
+of the then-current set. A collector that stops reading commands for 30
+seconds has its stream closed by the analyzer
+(`packetyeeter_collector_send_stalls_total`) and gets the full set again when
+it reconnects. All scopes together must
 also encode to at most 3 MiB. A rule is withdrawn from collectors 5 seconds
 before its `expires_at`, so a collector whose clock runs slightly ahead does
 not reject the whole set.

@@ -130,10 +130,13 @@ behavior) alongside `Tau` and `AnomalyMultiplier`.
   signal stream (see `docs/operations.md#bot-verification`).
   `packetyeeter_bot_verification_queue_depth` is the number of lookups waiting
   for a worker. `packetyeeter_bot_verification_queue_drops_total{reason}`
-  counts lookups not started (`queue_full`, `cache_full`); those requests are
-  treated as unverified. `packetyeeter_bot_verification_pending_total{bot_type}`
-  counts requests handled as unverified while their lookup was still running;
-  `bot_type` is one of the seven DNS-verified crawler types.
+  counts lookups not started: `queue_full` (still pending within the IP's
+  window, retried on its next request) and `pending_full` (treated as
+  unverified). `packetyeeter_bot_verification_cache_evictions_total{pool}`
+  counts verdicts evicted to make room (`verified`, `unverified`).
+  `packetyeeter_bot_verification_pending_total{bot_type}` counts requests
+  handled as pending (crawler heuristics skipped); `bot_type` is one of the
+  seven DNS-verified crawler types.
 - **AI engine**: `packetyeeter_ai_signals_by_*`,
   `packetyeeter_ai_engine_signal_ingress_by_type_total`,
   `packetyeeter_ai_engine_queue_depth_by_shard`,
@@ -175,6 +178,9 @@ Analyzer-side, for `PushRules`:
 - `packetyeeter_rule_deltas_sent_total` (counter): complete rule sets sent to
   scrub collectors (on each push, on connect and once a minute). Compare with
   the collectors' `packetyeeter_scrub_rules_active` to confirm they converged.
+- `packetyeeter_collector_send_stalls_total` (counter): collector streams the
+  analyzer closed because a command send (rules or blocks) blocked for 30
+  seconds: the collector stopped reading. It reconnects and is resynced.
 
 ### Runtime enforcement kill switch
 
