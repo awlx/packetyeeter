@@ -9,10 +9,14 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
+
 	apiv1 "PacketYeeter/api/proto/v1"
+	"PacketYeeter/pkg/metrics"
 	"PacketYeeter/pkg/patterns"
 
 	"google.golang.org/grpc/codes"
@@ -533,4 +537,111 @@ func TestRepeatedRoleAnnouncementsStartOneSync(t *testing.T) {
 		t.Fatalf("%d goroutines started by repeated role announcements, want 1", n)
 	}
 	close(b.release)
+}
+
+// countingBlockingStream blocks every Send until released and counts them.
+type countingBlockingStream struct {
+	apiv1.AnalyzerService_StreamSignalsServer
+	release chan struct{}
+	sends   atomic.Int32
+}
+
+func (b *countingBlockingStream) Send(*apiv1.Command) error {
+	b.sends.Add(1)
+	<-b.release
+	return nil
+}
+
+// Resyncs and pushes against a collector that stopped reading must not pile
+// up one goroutine each; they coalesce behind the one blocked send.
+func TestRuleSyncsCoalescePerCollector(t *testing.T) {
+	a := newRuleAnalyzer(t)
+	a.ruleSyncTimeout = 10 * time.Millisecond
+	b := &countingBlockingStream{release: make(chan struct{})}
+	cs := &collectorStream{stream: b}
+	cs.setRole("scrub")
+	a.registerCollector(context.Background(), cs)
+
+	before := runtime.NumGoroutine()
+	for range 100 {
+		a.syncScrubCollectors(context.Background())
+	}
+	if n := runtime.NumGoroutine() - before; n > 5 {
+		t.Fatalf("%d goroutines left behind by 100 syncs to a blocked collector, want at most 1", n)
+	}
+	close(b.release)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		cs.syncMu.Lock()
+		idle := !cs.syncing
+		cs.syncMu.Unlock()
+		if idle {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("coalesced sync never finished")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if n := b.sends.Load(); n != 2 {
+		t.Fatalf("%d sends for 100 coalesced requests, want 2 (the blocked one and one covering the rest)", n)
+	}
+}
+
+// A collector that stops reading commands is disconnected after the send
+// timeout instead of holding sendMu, and every sender behind it, forever.
+func TestStalledSendEndsCollectorStream(t *testing.T) {
+	a := newRuleAnalyzer(t)
+	a.commandSendTimeout = 50 * time.Millisecond
+
+	streamCtx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	s := &stallingStream{ctx: streamCtx, recv: make(chan *apiv1.Signal, 1)}
+	s.recv <- roleSignal("scrub")
+
+	done := make(chan error, 1)
+	before := testutil.ToFloat64(metrics.CollectorSendStalls)
+	go func() { done <- a.StreamSignals(s) }()
+	select {
+	case err := <-done:
+		if status.Code(err) != codes.Unavailable {
+			t.Fatalf("StreamSignals = %v, want Unavailable after a stalled send", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("stream with a stalled send was not closed")
+	}
+	if got := testutil.ToFloat64(metrics.CollectorSendStalls) - before; got != 1 {
+		t.Fatalf("send stalls counted %v, want 1", got)
+	}
+	a.collectorsMu.RLock()
+	n := len(a.collectors)
+	a.collectorsMu.RUnlock()
+	if n != 0 {
+		t.Fatalf("%d collectors still registered after the stream closed", n)
+	}
+}
+
+// stallingStream is a collector that sends signals but never reads commands:
+// Send blocks until the RPC ends (here: the test), as gRPC's does once the
+// flow-control window is full.
+type stallingStream struct {
+	apiv1.AnalyzerService_StreamSignalsServer
+	ctx  context.Context
+	recv chan *apiv1.Signal
+}
+
+func (s *stallingStream) Context() context.Context { return s.ctx }
+
+func (s *stallingStream) Send(*apiv1.Command) error {
+	<-s.ctx.Done()
+	return s.ctx.Err()
+}
+
+func (s *stallingStream) Recv() (*apiv1.Signal, error) {
+	select {
+	case sig := <-s.recv:
+		return sig, nil
+	case <-s.ctx.Done():
+		return nil, s.ctx.Err()
+	}
 }

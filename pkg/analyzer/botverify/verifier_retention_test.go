@@ -25,13 +25,11 @@ func TestVerifyRemovesInflightEntryOnCachedReturn(t *testing.T) {
 	}()
 
 	time.Sleep(10 * time.Millisecond)
-	verifier.mu.Lock()
-	verifier.cache[ipStr] = &VerificationResult{
+	seedCache(verifier, ipStr, &VerificationResult{
 		IsVerified: true,
 		BotType:    BotTypeGooglebot,
 		VerifiedAt: time.Now(),
-	}
-	verifier.mu.Unlock()
+	})
 	inFlight.Unlock()
 
 	select {

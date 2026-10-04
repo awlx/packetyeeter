@@ -56,6 +56,8 @@ func main() {
 		tlsCert        = flag.String("tls-cert", "", "PEM certificate for the gRPC listener; enables TLS (requires -tls-key). Re-read on change")
 		tlsKey         = flag.String("tls-key", "", "PEM private key for -tls-cert. Re-read on change")
 		tlsClientCA    = flag.String("tls-client-ca", "", "PEM CA bundle; require and verify client certificates signed by it (mTLS). Re-read on change")
+		maxConnAge     = flag.Duration("grpc-max-connection-age", analyzer.DefaultGRPCMaxConnectionAge, "Close gRPC connections after this long (±10%) so clients re-handshake against the current certificates and CA bundle; 0 = never")
+		maxConnGrace   = flag.Duration("grpc-max-connection-age-grace", analyzer.DefaultGRPCMaxConnectionAgeGrace, "How long open streams may continue after -grpc-max-connection-age before the connection is cut")
 		controlClients = flag.String("control-client-names", "", "Comma-separated client certificate DNS SANs/CommonNames allowed to call PushRules and WatchDecisions (requires -tls-client-ca; empty = any authenticated client)")
 
 		sustainedDefaults = sustained.DefaultConfig()
@@ -137,6 +139,9 @@ func main() {
 			ClientCAFile: *tlsClientCA,
 		},
 		ControlClientNames: grpctls.ParseNames(*controlClients),
+
+		GRPCMaxConnectionAge:      *maxConnAge,
+		GRPCMaxConnectionAgeGrace: *maxConnGrace,
 		Sustained: sustained.Config{
 			Enabled:                           *sustainedEnabled,
 			Enforce:                           *sustainedEnforce,

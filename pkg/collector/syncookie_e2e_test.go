@@ -495,3 +495,77 @@ func TestScrubSynCookieAuto(t *testing.T) {
 		wantEvents(t, m, f.client.Is6(), map[string]uint64{"challenge": 2, "activated": 1})
 	}
 }
+
+func TestScrubSynCookieCap(t *testing.T) {
+	// 10/s with a 100 ms burst admits two back to back; the steps below take
+	// far less than the 100 ms that frees the next slot.
+	m, prog := loadSynCookieScrub(t, ebpf.SynCookieConfig{Mode: ebpf.SynCookiesOn, MaxPPS: 10})
+	v4, v6 := scFamilies[0], scFamilies[1]
+	syn := func(f scFamily, src netip.Addr) tcpSeg {
+		return tcpSeg{src: src, dst: f.dst, sport: 40001, dport: 443, seq: 1000, flags: tcpSYN}
+	}
+	// Both families draw on one budget.
+	_, ack, _ := runTX(t, prog, syn(v4, v4.client))
+	runTX(t, prog, syn(v6, v6.client))
+	for _, f := range scFamilies {
+		if ret, _ := run(t, prog, syn(f, f.attacker).frame()); ret != xdpDrop {
+			t.Fatalf("%s: SYN over the cap verdict %d, want XDP_DROP", f.name, ret)
+		}
+	}
+	// Answers and verified sources are not capped.
+	rst := tcpSeg{src: v4.client, dst: v4.dst, sport: 40001, dport: 443, seq: ack, flags: tcpRST}
+	if ret, _ := run(t, prog, rst.frame()); ret != xdpDrop || !verified(t, m, v4.client) {
+		t.Fatalf("valid RST over the cap verdict %d, verified %v", ret, verified(t, m, v4.client))
+	}
+	if ret, _ := run(t, prog, syn(v4, v4.client).frame()); ret == xdpDrop || ret == xdpTX {
+		t.Fatalf("verified SYN over the cap verdict %d, want it forwarded", ret)
+	}
+	wantEvents(t, m, false, map[string]uint64{"challenge": 1, "suppressed": 1, "valid": 1, "passed": 1})
+	wantEvents(t, m, true, map[string]uint64{"challenge": 1, "suppressed": 1})
+
+	time.Sleep(1100 * time.Millisecond)
+	runTX(t, prog, syn(v6, v6.attacker))
+}
+
+func TestScrubSynCookieCapDryRun(t *testing.T) {
+	// 5/s: one slot per 200 ms, longer than the burst allowance.
+	m, prog := loadSynCookieScrub(t, ebpf.SynCookieConfig{Mode: ebpf.SynCookiesOn, MaxPPS: 5})
+	if err := m.SetMonitorMode(true); err != nil {
+		t.Fatal(err)
+	}
+	f := scFamilies[0]
+	for _, port := range []uint16{40001, 40002} {
+		syn := tcpSeg{src: f.attacker, dst: f.dst, sport: port, dport: 443, seq: 1000, flags: tcpSYN}
+		if ret, _ := run(t, prog, syn.frame()); ret == xdpDrop || ret == xdpTX {
+			t.Fatalf("dry-run verdict %d, want the SYN forwarded", ret)
+		}
+	}
+	wantEvents(t, m, false, map[string]uint64{"dry_run": 1, "suppressed": 1})
+}
+
+func TestScrubSynCookieCapAllCPUs(t *testing.T) {
+	if runtime.NumCPU() < 2 {
+		t.Skip("needs two CPUs")
+	}
+	runtime.LockOSThread()
+	t.Cleanup(runtime.UnlockOSThread)
+	onCPU := func(cpu int) {
+		var set unix.CPUSet
+		set.Set(cpu)
+		if err := unix.SchedSetaffinity(0, &set); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m, prog := loadSynCookieScrub(t, ebpf.SynCookieConfig{Mode: ebpf.SynCookiesOn, MaxPPS: 10})
+	f := scFamilies[0]
+	syn := tcpSeg{src: f.attacker, dst: f.dst, sport: 40001, dport: 443, seq: 1000, flags: tcpSYN}
+	// CPU 0 takes the whole burst; CPU 1 has no share of its own.
+	onCPU(0)
+	runTX(t, prog, syn)
+	runTX(t, prog, syn)
+	onCPU(1)
+	if ret, _ := run(t, prog, syn.frame()); ret != xdpDrop {
+		t.Fatalf("SYN on another CPU over the cap verdict %d, want XDP_DROP", ret)
+	}
+	wantEvents(t, m, false, map[string]uint64{"challenge": 2, "suppressed": 1})
+}

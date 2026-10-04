@@ -35,26 +35,38 @@ python3 scripts/train_model.py \
 
 ### 2. Install ONNX Runtime (Optional but Recommended)
 
+The analyzer uses `github.com/yalue/onnxruntime_go` v1.25.0, which requests
+ONNX Runtime C API version 23: it needs **ONNX Runtime 1.23 or newer** (1.23.2
+is the version the bindings are built against). With an older library,
+loading the `-ml-model` fails.
+
+The bindings are held at v1.25.0 (Dependabot ignores `>=1.26.0` in
+`.github/dependabot.yml`): v1.36.0 and later request C API 29 and need ONNX
+Runtime 1.29 or newer, so lift the hold only after upgrading the library on
+every analyzer that runs `-ml-model`.
+
 #### Linux (Ubuntu/Debian)
 ```bash
-# Download ONNX Runtime
-wget https://github.com/microsoft/onnxruntime/releases/download/v1.16.3/onnxruntime-linux-x64-1.16.3.tgz
-tar xzf onnxruntime-linux-x64-1.16.3.tgz
-sudo mv onnxruntime-linux-x64-1.16.3 /opt/onnxruntime
+# Download ONNX Runtime (use the aarch64 archive on arm64 hosts)
+ORT=1.23.2
+wget https://github.com/microsoft/onnxruntime/releases/download/v$ORT/onnxruntime-linux-x64-$ORT.tgz
+tar xzf onnxruntime-linux-x64-$ORT.tgz
+sudo mv onnxruntime-linux-x64-$ORT /opt/onnxruntime
 
-# Set environment variables
-echo 'export ONNXRUNTIME_DIR=/opt/onnxruntime' | sudo tee -a /etc/environment
-echo 'export LD_LIBRARY_PATH=/opt/onnxruntime/lib:$LD_LIBRARY_PATH' | sudo tee -a /etc/environment
-
-# Install Go bindings
-cd /usr/local/src/packetyeeter
-go get github.com/yalue/onnxruntime_go
+# The bindings dlopen "onnxruntime.so" by bare name, which the archive does
+# not ship and ldconfig does not index (no "lib" prefix), so link it into a
+# directory the loader always searches.
+sudo ln -sf /opt/onnxruntime/lib/libonnxruntime.so.$ORT /usr/lib/onnxruntime.so
 ```
+
+The Go bindings are already pinned in `go.mod`; do not `go get` them, which
+would move past the hold.
 
 #### macOS
 ```bash
-brew install onnxruntime
-export ONNXRUNTIME_DIR=/usr/local/opt/onnxruntime
+brew install onnxruntime   # 1.23 or newer
+# Same bare-name lookup; /usr/local/lib is on the default dlopen fallback path
+sudo ln -sf "$(brew --prefix onnxruntime)/lib/libonnxruntime.dylib" /usr/local/lib/onnxruntime.so
 ```
 
 ### 3. Enable ONNX Inference
