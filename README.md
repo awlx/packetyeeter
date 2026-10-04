@@ -310,6 +310,7 @@ sudo ./packetyeeter-collector -i eth0 -analyzer-addr 127.0.0.1:9090
 | `-scrub-syn-cookies` | `off` | Scrub mode: answer SYNs from unverified sources with a SYN cookie instead of forwarding them; `auto` only for destinations over `-scrub-syn-cookie-syn-pps`, `on` for all. Linux 6.0+. See [SYN cookies](docs/operations.md#syn-cookies). |
 | `-scrub-syn-cookie-style` | `oos` | Scrub mode: `oos` (out-of-sequence SYN-ACK; the client's RST verifies it and its SYN retransmission passes) or `reset` (valid SYN-ACK; the client's ACK verifies it, the node resets that first connection). |
 | `-scrub-syn-cookie-syn-pps` | `10000` | Scrub mode: SYNs per second to one destination, across all CPUs, that start challenges in `auto` (held 30 s). |
+| `-scrub-syn-cookie-max-pps` | `0` | Scrub mode: max challenges sent per second across all CPUs; unverified SYNs over it are dropped unanswered and counted as `suppressed`. `0` = unlimited. |
 | `-scrub-syn-cookie-ttl` | `10m` | Scrub mode: how long a source that answered a challenge stays verified. |
 | `-analyzer-addr` | `127.0.0.1:9090` | Analyzer gRPC address to connect to. |
 | `-analyzer-tls-ca` | `""` | PEM CA bundle that verifies the analyzer's certificate. Enables TLS to the analyzer; unset = plaintext. See [TLS and mTLS](docs/operations.md#tls-and-mtls). |

@@ -329,10 +329,10 @@ struct {
 //   4 = UDP/IPv6 fragment mode (see CONFIG_KEY_UDP_FRAG_MODE)
 //   5 = scrub mode: per-CPU slow-path packets per second (0 = unlimited)
 //   6 = scrub mode: fingerprint generation (0 = off; parity selects the map)
-//   7-10 = scrub mode: SYN cookies (see CONFIG_KEY_SC_*)
+//   7-11 = scrub mode: SYN cookies (see CONFIG_KEY_SC_*)
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
-    __uint(max_entries, 11);
+    __uint(max_entries, 12);
     __type(key, __u32);
     __type(value, __u32);
 } config_map SEC(".maps");
@@ -2070,6 +2070,7 @@ volatile const __u32 scrub_syncookies = 0;
 #define CONFIG_KEY_SC_SYN_PPS 8   // auto mode: SYNs per second, per CPU and destination
 #define CONFIG_KEY_SC_TTL     9   // seconds a source stays verified
 #define CONFIG_KEY_SC_STYLE   10
+#define CONFIG_KEY_SC_MAX_PPS 11  // challenges per second, all CPUs together (0 = unlimited)
 
 #define SC_MODE_AUTO 1
 #define SC_MODE_ON   2
@@ -2090,7 +2091,8 @@ volatile const __u32 scrub_syncookies = 0;
 #define SC_EV_UNSUPPORTED 5
 #define SC_EV_ERROR       6
 #define SC_EV_ACTIVATED   7
-#define SC_EVENTS         8
+#define SC_EV_SUPPRESSED  8
+#define SC_EVENTS         9
 
 #define SC_VERIFIED_SIZE  262144
 #define SC_DST_SLOT_BITS  13
@@ -2192,6 +2194,43 @@ static __always_inline int sc_active(struct rule_pkt *p, int syn, __u64 now) {
         }
     }
     return *until > now;
+}
+
+// When the challenge budget is next empty (GCRA theoretical arrival time).
+// One entry for all CPUs, so the cap holds however few RX queues a flood
+// lands on; only challenge candidates touch it.
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, __u64);
+} syncookie_challenge_budget SEC(".maps");
+
+// Burst allowance: a tenth of a second's budget, so any one second carries
+// at most about 1.1x the cap (a fixed one-second window allows 2x across
+// its boundary).
+#define SC_CAP_BURST_NS (SC_SEC_NS / 10)
+
+// Bounds challenge egress: every challenge is a SYN-ACK sent back towards
+// the (often spoofed) source, which cloud and transit egress bill or police.
+// A lost compare-and-swap means another CPU took the slot just then, so it
+// suppresses rather than retries: contention can only under-send.
+static __always_inline int sc_over_cap(__u64 now) {
+    __u32 limit = sc_cfg(CONFIG_KEY_SC_MAX_PPS);
+    if (limit == 0)
+        return 0;
+    __u32 zero = 0;
+    __u64 *tat = bpf_map_lookup_elem(&syncookie_challenge_budget, &zero);
+    if (!tat)
+        return 0;
+    __u64 old = *(volatile __u64 *)tat;
+    __u64 base = old > now ? old : now;
+    if (base - now > SC_CAP_BURST_NS)
+        return 1;
+    __u64 interval = SC_SEC_NS / limit;
+    if (interval == 0)
+        interval = 1;
+    return __sync_val_compare_and_swap(tat, old, base + interval) != old;
 }
 
 static __always_inline int sc_verified(struct rule_pkt *p, __u64 now) {
@@ -2318,6 +2357,12 @@ static __always_inline void sc_reply(struct ethhdr *eth, void *ip, struct tcphdr
 static __always_inline int sc_handle(struct rule_pkt *p, struct ethhdr *eth, void *ip, struct tcphdr *tcp,
                                      const int v6, int reply_len, int syn, __u32 style, __u64 now) {
     if (syn) {
+        // The source is unverified, so a SYN over the cap is dropped, not
+        // forwarded; the client's retransmission may get a challenge.
+        if (sc_over_cap(now)) {
+            sc_count(v6, SC_EV_SUPPRESSED);
+            return SC_DROP;
+        }
         __s64 cookie = sc_gen_cookie(ip, tcp, v6, style);
         if (cookie < 0) {
             sc_count(v6, SC_EV_ERROR);
@@ -2382,7 +2427,7 @@ __attribute__((noinline)) int scrub_syncookie(struct xdp_md *ctx, struct rule_pk
     // Nothing was challenged in monitor mode, so there is no answer to check.
     if (is_monitor) {
         if (syn)
-            sc_count(family, SC_EV_DRY_RUN);
+            sc_count(family, sc_over_cap(now) ? SC_EV_SUPPRESSED : SC_EV_DRY_RUN);
         return SC_CONTINUE;
     }
     if (!simple) {

@@ -689,6 +689,28 @@ if command -v trafgen >/dev/null; then
   ch=$(sc ipv4 challenge)
   http_ok "http://$DST4:8080/" && increased "$ch" "$(sc ipv4 challenge)" \
     && pass "auto: clean client challenged during the flood and connects" || bad "auto: clean client not challenged or failed"
+
+  stop_collector
+  start_collector -scrub-syn-cookies on -scrub-syn-cookie-max-pps 100
+  flood "$FLOOD"
+  sup=$(( $(sc ipv4 suppressed) + $(sc ipv6 suppressed) ))
+  (( F4 <= FLOOD / 100 && F6 <= FLOOD / 100 )) && pass "cap: SYNs over it are not forwarded (v4 $F4, v6 $F6)" \
+    || bad "cap: destination got v4 $F4, v6 $F6 of $FLOOD"
+  (( A4 + A6 <= 400 && sup >= 2 * FLOOD - 400 )) && pass "cap: challenges bounded (sent $((A4 + A6)), suppressed $sup)" \
+    || bad "cap: SYN-ACKs v4 $A4, v6 $A6, suppressed $sup of $((2 * FLOOD))"
+  sleep 1
+  ch=$(sc ipv4 challenge)
+  http_ok "http://$DST4:8080/" && increased "$ch" "$(sc ipv4 challenge)" \
+    && pass "cap: clean client challenged after the flood" || bad "cap: clean client not challenged or failed"
+
+  stop_collector
+  start_collector -scrub-syn-cookies on -scrub-syn-cookie-max-pps 100 -dry-run
+  flood "$FLOOD"
+  sup=$(( $(sc ipv4 suppressed) + $(sc ipv6 suppressed) ))
+  dry=$(( $(sc ipv4 dry_run) + $(sc ipv6 dry_run) ))
+  (( F4 >= FLOOD * 9 / 10 && F6 >= FLOOD * 9 / 10 && A4 + A6 == 0 && dry <= 400 && sup >= 2 * FLOOD - 400 )) \
+    && pass "cap, dry run: forwarded, would-be suppressed counted ($sup, dry_run $dry)" \
+    || bad "cap, dry run: forwarded v4 $F4, v6 $F6, SYN-ACKs $((A4 + A6)), dry_run $dry, suppressed $sup"
 fi
 rm -f "$FLOOD_CFG" "$XDP_PASS_OBJ"
 src ip link set dev src0 xdpdrv off

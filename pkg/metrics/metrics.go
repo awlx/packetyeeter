@@ -356,7 +356,8 @@ var (
 	ScrubSynCookieDesc = prometheus.NewDesc("packetyeeter_scrub_syncookie_total",
 		"SYN cookie events by family: challenge (SYN-ACK sent), dry_run (would challenge), valid (source verified), "+
 			"invalid (answer without a valid cookie, forwarded), passed (SYN from a verified source), "+
-			"unsupported (unanswerable SYN dropped), error (no cookie, SYN forwarded), activated (auto mode started challenging a destination)",
+			"unsupported (unanswerable SYN dropped), error (no cookie, SYN forwarded), activated (auto mode started challenging a destination), "+
+			"suppressed (SYN over -scrub-syn-cookie-max-pps, dropped unanswered)",
 		[]string{"family", "event"}, nil)
 	ScrubSynCookieVerifiedDesc = prometheus.NewDesc("packetyeeter_scrub_syncookie_verified_sources",
 		"Sources whose SYN cookie verification has not expired, by family",
