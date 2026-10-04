@@ -1,5 +1,39 @@
 # PacketYeeter Changelog
 
+## 2026-10-04 - Scrub handshake maps sized for online CPUs
+
+- New collector flag `-scrub-handshake-lru` (`auto`, `percpu` or `common`;
+  default `auto`) selects the LRU layout of the scrub `scrub_handshakes(_v6)`
+  maps. Invalid values are rejected at start-up.
+  - `auto`: per-CPU LRU lists sized at load time so each online CPU keeps
+    1/n of 500k entries per family; the map gets that share times the
+    possible CPUs (the kernel splits per-CPU LRU maps over every possible
+    CPU), capped at 1M entries per family. When that is not enough (more than
+    twice as many possible as online CPUs) it falls back to one common LRU
+    list with 500k entries.
+  - `percpu`: always per-CPU lists, at most 1M entries per family, rounded
+    down to a multiple of the possible CPUs.
+  - `common`: one shared LRU list with 500k entries per family, the same
+    memory as the previous release.
+- Memory: the pair preallocates about 234 bytes per entry, about 111 MiB at
+  500k entries and up to 223 MiB at 1M. With `auto` or `percpu`, hosts with
+  more possible than online CPUs (CPU hotplug headroom, typical of VMs) use
+  up to twice the previous memory; use `-scrub-handshake-lru common` to keep
+  it at 500k entries. The collector logs the chosen mode, entries, per-CPU
+  share and estimated memory at start-up ("Scrub handshake maps sized"), and
+  warns when it cannot count the online CPUs (it then sizes for all possible
+  CPUs).
+- Fingerprint drain falls back to iterate-then-delete on kernels without batch
+  map ops (before Linux 5.6). Entries read before an iteration error are
+  deleted and reported; the rest of the map is drained before XDP writes to it
+  again. New counter `packetyeeter_scrub_fingerprint_drain_errors_total`.
+- Fingerprint overflow latch: once an insert fails because the active map is
+  full, or its bucket lock timed out or detected a deadlock, that CPU stops
+  inserting new buckets until the next generation (existing buckets keep
+  counting and dropped packets count in
+  `packetyeeter_scrub_fingerprint_overflow_total`). A lost bucket-lock trylock
+  (`-EBUSY`) is retried on the next packet.
+
 ## 2026-10-04 - Policy block counters
 
 - New collector metrics `packetyeeter_policy_blocked_packets_total{family}`
@@ -194,6 +228,9 @@
 - The 500k-entry capacity is now split evenly across the kernel's possible
   CPUs for eviction, so under a flood hitting few RX queues, or on a host with
   far fewer online than possible CPUs, old entries are evicted earlier.
+  Superseded on 2026-10-04: the maps are now sized for the online CPUs and
+  the layout is selectable with `-scrub-handshake-lru` (see "Scrub handshake
+  maps sized for online CPUs" above).
 
 ## 2026-10-02 - Scrub mode handshake tracking fixes
 

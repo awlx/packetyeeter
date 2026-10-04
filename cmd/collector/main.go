@@ -35,6 +35,7 @@ func main() {
 		synCookiePPS    = flag.Uint("scrub-syn-cookie-syn-pps", collector.DefaultSynCookieSynPPS, "Scrub mode: SYNs per second to one destination, across all CPUs, that start challenges in -scrub-syn-cookies auto (held for 30s)")
 		synCookieMax    = flag.Uint("scrub-syn-cookie-max-pps", 0, "Scrub mode: max SYN cookie challenges sent per second across all CPUs; unverified SYNs over it are dropped unanswered (0 = unlimited)")
 		synCookieTTL    = flag.Duration("scrub-syn-cookie-ttl", collector.DefaultSynCookieTTL, "Scrub mode: how long a source that answered a challenge stays verified")
+		handshakeLRU    = flag.String("scrub-handshake-lru", "auto", "Scrub mode: LRU lists of the handshake maps: auto (per-CPU, sized for the online CPUs; common when that needs over 1M entries), percpu or common")
 		analyzerAddr    = flag.String("analyzer-addr", "127.0.0.1:9090", "Analyzer gRPC address")
 		analyzerTLSCA   = flag.String("analyzer-tls-ca", "", "PEM CA bundle that verifies the analyzer's certificate; enables TLS. Re-read on change")
 		analyzerTLSCert = flag.String("analyzer-tls-cert", "", "PEM client certificate for mTLS to the analyzer (requires -analyzer-tls-key and -analyzer-tls-ca). Re-read on change")
@@ -88,6 +89,10 @@ func main() {
 	if err != nil {
 		logrus.WithError(err).Fatal("Invalid -scrub-syn-cookie-style")
 	}
+	hsLRU, err := ebpf.ParseHandshakeLRU(*handshakeLRU)
+	if err != nil {
+		logrus.WithError(err).Fatal("Invalid -scrub-handshake-lru")
+	}
 
 	cfg := collector.Config{
 		Interface:    *iface,
@@ -131,6 +136,8 @@ func main() {
 		SynCookieSynPPS: uint32(min(*synCookiePPS, math.MaxUint32)),
 		SynCookieTTL:    *synCookieTTL,
 		SynCookieMaxPPS: uint32(min(*synCookieMax, math.MaxUint32)),
+
+		ScrubHandshakeLRU: hsLRU,
 	}
 
 	coll, err := collector.New(cfg, logger)

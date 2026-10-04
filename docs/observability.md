@@ -349,13 +349,19 @@ time:
 - `packetyeeter_scrub_fingerprint_buckets` (gauge): fingerprint buckets read
   in the last `-fingerprint-interval`, before the caps.
 - `packetyeeter_scrub_fingerprint_overflow_total` (counter): packets not
-  fingerprinted because the map was full (a new bucket that did not fit). A
-  rising rate is expected under spoofed-source floods; the sent top buckets
+  fingerprinted because the map was full (a new bucket that did not fit), or,
+  rarely, because the insert lost a bucket-lock race. A full map or a
+  timed-out bucket lock stops new buckets on that CPU until the next interval;
+  existing buckets keep counting. A rising rate is expected under spoofed-source floods; the sent top buckets
   then reflect the earliest traffic of each interval.
 - `packetyeeter_scrub_fingerprint_capped_total{kind}` (counter): buckets
   (`kind="bucket"`) and destinations (`kind="destination"`) not sent because of
   `-fingerprint-top` or the 256-destination cap per interval. Buckets of cut
   destinations count as cut buckets too.
+- `packetyeeter_scrub_fingerprint_drain_errors_total` (counter): intervals
+  in which switching or draining a fingerprint map failed. What was read is
+  still sent; the rest of the map is drained before XDP writes to it again
+  and reported with the next interval.
 
 The fingerprint metrics are only exported when `-fingerprint-interval` is
 non-zero.

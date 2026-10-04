@@ -1899,6 +1899,8 @@ __attribute__((noinline)) int scrub_match_rules(struct rule_pkt *p) {
 #define FP_MAP_SIZE 65536
 #define CONFIG_KEY_FINGERPRINT 6
 #define FP_EEXIST 17
+#define FP_E2BIG 7
+#define FP_EBUSY 16
 
 struct fp_key {
     __u32 dst[4];
@@ -1971,7 +1973,13 @@ static __always_inline void fp_bump(void *map, struct fp_key *k, __u64 len, __u3
     }
     if (o) {
         o->packets++;
-        o->full_gen = gen;
+        // Only a lost bucket-lock trylock (-EBUSY) is cheap and worth
+        // retrying next packet. A full map (-E2BIG) stays full, and an
+        // rqspinlock timeout or deadlock (-ETIMEDOUT/-EDEADLK) means the
+        // lock is contended enough that retrying per packet would spin
+        // again, so stop inserting until the next generation.
+        if (err != -FP_EBUSY)
+            o->full_gen = gen;
     }
 }
 

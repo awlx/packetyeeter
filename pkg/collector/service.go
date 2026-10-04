@@ -91,6 +91,10 @@ type Config struct {
 	SynCookieSynPPS uint32        // auto mode: per-destination SYNs/s that start challenges
 	SynCookieTTL    time.Duration // how long a source stays verified
 	SynCookieMaxPPS uint32        // challenges per second across all CPUs, 0 = unlimited
+
+	// ScrubHandshakeLRU picks per-CPU or common LRU lists for the scrub
+	// handshake maps (zero value: auto).
+	ScrubHandshakeLRU ebpf.HandshakeLRU
 }
 
 // Collector is a thin relay layer that:
@@ -289,11 +293,32 @@ func (c *Collector) Start(ctx context.Context) error {
 		AllowGeneric: c.Config.AllowGeneric,
 		Fingerprints: scrub && c.Config.FingerprintInterval > 0,
 		SynCookies:   c.synCookiesEnabled(),
+		HandshakeLRU: c.Config.ScrubHandshakeLRU,
 	})
 	if err := c.Loader.Load(); err != nil {
 		return fmt.Errorf("failed to load eBPF: %w", err)
 	}
 	c.Maps = c.Loader.GetMaps()
+	if scrub {
+		hs := c.Loader.HandshakeSizing()
+		if hs.OnlineErr != nil {
+			c.Logger.WithError(hs.OnlineErr).WithField("assumed_online_cpus", hs.Online).
+				Warn("Could not count online CPUs; sizing scrub handshake maps for all possible CPUs")
+		}
+		mode := c.Config.ScrubHandshakeLRU
+		if mode == "" {
+			mode = ebpf.HandshakeLRUAuto
+		}
+		c.Logger.WithFields(logrus.Fields{
+			"mode":          mode,
+			"est_memory":    fmt.Sprintf("%.0f MiB", float64(hs.EstimatedBytes())/(1<<20)),
+			"entries":       hs.Entries,
+			"per_cpu_lru":   hs.PerCPU,
+			"per_cpu_share": hs.PerCPUShare(),
+			"possible_cpus": hs.Possible,
+			"online_cpus":   hs.Online,
+		}).Info("Scrub handshake maps sized")
+	}
 
 	// Enable kernel-space monitor/dry-run mode if requested. This is
 	// independent of the analyzer's own -dry-run flag: it governs whether
@@ -2156,6 +2181,7 @@ func (c *Collector) startCollectorMetricsServer() *http.Server {
 			registry.MustRegister(&fingerprintOverflowMetric{read: c.Maps.FingerprintOverflow, logger: c.Logger})
 			registry.MustRegister(metrics.ScrubFingerprintBuckets)
 			registry.MustRegister(metrics.ScrubFingerprintCapped)
+			registry.MustRegister(metrics.ScrubFingerprintDrainErrors)
 			metrics.ScrubFingerprintCapped.WithLabelValues("bucket").Add(0)
 			metrics.ScrubFingerprintCapped.WithLabelValues("destination").Add(0)
 		}
