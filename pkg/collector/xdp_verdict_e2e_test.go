@@ -18,6 +18,8 @@ import (
 	"runtime"
 	"testing"
 
+	pyebpf "PacketYeeter/pkg/collector/ebpf"
+
 	"github.com/cilium/ebpf"
 	"golang.org/x/sys/unix"
 )
@@ -274,6 +276,7 @@ func TestXDPVerdicts(t *testing.T) {
 				}
 				checkBlockedUnchanged(t, coll, p)
 				checkRepeatedScan(t, coll, p)
+				checkPolicyBlockCounts(t, coll, p)
 			})
 		}
 	}
@@ -296,6 +299,40 @@ func checkBlockedUnchanged(t *testing.T, coll *ebpf.Collection, p *ebpf.Program)
 	}
 	if v != blockStart {
 		t.Errorf("blocked_ips_v6 value %d after drops, want %d", v, blockStart)
+	}
+}
+
+// Policy-block matches land in the per-family counter, read the way the
+// collector's metric does, and never in any per-source map.
+func checkPolicyBlockCounts(t *testing.T, coll *ebpf.Collection, p *ebpf.Program) {
+	t.Helper()
+	maps := &pyebpf.Maps{PolicyBlockStats: coll.Maps["policy_block_stats"]}
+	before, err := maps.ReadPolicyBlockStats()
+	if err != nil {
+		t.Fatalf("read policy_block_stats: %v", err)
+	}
+	const n = 100
+	pkts := [][]byte{vIPv4(17, vPolBlk4, vDst4, vUDP()), vIPv6(17, vPolBlk6, vDst6, vUDP())}
+	for _, pkt := range pkts {
+		runProg(t, p, pkt, n)
+	}
+	// Non-matching sources must not count.
+	runProg(t, p, vIPv4(17, vClean4, vDst4, vUDP()), n)
+	runProg(t, p, vIPv6(17, vPolMon6, vDst6, vUDP()), n)
+	after, err := maps.ReadPolicyBlockStats()
+	if err != nil {
+		t.Fatalf("read policy_block_stats: %v", err)
+	}
+	for i, family := range pyebpf.PolicyFamilyNames {
+		gotP := after[i].Packets - before[i].Packets
+		gotB := after[i].Bytes - before[i].Bytes
+		if gotP != n || gotB != n*uint64(len(pkts[i])) {
+			t.Errorf("%s: policy_block_stats delta %d packets/%d bytes, want %d/%d",
+				family, gotP, gotB, n, n*len(pkts[i]))
+		}
+	}
+	if after[0].Packets < n+1 {
+		t.Errorf("ipv4: %d policy-block packets in total, want the corpus packet counted too", after[0].Packets)
 	}
 }
 

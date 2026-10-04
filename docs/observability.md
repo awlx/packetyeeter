@@ -378,6 +378,18 @@ With `-scrub-syn-cookies` on or auto (see
 - `packetyeeter_scrub_syncookie_verified_sources{family}` (gauge): sources
   verified less than `-scrub-syn-cookie-ttl` ago, counted at scrape time.
 
+## Collector policy counters
+
+`packetyeeter_policy_blocked_packets_total{family}` and
+`packetyeeter_policy_blocked_bytes_total{family}` count packets matching a
+`-policy CIDR=block` rule, in host and scrub mode. `family` is `ipv4` or
+`ipv6`. They are per-CPU kernel counters summed at scrape time, so unlike
+`packetyeeter_kernel_incidents_total{reason="policy_block"}` they are not
+capped by the incident emit budget. In monitor mode (`-dry-run`) they count
+matches that were passed instead of dropped. Bytes cover the linear part of
+each frame, so multi-buffer (jumbo) frames are undercounted. There is no
+per-source breakdown; use incidents for sampled source addresses.
+
 ## Collector perf-ring health
 
 `packetyeeter_perf_lost_samples_total{reader}` counts records the kernel could

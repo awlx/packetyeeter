@@ -209,7 +209,10 @@ wait "$UDP_PID" || true
 [[ "$(cat "$UDP_OUT")" == 20 ]] && pass "IPv4 UDP forwarded" || bad "UDP: received $(cat "$UDP_OUT")/20"
 
 drop4=$(metric packetyeeter_scrub_packets_total 'family="ipv4",verdict="drop"')
+pol4=$(metric packetyeeter_policy_blocked_packets_total 'family="ipv4"')
 http_ok --interface "$POLICY4" "http://$DST4:8080/" && bad "policy-blocked source got through" || pass "policy-blocked source dropped"
+increased "$pol4" "$(metric packetyeeter_policy_blocked_packets_total 'family="ipv4"')" \
+  && pass "policy_blocked_packets{ipv4} counted" || bad "policy_blocked_packets{ipv4} did not increase"
 bpftool map update id "$(scrub_map_id blocked_ips)" key ${BLOCKED4//./ } value 0 0 0 0 0 0 0 0
 http_ok --interface "$BLOCKED4" "http://$DST4:8080/" && bad "blocked_ips source got through" || pass "blocked_ips source dropped"
 increased "$drop4" "$(metric packetyeeter_scrub_packets_total 'family="ipv4",verdict="drop"')" \
