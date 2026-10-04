@@ -89,6 +89,7 @@ type Config struct {
 	SynCookieStyle  ebpf.SynCookieStyle
 	SynCookieSynPPS uint32        // auto mode: per-destination SYNs/s that start challenges
 	SynCookieTTL    time.Duration // how long a source stays verified
+	SynCookieMaxPPS uint32        // challenges per second across all CPUs, 0 = unlimited
 }
 
 // Collector is a thin relay layer that:
@@ -369,6 +370,7 @@ func (c *Collector) Start(ctx context.Context) error {
 				"style":   c.Config.SynCookieStyle,
 				"syn_pps": c.Config.SynCookieSynPPS,
 				"ttl":     c.Config.SynCookieTTL,
+				"max_pps": c.Config.SynCookieMaxPPS,
 				"dry_run": c.Config.DryRun,
 			}).Info("SYN cookie challenges enabled")
 		}

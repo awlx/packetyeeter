@@ -1,5 +1,16 @@
 # PacketYeeter Changelog
 
+## 2026-10-04 - SYN cookie challenge rate cap
+
+- New collector flag `-scrub-syn-cookie-max-pps` (default `0`, unlimited)
+  caps the SYN cookie challenges a scrub node sends per second across all
+  CPUs, so challenge egress towards spoofed sources is bounded (cloud egress
+  cost, provider packet-rate limits). Unverified SYNs over the cap are dropped
+  unanswered and counted as
+  `packetyeeter_scrub_syncookie_total{event="suppressed"}`; in `-dry-run` they
+  are counted the same way and forwarded. See
+  `docs/operations.md#syn-cookies`.
+
 ## 2026-10-03 - Scrub-mode SYN cookies
 
 - New collector flag `-scrub-syn-cookies` (`off` by default, `auto`, `on`;

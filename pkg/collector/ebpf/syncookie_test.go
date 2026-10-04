@@ -25,11 +25,11 @@ func TestParseSynCookieFlags(t *testing.T) {
 }
 
 func TestSynCookieConfigValues(t *testing.T) {
-	got, err := synCookieConfigValues(SynCookieConfig{Mode: SynCookiesAuto, Style: SynCookieStyleReset, SynPPS: 10000, TTL: 90 * time.Second}, 8)
+	got, err := synCookieConfigValues(SynCookieConfig{Mode: SynCookiesAuto, Style: SynCookieStyleReset, SynPPS: 10000, TTL: 90 * time.Second, MaxPPS: 20000}, 8)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := map[uint32]uint32{configKeySCMode: scModeAuto, configKeySCSynPPS: 1250, configKeySCTTL: 90, configKeySCStyle: scStyleReset}
+	want := map[uint32]uint32{configKeySCMode: scModeAuto, configKeySCSynPPS: 1250, configKeySCTTL: 90, configKeySCStyle: scStyleReset, configKeySCMaxPPS: 2500}
 	for k, v := range want {
 		if got[k] != v {
 			t.Errorf("config_map[%d] = %d, want %d", k, got[k], v)
@@ -40,7 +40,7 @@ func TestSynCookieConfigValues(t *testing.T) {
 		t.Errorf("3 pps over 8 CPUs: %d, %v; want 1", got[configKeySCSynPPS], err)
 	}
 	if got, err := synCookieConfigValues(SynCookieConfig{Mode: SynCookiesOn, TTL: time.Minute}, 8); err != nil ||
-		got[configKeySCMode] != scModeOn || got[configKeySCStyle] != scStyleOOS {
+		got[configKeySCMode] != scModeOn || got[configKeySCStyle] != scStyleOOS || got[configKeySCMaxPPS] != 0 {
 		t.Errorf("on: %v, %v", got, err)
 	}
 	for name, cfg := range map[string]SynCookieConfig{

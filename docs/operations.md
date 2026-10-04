@@ -659,6 +659,21 @@ Client-visible effects and caveats:
   entries; the flood shows up in `packetyeeter_scrub_syncookie_total` and, as
   drops, in fingerprints.
 
+Challenge rate cap: every challenge is a SYN-ACK sent back out of the
+outside port, so a spoofed SYN flood turns into an equal flood of SYN-ACKs
+towards the spoofed sources. On cloud instances and metered or policed
+transit that egress costs money or hits the provider's packet-rate limits.
+`-scrub-syn-cookie-max-pps` (default `0`, unlimited) caps challenges per second
+across all CPUs; as with `-scrub-slow-path-pps` the budget is split evenly over
+CPUs. A SYN from an unverified source over the cap is dropped unanswered (not
+forwarded) and counted as `event="suppressed"`. The tradeoff: while the cap is
+reached, real clients' SYNs are suppressed at the same rate as spoofed ones,
+so new clients only get through when a retransmission lands in a second with
+budget left; already verified sources are unaffected. Size it from the
+egress you can afford, well above the normal rate of new clients
+(`event="challenge"` outside attacks). In `-dry-run`, would-be challenges over
+the cap count as `suppressed` instead of `dry_run`.
+
 Cost: SYNs and answer candidates take a few map lookups; a challenge rewrites
 the received frame in place. The verified-source maps preallocate 262,144
 entries per family (about 42 MiB together), plus 128 KiB per possible CPU for

@@ -61,6 +61,7 @@ const (
 	configKeySCSynPPS uint32 = 8
 	configKeySCTTL    uint32 = 9
 	configKeySCStyle  uint32 = 10
+	configKeySCMaxPPS uint32 = 11
 
 	scModeAuto uint32 = 1
 	scModeOn   uint32 = 2
@@ -70,7 +71,7 @@ const (
 )
 
 // SynCookieEventNames is indexed like SC_EV_* in protector.bpf.c.
-var SynCookieEventNames = []string{"challenge", "dry_run", "valid", "invalid", "passed", "unsupported", "error", "activated"}
+var SynCookieEventNames = []string{"challenge", "dry_run", "valid", "invalid", "passed", "unsupported", "error", "activated", "suppressed"}
 
 // SynCookieConfig is written to config_map once the program is loaded.
 type SynCookieConfig struct {
@@ -80,6 +81,8 @@ type SynCookieConfig struct {
 	// challenges in auto mode.
 	SynPPS uint32
 	TTL    time.Duration
+	// MaxPPS caps challenges sent per second across all CPUs (0 = unlimited).
+	MaxPPS uint32
 }
 
 func synCookieConfigValues(cfg SynCookieConfig, cpus int) (map[uint32]uint32, error) {
@@ -115,6 +118,7 @@ func synCookieConfigValues(cfg SynCookieConfig, cpus int) (map[uint32]uint32, er
 		configKeySCSynPPS: scrubSlowPathPerCPU(cfg.SynPPS, cpus),
 		configKeySCTTL:    uint32(ttl),
 		configKeySCStyle:  style,
+		configKeySCMaxPPS: scrubSlowPathPerCPU(cfg.MaxPPS, cpus),
 	}, nil
 }
 
@@ -133,7 +137,7 @@ func (m *Maps) SetSynCookies(cfg SynCookieConfig) error {
 	if err != nil {
 		return err
 	}
-	for _, key := range []uint32{configKeySCSynPPS, configKeySCTTL, configKeySCStyle, configKeySCMode} {
+	for _, key := range []uint32{configKeySCSynPPS, configKeySCTTL, configKeySCStyle, configKeySCMaxPPS, configKeySCMode} {
 		if err := m.ConfigMap.Put(key, values[key]); err != nil {
 			return fmt.Errorf("write config_map[%d]: %w", key, err)
 		}

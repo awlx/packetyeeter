@@ -373,7 +373,10 @@ With `-scrub-syn-cookies` on or auto (see
   - `error`: the kernel could not generate a cookie; the SYN was forwarded.
     Should stay 0.
   - `activated`: auto mode started challenging a destination slot.
-  Challenged and unsupported SYNs and consumed answers also count as
+  - `suppressed`: SYN from an unverified source over
+    `-scrub-syn-cookie-max-pps`; dropped without a challenge (forwarded and
+    counted instead of `dry_run` in `-dry-run`).
+  Challenged, suppressed and unsupported SYNs and consumed answers also count as
   `packetyeeter_scrub_packets_total{verdict="drop"}`.
 - `packetyeeter_scrub_syncookie_verified_sources{family}` (gauge): sources
   verified less than `-scrub-syn-cookie-ttl` ago, counted at scrape time.
