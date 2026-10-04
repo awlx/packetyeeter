@@ -358,13 +358,15 @@ func (a *Analyzer) processHTTPRequest(sig *apiv1.Signal, ip net.IP, asn string, 
 	// VerifyBot never waits on DNS (cache misses verify asynchronously), so
 	// calling it this early adds no meaningful cost on the hot path.
 	//
-	// While verification is pending, skip the heuristics that presume a
-	// browser UA claim is false: a real crawler would be exempt from them once
-	// verified, so its first requests must not be penalised by them either.
-	browserClaimChecks := true
+	// While verification is pending, skip every heuristic a verified crawler
+	// would be exempt from (browser-claim, bot-keyword, known-bot JA4 and
+	// missing-header signals): a real crawler's first requests must not be
+	// penalised by them. The verifier bounds Pending per IP, and an
+	// impersonation verdict brings all of them back.
+	crawlerPending := false
 	if a.BotHandler != nil && userAgent != "" {
 		result := a.BotHandler.VerifyBot(ip, userAgent, asn, org)
-		browserClaimChecks = !result.Pending
+		crawlerPending = result.Pending
 		if result.IsVerified {
 			// Create observation for verified bot (for training data)
 			a.recordVerifiedBot(ip, userAgent, asn, org, result, sig)
@@ -399,14 +401,14 @@ func (a *Analyzer) processHTTPRequest(sig *apiv1.Signal, ip net.IP, asn string, 
 	// claiming a specific, deterministic browser TLS/HTTP stack. Requires
 	// at least 3 distinct fingerprints in-window before firing, to tolerate
 	// a couple of real users briefly sharing a NAT/proxy IP.
-	if browserClaimChecks && (chromeUA || blinkUA) && (sig.Ja4S != "" || sig.Ja4H != "") {
+	if !crawlerPending && (chromeUA || blinkUA) && (sig.Ja4S != "" || sig.Ja4H != "") {
 		ja4Count, ja4hCount := a.checkJA4Consistency(ip, sig.Ja4S, sig.Ja4H)
 		if (ja4Count >= 3 || ja4hCount >= 3) && a.SignalBuilder != nil {
 			a.SignalBuilder.EmitJA4Rotation(ip, asn, org, userAgent, 6.0, ja4Count, ja4hCount)
 		}
 	}
 
-	if browserClaimChecks && headerOrder != "" {
+	if !crawlerPending && headerOrder != "" {
 		parts := strings.Split(headerOrder, ",")
 		if len(parts) < 5 && a.SignalBuilder != nil {
 			a.SignalBuilder.EmitHeaderAnomaly(ip, asn, org, aidetection.SignalHeaderOrderAnomaly, sig.Ja4H, sig.Ja4H, sig.Ja4T, createHTTPMetadata(map[string]interface{}{
@@ -427,7 +429,7 @@ func (a *Analyzer) processHTTPRequest(sig *apiv1.Signal, ip net.IP, asn string, 
 	// WebKit-based and never sends these headers, same as Safari/Firefox, so
 	// gating on the broader Chrome-family check would flag every real
 	// Chrome-for-iOS user.
-	if browserClaimChecks && isMissingSecFetch(blinkUA, ctx.SecFetchSite, ctx.SecFetchMode, ctx.SecFetchDest) && a.SignalBuilder != nil {
+	if !crawlerPending && isMissingSecFetch(blinkUA, ctx.SecFetchSite, ctx.SecFetchMode, ctx.SecFetchDest) && a.SignalBuilder != nil {
 		a.SignalBuilder.EmitHeaderAnomaly(ip, asn, org, aidetection.SignalMissingSecFetch, sig.Ja4H, sig.Ja4H, sig.Ja4T, createHTTPMetadata(nil))
 	}
 
@@ -437,7 +439,7 @@ func (a *Analyzer) processHTTPRequest(sig *apiv1.Signal, ip net.IP, asn string, 
 	// Excluded for legitimate non-navigation subresource fetches (fetch()/XHR
 	// for JSON, WASM, scripts, etc.), which real browsers legitimately send
 	// with "Accept: */*" - see isAcceptMismatch's doc comment.
-	if browserClaimChecks && isAcceptMismatch(chromeUA, ctx.Accept, ctx.SecFetchDest) && a.SignalBuilder != nil {
+	if !crawlerPending && isAcceptMismatch(chromeUA, ctx.Accept, ctx.SecFetchDest) && a.SignalBuilder != nil {
 		a.SignalBuilder.EmitHeaderAnomaly(ip, asn, org, aidetection.SignalAcceptMismatch, sig.Ja4H, sig.Ja4H, sig.Ja4T, createHTTPMetadata(map[string]interface{}{
 			"accept": ctx.Accept,
 		}))
@@ -448,7 +450,7 @@ func (a *Analyzer) processHTTPRequest(sig *apiv1.Signal, ip net.IP, asn string, 
 	// browser it claims to be (real Chrome removed TLS 1.0/1.1 support in 2020).
 	// Only evaluated when HAProxy actually forwarded a TLS version (ssl_fc
 	// requests only), so this never fires for plain HTTP.
-	if browserClaimChecks && isTLSVersionMismatch(chromeUA, ctx.TlsVersion) && a.SignalBuilder != nil {
+	if !crawlerPending && isTLSVersionMismatch(chromeUA, ctx.TlsVersion) && a.SignalBuilder != nil {
 		a.SignalBuilder.EmitHeaderAnomaly(ip, asn, org, aidetection.SignalTLSVersionMismatch, sig.Ja4H, sig.Ja4H, sig.Ja4T, createHTTPMetadata(map[string]interface{}{
 			"tls_version": ctx.TlsVersion,
 			"tls_cipher":  ctx.TlsCipher,
@@ -639,7 +641,7 @@ func (a *Analyzer) processHTTPRequest(sig *apiv1.Signal, ip net.IP, asn string, 
 					metrics.JA4DBUserAgentHits.WithLabelValues(res.FingerprintType, res.MatchType, userAgent).Inc()
 				}
 
-				if a.SignalBuilder != nil {
+				if a.SignalBuilder != nil && !crawlerPending {
 					// Only emit when we have some JA4DB info to act on
 					if info != "" || entry.Application != "" || entry.Library != "" || entry.Device != "" {
 						sigType, weight, includeJA4Info, emit := ja4MatchSignal(isKnownBot, res.MatchType)
@@ -666,7 +668,7 @@ func (a *Analyzer) processHTTPRequest(sig *apiv1.Signal, ip net.IP, asn string, 
 		}
 	}
 	// User-agent analysis for bot patterns
-	if userAgent != "" {
+	if userAgent != "" && !crawlerPending {
 		lowerUA := strings.ToLower(userAgent)
 
 		// Check for common bot keywords
@@ -690,7 +692,7 @@ func (a *Analyzer) processHTTPRequest(sig *apiv1.Signal, ip net.IP, asn string, 
 		}
 	}
 
-	browserHeadersOptional := isBrowserHeaderOptionalRequest(ctx.Method, ctx.Host, ctx.Path, ctx.Accept, userAgent)
+	browserHeadersOptional := crawlerPending || isBrowserHeaderOptionalRequest(ctx.Method, ctx.Host, ctx.Path, ctx.Accept, userAgent)
 
 	// Check for missing headers (suspicious). These browser-header absence
 	// signals are intentionally skipped for API/protocol requests where

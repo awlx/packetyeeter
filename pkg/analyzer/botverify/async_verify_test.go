@@ -44,6 +44,13 @@ func newTestReputation() *reputation.Engine {
 	return rep
 }
 
+// seedCache stores a verdict as a finished lookup would.
+func seedCache(v *Verifier, ipStr string, res *VerificationResult) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.storeLocked(ipStr, res)
+}
+
 func isQueued(v *Verifier, ipStr string) bool {
 	v.mu.RLock()
 	defer v.mu.RUnlock()
@@ -133,18 +140,29 @@ func TestVerifyAsyncDeduplicatesInFlightIP(t *testing.T) {
 	}
 }
 
-func TestVerifyAsyncDropsWhenQueueFull(t *testing.T) {
-	v := newTestVerifier(t, time.Minute, 1, 1)
+// A full queue must not turn a crawler's first requests into unverified ones
+// (that is the lookup-flood lever), but the pending pass it gets instead is
+// bounded per IP, and the lookup is retried once there is room.
+func TestVerifyAsyncQueueFullStaysPendingWithinWindow(t *testing.T) {
+	const dnsTimeout = time.Minute
+	v := newTestVerifier(t, dnsTimeout, 1, 1)
 	started := make(chan struct{}, 1)
+	release := make(chan struct{})
 	v.lookupAddr = func(ctx context.Context, addr string) ([]string, error) {
-		started <- struct{}{}
-		return hangLookup(ctx, addr)
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+		select {
+		case <-release:
+		case <-ctx.Done():
+		}
+		return nil, &net.DNSError{Err: "no such host", IsNotFound: true}
 	}
 	rep := newTestReputation()
 	h := NewHandler(v, nil, nil, rep)
 
-	busy := net.ParseIP("192.0.2.1")
-	if res := h.VerifyBot(busy, googlebotUA, "", ""); !res.Pending {
+	if res := h.VerifyBot(net.ParseIP("192.0.2.1"), googlebotUA, "", ""); !res.Pending {
 		t.Fatalf("first request: want pending, got %+v", res)
 	}
 	<-started // the only worker is now stuck
@@ -160,8 +178,8 @@ func TestVerifyAsyncDropsWhenQueueFull(t *testing.T) {
 	if elapsed := time.Since(start); elapsed > 250*time.Millisecond {
 		t.Fatalf("dropped request took %v", elapsed)
 	}
-	if res.Pending || res.IsVerified || res.IsImpersonation {
-		t.Fatalf("dropped request must be plain unverified, got %+v", res)
+	if !res.Pending || res.IsVerified || res.IsImpersonation {
+		t.Fatalf("queue-full request within its window: want pending, got %+v", res)
 	}
 	if got := testutil.ToFloat64(drops) - before; got != 1 {
 		t.Fatalf("queue_full drops increased by %v, want 1", got)
@@ -170,12 +188,27 @@ func TestVerifyAsyncDropsWhenQueueFull(t *testing.T) {
 		t.Fatalf("dropped verification penalized by %v", score)
 	}
 	if isQueued(v, dropped.String()) {
-		t.Fatal("dropped IP must not be marked in flight, or it would stay pending forever")
+		t.Fatal("a lookup that was not queued must not be marked in flight")
+	}
+
+	v.mu.Lock()
+	v.pendingSince[dropped.String()] = time.Now().Add(-dnsTimeout - time.Second)
+	v.mu.Unlock()
+	if res := h.VerifyBot(dropped, googlebotUA, "", ""); res.Pending || res.IsVerified || res.IsImpersonation {
+		t.Fatalf("past its pending window: want plain unverified, got %+v", res)
+	}
+
+	close(release)
+	waitSettled(t, v, net.ParseIP("192.0.2.2"))
+	h.VerifyBot(dropped, googlebotUA, "", "")
+	waitSettled(t, v, dropped)
+	if res := h.VerifyBot(dropped, googlebotUA, "", ""); !res.IsImpersonation {
+		t.Fatalf("the dropped lookup must be retried once the queue drains, got %+v", res)
 	}
 }
 
 // A backlog of slow lookups must not keep an IP pending, and so exempt from
-// the browser-claim heuristics, for longer than an inline lookup would take.
+// the crawler heuristics, for longer than an inline lookup would take.
 func TestVerifyAsyncPendingIsBoundedByDNSTimeout(t *testing.T) {
 	const dnsTimeout = time.Minute
 	v := newTestVerifier(t, dnsTimeout, 1, 8)
@@ -187,32 +220,104 @@ func TestVerifyAsyncPendingIsBoundedByDNSTimeout(t *testing.T) {
 		t.Fatalf("first request: want pending, got %+v", res)
 	}
 	v.mu.Lock()
-	v.queued[ip.String()] = time.Now().Add(-dnsTimeout - time.Second)
+	v.pendingSince[ip.String()] = time.Now().Add(-dnsTimeout - time.Second)
 	v.mu.Unlock()
 
 	res := h.VerifyBot(ip, googlebotUA, "", "")
 	if res.Pending || res.IsVerified || res.IsImpersonation {
 		t.Fatalf("pending past dnsTimeout must be plain unverified, got %+v", res)
 	}
+
+	// Waiting out the window does not buy a fresh one.
+	v.prunePending(time.Now())
+	if res := h.VerifyBot(ip, googlebotUA, "", ""); res.Pending {
+		t.Fatalf("pending window renewed before its cooldown, got %+v", res)
+	}
 }
 
-// Pending must not become a permanent heuristics bypass when the verdict
-// cannot be cached.
-func TestVerifyAsyncDropsWhenCacheFull(t *testing.T) {
+func TestVerifyAsyncPendingTableIsBounded(t *testing.T) {
 	v := newTestVerifier(t, time.Minute, 1, 4)
-	v.maxCacheEntries = 1
-	v.mu.Lock()
-	v.cache["198.51.100.1"] = &VerificationResult{BotType: BotTypeGooglebot, VerifiedAt: time.Now()}
-	v.mu.Unlock()
-
-	drops := metrics.BotVerificationQueueDrops.WithLabelValues("cache_full")
+	v.lookupAddr = hangLookup
+	v.maxPendingTracked = 2
+	for i := range 2 {
+		if res := v.VerifyAsync(net.IPv4(192, 0, 2, byte(i+1)), googlebotUA); !res.Pending {
+			t.Fatalf("request %d: want pending, got %+v", i, res)
+		}
+	}
+	drops := metrics.BotVerificationQueueDrops.WithLabelValues("pending_full")
 	before := testutil.ToFloat64(drops)
-	res := v.VerifyAsync(net.ParseIP("192.0.2.9"), googlebotUA)
-	if !res.Dropped || res.Pending {
-		t.Fatalf("want dropped with a full cache, got %+v", res)
+	if res := v.VerifyAsync(net.ParseIP("192.0.2.9"), googlebotUA); !res.Dropped || res.Pending {
+		t.Fatalf("want dropped with a full pending table, got %+v", res)
 	}
 	if got := testutil.ToFloat64(drops) - before; got != 1 {
-		t.Fatalf("cache_full drops increased by %v, want 1", got)
+		t.Fatalf("pending_full drops increased by %v, want 1", got)
+	}
+}
+
+// Fake crawler claims fill only the unverified pool: they evict each other,
+// never a verified crawler, and a new verdict always finds room.
+func TestCacheEvictionPrefersUnverified(t *testing.T) {
+	v := newTestVerifier(t, time.Minute, 1, 4)
+	v.maxCacheEntries = 3
+	crawler := "198.51.100.1"
+	seedCache(v, crawler, &VerificationResult{IsVerified: true, BotType: BotTypeGooglebot, VerifiedAt: time.Now()})
+
+	for i := range 10 {
+		seedCache(v, fmt.Sprintf("192.0.2.%d", i+1), &VerificationResult{BotType: BotTypeGooglebot, VerifiedAt: time.Now(), ErrorMessage: "reverse DNS mismatch"})
+	}
+	if got := v.cachedResult(crawler); got == nil || !got.IsVerified {
+		t.Fatalf("verified crawler evicted by fake claims: %+v", got)
+	}
+	v.mu.RLock()
+	n, unverified := len(v.cache), v.unverifiedLRU.Len()
+	v.mu.RUnlock()
+	if unverified != 3 || n != 4 {
+		t.Fatalf("pools not bounded: %d entries, %d unverified", n, unverified)
+	}
+	for i := 7; i < 10; i++ {
+		if v.cachedResult(fmt.Sprintf("192.0.2.%d", i+1)) == nil {
+			t.Fatalf("newest unverified verdict 192.0.2.%d was evicted instead of the oldest", i+1)
+		}
+	}
+	if v.cachedResult("192.0.2.1") != nil {
+		t.Fatal("oldest unverified verdict was not evicted")
+	}
+}
+
+// An expired verified verdict revalidates as Pending, whatever the queue.
+func TestExpiredVerifiedRevalidatesAsPending(t *testing.T) {
+	v := newTestVerifier(t, time.Minute, 1, 1)
+	v.lookupAddr = hangLookup
+	ip := net.ParseIP("198.51.100.7")
+	seedCache(v, ip.String(), &VerificationResult{IsVerified: true, BotType: BotTypeGooglebot, VerifiedAt: time.Now().Add(-2 * time.Hour)})
+	// Fill the worker and the queue.
+	v.VerifyAsync(net.ParseIP("192.0.2.1"), googlebotUA)
+	v.VerifyAsync(net.ParseIP("192.0.2.2"), googlebotUA)
+	v.VerifyAsync(net.ParseIP("192.0.2.3"), googlebotUA)
+
+	v.mu.Lock()
+	v.pendingSince[ip.String()] = time.Now().Add(-time.Hour)
+	v.mu.Unlock()
+	if res := v.VerifyAsync(ip, googlebotUA); !res.Pending || res.IsVerified {
+		t.Fatalf("expired verified IP: want pending revalidation, got %+v", res)
+	}
+}
+
+// After Close every lookup fails as cancelled; that must not be cached as a
+// transient failure against the IP.
+func TestSyncVerifyAfterCloseIsNotCached(t *testing.T) {
+	v := newVerifier(time.Hour, time.Second, nil, 1, 1)
+	v.lookupAddr = func(ctx context.Context, _ string) ([]string, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	v.Close()
+	res := v.Verify(net.ParseIP("192.0.2.70"), googlebotUA)
+	if !res.Dropped || res.TransientFailure || res.IsVerified {
+		t.Fatalf("want dropped after Close, got %+v", res)
+	}
+	if v.cachedResult("192.0.2.70") != nil {
+		t.Fatal("cancelled lookup was cached")
 	}
 }
 
