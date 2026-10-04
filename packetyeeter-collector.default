@@ -57,7 +57,8 @@ BLOCK_DURATION=300s
 # -scrub-slow-path-pps caps packets handed to the kernel (0 = unlimited).
 # -fingerprint-interval sends per-destination traffic fingerprints to the
 # analyzer (0 = off), the busiest -fingerprint-top buckets per destination. See
-# docs/operations.md#scrub-mode.
+# docs/operations.md#scrub-mode. A lost analyzer stream marks the node
+# degraded only; -readyz-analyzer-grace > 0 makes /readyz require it.
 # EXTRA_ARGS=-mode scrub -inside-if eth1 -readyz-drain 5s -scrub-slow-path-pps 100000 -fingerprint-interval 10s -fingerprint-top 32
 #
 # Scrub mode, SYN cookies (Linux 6.0+): answer SYNs from sources not yet

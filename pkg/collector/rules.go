@@ -280,6 +280,9 @@ func (c *Collector) applyRules(delta *apiv1.RuleSetDelta) {
 		}).Warn("Rejected rule delta; previous rules stay active")
 		return
 	}
+	if c.analyzerReady != nil {
+		c.analyzerReady.markSynced()
+	}
 	c.Logger.WithFields(logrus.Fields{
 		"upserted":  res.Upserted,
 		"removed":   res.Removed,

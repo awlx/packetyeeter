@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -28,6 +29,7 @@ func TestValidateModeConfig(t *testing.T) {
 		"host with default drain": {func(c *Config) {
 			host(c)
 			c.ReadyzDrain = DefaultReadyzDrain
+			c.ReadyzAnalyzerGrace = DefaultReadyzAnalyzerGrace
 			c.ScrubSlowPathPPS = DefaultScrubSlowPathPPS
 			c.FingerprintInterval = DefaultFingerprintInterval
 			c.FingerprintTop = DefaultFingerprintTop
@@ -38,6 +40,9 @@ func TestValidateModeConfig(t *testing.T) {
 		}, true, 0},
 		"host with fingerprints":    {func(c *Config) { host(c); c.FingerprintInterval = time.Second; c.FingerprintTop = 4 }, true, 2},
 		"host with custom drain":    {func(c *Config) { host(c); c.ReadyzDrain = time.Second }, true, 1},
+		"host with analyzer grace":  {func(c *Config) { host(c); c.ReadyzAnalyzerGrace = time.Second }, true, 1},
+		"negative analyzer grace":   {func(c *Config) { c.ReadyzAnalyzerGrace = -time.Second }, false, 0},
+		"analyzer not required":     {func(c *Config) { c.ReadyzAnalyzerGrace = 0 }, true, 0},
 		"host with custom slow pps": {func(c *Config) { host(c); c.ScrubSlowPathPPS = 5 }, true, 1},
 		"host with inside-if":       {func(c *Config) { host(c); c.InsideInterface = "eth1" }, false, 0},
 		"host with allow-generic":   {func(c *Config) { host(c); c.AllowGeneric = true }, false, 0},
@@ -205,7 +210,7 @@ func TestScrubReadyz(t *testing.T) {
 	}}
 
 	rec := httptest.NewRecorder()
-	readyzHandler(c.scrubReady)(rec, httptest.NewRequest("GET", "/readyz", nil))
+	readyzHandler(c.scrubReady, nil)(rec, httptest.NewRequest("GET", "/readyz", nil))
 	body, _ := io.ReadAll(rec.Body)
 	if rec.Code != 503 || !strings.Contains(string(body), "inside port: eth1 is down") {
 		t.Fatalf("got %d %q, want 503 naming the failed check", rec.Code, body)
@@ -213,7 +218,7 @@ func TestScrubReadyz(t *testing.T) {
 
 	c.readinessChecks[1].check = func() error { return nil }
 	rec = httptest.NewRecorder()
-	readyzHandler(c.scrubReady)(rec, httptest.NewRequest("GET", "/readyz", nil))
+	readyzHandler(c.scrubReady, nil)(rec, httptest.NewRequest("GET", "/readyz", nil))
 	if rec.Code != 200 {
 		t.Fatalf("got %d, want 200", rec.Code)
 	}
@@ -221,6 +226,166 @@ func TestScrubReadyz(t *testing.T) {
 	c.draining.Store(true)
 	if err := c.scrubReady(); err == nil || !strings.Contains(err.Error(), "draining") {
 		t.Fatalf("scrubReady while draining = %v", err)
+	}
+}
+
+func TestAnalyzerReadiness(t *testing.T) {
+	now := time.Unix(1000, 0)
+	a := newAnalyzerReadiness(30 * time.Second)
+	a.now = func() time.Time { return now }
+
+	if err := a.check(); err == nil || !strings.Contains(err.Error(), "not connected yet") {
+		t.Fatalf("before first connect: %v, want not connected yet", err)
+	}
+	a.set(false) // failed dial before any stream
+	if err := a.check(); err == nil {
+		t.Fatal("failed first dial reported ready")
+	}
+	a.set(true)
+	if err := a.check(); err == nil || !strings.Contains(err.Error(), "no rules received yet") {
+		t.Fatalf("connected without rules: %v, want not ready", err)
+	}
+	if up, _ := a.status(); up {
+		t.Fatal("connected without rules reported up")
+	}
+	a.markSynced()
+	if err := a.check(); err != nil {
+		t.Fatalf("synced: %v", err)
+	}
+	now = now.Add(time.Second)
+	a.set(false)
+	now = now.Add(29 * time.Second)
+	if err := a.check(); err != nil {
+		t.Fatalf("within grace: %v", err)
+	}
+	a.set(false) // repeated failed redials must not restart the grace period
+	now = now.Add(time.Second)
+	if err := a.check(); err == nil || !strings.Contains(err.Error(), "down for 30s") {
+		t.Fatalf("after grace: %v, want down for 30s", err)
+	}
+	a.set(true)
+	if err := a.check(); err == nil {
+		t.Fatal("reconnected without rules reported ready past the grace")
+	}
+	a.markSynced()
+	if err := a.check(); err != nil {
+		t.Fatalf("reconnected and synced: %v", err)
+	}
+	if up, down := a.status(); !up || down != 0 {
+		t.Fatalf("synced: up=%v down=%s", up, down)
+	}
+
+	// An analyzer that accepts the stream and drops it before sending rules
+	// (collector capacity) must not keep the node ready by restarting the
+	// clock, however long the stream lived.
+	lost := now
+	a.set(false)
+	for range 3 {
+		now = now.Add(20 * time.Second)
+		a.set(true)
+		now = now.Add(time.Minute)
+		a.set(false)
+	}
+	if err := a.check(); err == nil {
+		t.Fatal("unsynced streams kept the node ready past the grace")
+	}
+	if _, down := a.status(); down != now.Sub(lost) {
+		t.Fatalf("unsynced streams: down %s, want %s counted from the last synced loss", down, now.Sub(lost))
+	}
+
+	// markSynced without an open stream (a late apply) changes nothing.
+	a.markSynced()
+	if up, _ := a.status(); up {
+		t.Fatal("markSynced without a stream reported up")
+	}
+}
+
+func TestAnalyzerReadinessRefusedStreamAtStartup(t *testing.T) {
+	now := time.Unix(1000, 0)
+	a := newAnalyzerReadiness(time.Hour)
+	a.now = func() time.Time { return now }
+
+	// The analyzer at -max-collectors: the stream opens and is refused at once.
+	a.set(true)
+	now = now.Add(time.Millisecond)
+	a.set(false)
+	if err := a.check(); err == nil || !strings.Contains(err.Error(), "not connected yet") {
+		t.Fatalf("refused stream: %v, want not ready within the grace", err)
+	}
+	if err := a.degraded(); err == nil {
+		t.Fatal("refused stream: not degraded")
+	}
+}
+
+func TestAnalyzerDegraded(t *testing.T) {
+	start := time.Unix(1000, 0)
+	now := start
+	a := &analyzerReadiness{now: func() time.Time { return now }, downSince: start}
+
+	now = now.Add(5 * time.Second)
+	if up, down := a.status(); up || down != 5*time.Second {
+		t.Fatalf("never connected: up=%v down=%s, want false 5s", up, down)
+	}
+	if err := a.degraded(); err == nil || !strings.Contains(err.Error(), "not connected yet (5s)") {
+		t.Fatalf("never connected: %v", err)
+	}
+	a.set(true)
+	if err := a.degraded(); err == nil || !strings.Contains(err.Error(), "analyzer stream connected, no rules received yet (5s)") {
+		t.Fatalf("connected without rules: %v", err)
+	}
+	a.markSynced()
+	if up, down := a.status(); !up || down != 0 || a.degraded() != nil {
+		t.Fatalf("synced: up=%v down=%s degraded=%v", up, down, a.degraded())
+	}
+	now = now.Add(time.Second)
+	a.set(false)
+	now = now.Add(12 * time.Second)
+	if err := a.degraded(); err == nil || !strings.Contains(err.Error(), "analyzer stream down for 12s") {
+		t.Fatalf("after loss: %v", err)
+	}
+	// Grace 0 (the default) never gates readiness, however long the stream is down.
+	c := &Collector{readinessChecks: []readinessCheck{{"xdp_scrub", func() error { return nil }}}, analyzerReady: a}
+	rec := httptest.NewRecorder()
+	readyzHandler(c.scrubReady, a.degraded)(rec, httptest.NewRequest("GET", "/readyz", nil))
+	body, _ := io.ReadAll(rec.Body)
+	if rec.Code != 200 || string(body) != "ready\ndegraded: analyzer stream down for 12s\n" {
+		t.Fatalf("got %d %q, want 200 with the degraded line", rec.Code, body)
+	}
+
+	m := &scrubMetrics{
+		stats:    func() (ebpf.ScrubStats, error) { return ebpf.ScrubStats{}, nil },
+		ready:    func() error { return nil },
+		analyzer: a.status,
+		logger:   logrus.New(),
+	}
+	want := `
+# HELP packetyeeter_scrub_analyzer_stream_down_seconds Seconds the analyzer stream has been down (since start-up if no stream ever delivered rules), 0 while up
+# TYPE packetyeeter_scrub_analyzer_stream_down_seconds gauge
+packetyeeter_scrub_analyzer_stream_down_seconds 12
+# HELP packetyeeter_scrub_analyzer_stream_up 1 while the analyzer stream is connected and has delivered its rule set, else 0 (node degraded: no new rules or blocks, filtering continues)
+# TYPE packetyeeter_scrub_analyzer_stream_up gauge
+packetyeeter_scrub_analyzer_stream_up 0
+`
+	if err := testutil.CollectAndCompare(m, strings.NewReader(want), "packetyeeter_scrub_analyzer_stream_up", "packetyeeter_scrub_analyzer_stream_down_seconds"); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestScrubReadinessChecksAnalyzer(t *testing.T) {
+	names := func(c *Collector) []string {
+		var out []string
+		for _, rc := range c.scrubReadinessChecks() {
+			out = append(out, rc.name)
+		}
+		return out
+	}
+	c := &Collector{Config: Config{ReadyzAnalyzerGrace: time.Second}, analyzerReady: newAnalyzerReadiness(time.Second)}
+	if got := names(c); !slices.Contains(got, "analyzer") {
+		t.Errorf("checks %v, want analyzer included", got)
+	}
+	c.Config.ReadyzAnalyzerGrace = 0
+	if got := names(c); slices.Contains(got, "analyzer") {
+		t.Errorf("checks %v with grace 0, want analyzer left out", got)
 	}
 }
 

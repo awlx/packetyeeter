@@ -381,6 +381,22 @@ Readiness and failure:
   attached, the inside port is up and a redirect target, and forwarding is
   enabled; otherwise 503 with the reason. Use it to decide whether the node may
   be a next hop.
+- Analyzer stream: not part of readiness by default. Without the analyzer the
+  XDP data plane keeps filtering with the rules, blocks and per-source limits
+  it has; it only stops receiving new rules and blocks. The node is then
+  *degraded*: `/readyz` still returns 200, with a second body line such as
+  `degraded: analyzer stream down for 42s`, and
+  `packetyeeter_scrub_analyzer_stream_up` drops to 0 while
+  `packetyeeter_scrub_analyzer_stream_down_seconds` counts up (from start-up
+  if no stream has delivered rules yet). The stream only counts as up once
+  it has delivered the analyzer's rule set (an empty set counts). Alert on it; do not pull the node from
+  redirects for it, since the alternative is unscrubbed traffic.
+- `-readyz-analyzer-grace` > 0 opts into gating: `/readyz` is 503 until the
+  first rule set arrives from the analyzer, and again once the stream has
+  been down longer than the grace period. A stream that ends before
+  delivering rules (refused at collector capacity, dropped at once) does not
+  restart that period. Only use it where a node without fresh rules is worse
+  than no scrubbing at all.
 - On SIGTERM the node reports 503 for `-readyz-drain` before detaching, so
   traffic can move away first. The control plane (analyzer block commands,
   block expiry, `local_addrs` sync, incident reporting) keeps running during the

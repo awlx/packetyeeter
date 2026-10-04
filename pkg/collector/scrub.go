@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"PacketYeeter/pkg/collector/ebpf"
@@ -21,10 +22,13 @@ import (
 
 // Defaults of the scrub-only flags, so host mode can warn when they are set.
 const (
-	DefaultReadyzDrain      = 5 * time.Second
-	DefaultScrubSlowPathPPS = 100000
-	DefaultSynCookieSynPPS  = 10000
-	DefaultSynCookieTTL     = 10 * time.Minute
+	DefaultReadyzDrain = 5 * time.Second
+	// 0: the data plane keeps filtering without the analyzer, so losing the
+	// stream only marks the node degraded (metrics, /readyz body).
+	DefaultReadyzAnalyzerGrace = 0
+	DefaultScrubSlowPathPPS    = 100000
+	DefaultSynCookieSynPPS     = 10000
+	DefaultSynCookieTTL        = 10 * time.Minute
 )
 
 func (c *Collector) synCookiesEnabled() bool {
@@ -55,6 +59,9 @@ func validateModeConfig(cfg Config) (warnings []string, err error) {
 		}
 		if cfg.ReadyzDrain != 0 && cfg.ReadyzDrain != DefaultReadyzDrain {
 			warnings = append(warnings, "-readyz-drain has no effect in host mode")
+		}
+		if cfg.ReadyzAnalyzerGrace != 0 && cfg.ReadyzAnalyzerGrace != DefaultReadyzAnalyzerGrace {
+			warnings = append(warnings, "-readyz-analyzer-grace has no effect in host mode")
 		}
 		if cfg.ScrubSlowPathPPS != 0 && cfg.ScrubSlowPathPPS != DefaultScrubSlowPathPPS {
 			warnings = append(warnings, "-scrub-slow-path-pps has no effect in host mode")
@@ -95,6 +102,8 @@ func validateScrubConfig(cfg Config) error {
 		return errors.New("-xdp-mode generic in scrub mode requires -allow-generic")
 	case cfg.EgressAccounting:
 		return errors.New("-egress-accounting is not available in scrub mode (no TC programs)")
+	case cfg.ReadyzAnalyzerGrace < 0:
+		return fmt.Errorf("-readyz-analyzer-grace must be 0 (analyzer not required) or positive, got %s", cfg.ReadyzAnalyzerGrace)
 	case cfg.FingerprintInterval < 0 || (cfg.FingerprintInterval > 0 && cfg.FingerprintInterval < time.Second):
 		return fmt.Errorf("-fingerprint-interval must be 0 (off) or at least 1s, got %s", cfg.FingerprintInterval)
 	case cfg.FingerprintInterval > 0 && cfg.FingerprintTop < 1:
@@ -286,7 +295,7 @@ type readinessCheck struct {
 }
 
 func (c *Collector) scrubReadinessChecks() []readinessCheck {
-	return []readinessCheck{
+	checks := []readinessCheck{
 		{"xdp_scrub", c.Loader.ScrubAttached},
 		{"inside port", func() error { return checkInsidePort(c.Config.InsideInterface, c.Maps.HasTxPort) }},
 		{"forwarding", func() error {
@@ -295,6 +304,110 @@ func (c *Collector) scrubReadinessChecks() []readinessCheck {
 			})
 		}},
 	}
+	if c.Config.ReadyzAnalyzerGrace > 0 {
+		checks = append(checks, readinessCheck{"analyzer", c.analyzerReady.check})
+	}
+	return checks
+}
+
+// analyzerReadiness tracks the analyzer stream. Without it the node gets no
+// new rules or blocks but keeps filtering with what it has, so by default it
+// only reports the node degraded; -readyz-analyzer-grace opts into gating.
+//
+// A stream counts as up only once it has delivered and applied a rule set:
+// the analyzer accepts a stream before it decides to keep it (it refuses
+// collectors over -max-collectors right after) and sends the rules after
+// the collector announces its role, so an open stream alone proves nothing.
+type analyzerReadiness struct {
+	grace time.Duration
+	now   func() time.Time
+
+	mu        sync.Mutex
+	connected bool      // a stream is open, synced or not
+	up        bool      // the open stream has applied a rule set
+	everUp    bool      // some stream has applied a rule set since start-up
+	downSince time.Time // start-up until the first synced stream
+}
+
+func newAnalyzerReadiness(grace time.Duration) *analyzerReadiness {
+	return &analyzerReadiness{grace: grace, now: time.Now, downSince: time.Now()}
+}
+
+// status reports whether the stream is up and, if not, for how long it has
+// been down (since start-up if no stream ever synced).
+func (a *analyzerReadiness) status() (up bool, down time.Duration) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.up {
+		return true, 0
+	}
+	return false, a.now().Sub(a.downSince)
+}
+
+// degraded is non-nil while the stream is down, whether or not readiness
+// depends on it.
+func (a *analyzerReadiness) degraded() error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.up {
+		return nil
+	}
+	return fmt.Errorf("analyzer %s", a.downReasonLocked())
+}
+
+func (a *analyzerReadiness) downReasonLocked() string {
+	down := a.now().Sub(a.downSince).Truncate(time.Second)
+	switch {
+	case !a.everUp && a.connected:
+		return fmt.Sprintf("stream connected, no rules received yet (%s)", down)
+	case !a.everUp:
+		return fmt.Sprintf("stream not connected yet (%s)", down)
+	case a.connected:
+		return fmt.Sprintf("stream down for %s (reconnected, no rules received yet)", down)
+	}
+	return fmt.Sprintf("stream down for %s", down)
+}
+
+// set records a stream opening (true) or ending (false). A new stream is not
+// up until markSynced. Only the loss of a synced stream restarts the outage
+// clock: attempts the analyzer refuses or drops before sending rules must
+// not keep the node ready by resetting it on every redial.
+func (a *analyzerReadiness) set(connected bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !connected && a.up {
+		a.downSince = a.now()
+	}
+	a.connected = connected
+	a.up = false
+}
+
+// markSynced records that the open stream delivered a rule set the node
+// applied (an empty replacement set counts).
+func (a *analyzerReadiness) markSynced() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !a.connected {
+		return
+	}
+	a.up = true
+	a.everUp = true
+}
+
+func (a *analyzerReadiness) check() error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	switch {
+	case a.up:
+		return nil
+	case !a.everUp:
+		// No rules have been received since start-up.
+		return errors.New(a.downReasonLocked())
+	}
+	if a.now().Sub(a.downSince) < a.grace {
+		return nil
+	}
+	return errors.New(a.downReasonLocked())
 }
 
 func (c *Collector) scrubReady() error {
@@ -309,7 +422,9 @@ func (c *Collector) scrubReady() error {
 	return nil
 }
 
-func readyzHandler(ready func() error) http.HandlerFunc {
+// degraded may be nil. A degraded node still answers 200: the first line
+// stays "ready" so status-code and body checks keep working.
+func readyzHandler(ready, degraded func() error) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		if err := ready(); err != nil {
 			w.WriteHeader(http.StatusServiceUnavailable)
@@ -317,6 +432,11 @@ func readyzHandler(ready func() error) http.HandlerFunc {
 			return
 		}
 		fmt.Fprintln(w, "ready")
+		if degraded != nil {
+			if err := degraded(); err != nil {
+				fmt.Fprintf(w, "degraded: %v\n", err)
+			}
+		}
 	}
 }
 
@@ -361,6 +481,7 @@ func (c *Collector) reportLocalAddrsSync(err error) {
 type scrubMetrics struct {
 	stats       func() (ebpf.ScrubStats, error)
 	ready       func() error
+	analyzer    func() (up bool, down time.Duration) // nil: not exported
 	ruleMatches func() (map[uint8]uint64, error)
 	ruleCounts  func() (v4, v6 int)
 	synCookies  func() (ebpf.SynCookieStats, error) // nil: SYN cookies off
@@ -375,6 +496,8 @@ func (s *scrubMetrics) Describe(ch chan<- *prometheus.Desc) {
 	ch <- metrics.ScrubTTLExpiredDesc
 	ch <- metrics.ScrubSlowPathLimitedDesc
 	ch <- metrics.ScrubReadyDesc
+	ch <- metrics.ScrubAnalyzerStreamUpDesc
+	ch <- metrics.ScrubAnalyzerStreamDownDesc
 	ch <- metrics.ScrubRuleMatchesDesc
 	ch <- metrics.ScrubRulesActiveDesc
 	ch <- metrics.ScrubSynCookieDesc
@@ -387,6 +510,15 @@ func (s *scrubMetrics) Collect(ch chan<- prometheus.Metric) {
 		ready = 1
 	}
 	ch <- prometheus.MustNewConstMetric(metrics.ScrubReadyDesc, prometheus.GaugeValue, ready)
+	if s.analyzer != nil {
+		up, down := s.analyzer()
+		v := 0.0
+		if up {
+			v = 1
+		}
+		ch <- prometheus.MustNewConstMetric(metrics.ScrubAnalyzerStreamUpDesc, prometheus.GaugeValue, v)
+		ch <- prometheus.MustNewConstMetric(metrics.ScrubAnalyzerStreamDownDesc, prometheus.GaugeValue, down.Seconds())
+	}
 
 	if s.ruleCounts != nil {
 		v4, v6 := s.ruleCounts()

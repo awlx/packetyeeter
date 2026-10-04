@@ -70,6 +70,10 @@ type Config struct {
 	// ReadyzDrain is how long a scrub node reports not-ready before detaching
 	// on shutdown, so the controller can move traffic away first.
 	ReadyzDrain time.Duration
+	// ReadyzAnalyzerGrace, when > 0, makes /readyz require the analyzer
+	// stream, tolerating a break this long. 0 (default) only reports the
+	// node degraded.
+	ReadyzAnalyzerGrace time.Duration
 
 	// HandshakeTimeout is how long a SYN may go without the client's ACK
 	// before it is reported as an incomplete handshake. 0 means
@@ -181,6 +185,7 @@ type Collector struct {
 	fingerprints    *fingerprinter // scrub mode with -fingerprint-interval only
 	collectorID     string
 	readinessChecks []readinessCheck
+	analyzerReady   *analyzerReadiness
 	// lastLocalAddrsErr is only touched by pollMaps.
 	lastLocalAddrsErr string
 
@@ -219,6 +224,7 @@ func New(cfg Config, logger *logrus.Logger) (*Collector, error) {
 		Logger:             logger,
 		analyzerCreds:      analyzerCreds,
 		reconnectCh:        make(chan struct{}, 1),
+		analyzerReady:      newAnalyzerReadiness(cfg.ReadyzAnalyzerGrace),
 		signalQueue:        make(chan *apiv1.Signal, max(cfg.SignalQueueSize, 10000)), // Ring buffer default 10k
 		synCacheTTL:        60 * time.Second,                                          // TTL for SYN timestamp cache
 		prevICMPRates:      make(map[uint32]prevRate),
@@ -565,6 +571,7 @@ func (c *Collector) manageAnalyzerConnection() {
 
 		connectedAt := time.Now()
 		c.connected.Store(true)
+		c.analyzerReady.set(true)
 		c.Logger.Info("Connected to analyzer")
 
 		// Receive commands until error
@@ -572,6 +579,7 @@ func (c *Collector) manageAnalyzerConnection() {
 
 		// Connection lost
 		c.connected.Store(false)
+		c.analyzerReady.set(false)
 		delay, next := analyzerReconnectBackoff(backoff, time.Since(connectedAt))
 		c.Logger.WithField("retry_in", delay).Warn("Lost connection to analyzer, reconnecting...")
 		if !c.waitAnalyzerReconnect(delay) {
@@ -2162,6 +2170,7 @@ func (c *Collector) startCollectorMetricsServer() *http.Server {
 		sm := &scrubMetrics{
 			stats:       c.Maps.ReadScrubStats,
 			ready:       c.scrubReady,
+			analyzer:    c.analyzerReady.status,
 			ruleMatches: c.Maps.RuleMatches,
 			ruleCounts:  c.rules.Counts,
 			logger:      c.Logger,
@@ -2185,7 +2194,7 @@ func (c *Collector) startCollectorMetricsServer() *http.Server {
 			metrics.ScrubFingerprintCapped.WithLabelValues("bucket").Add(0)
 			metrics.ScrubFingerprintCapped.WithLabelValues("destination").Add(0)
 		}
-		mux.Handle("/readyz", readyzHandler(c.scrubReady))
+		mux.Handle("/readyz", readyzHandler(c.scrubReady, c.analyzerReady.degraded))
 	}
 	mux.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
 

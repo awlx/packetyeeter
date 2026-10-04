@@ -1,5 +1,23 @@
 # PacketYeeter Changelog
 
+## 2026-10-04 - Scrub nodes report a lost analyzer stream as degraded
+
+- A scrub node without its analyzer stream keeps filtering, so readiness does
+  not depend on the analyzer by default. The node reports itself degraded
+  instead: `/readyz` stays 200 and adds `degraded: analyzer stream down for
+  Ns`, and the new gauges `packetyeeter_scrub_analyzer_stream_up` and
+  `packetyeeter_scrub_analyzer_stream_down_seconds` expose it for alerting.
+- New flag `-readyz-analyzer-grace` (default `0`, off): above 0, `/readyz`
+  requires the stream, staying ready that long after it breaks. See
+  `docs/operations.md#scrub-mode`.
+- The stream counts as up only once it has delivered the analyzer's rule set
+  (an empty set counts), so a node is not ready on a stream the analyzer
+  refuses (e.g. at `-max-collectors`) or before its rules arrive. Such a
+  stream does not end an outage either.
+- Compatibility: while the analyzer stream is down, the `/readyz` body has a
+  second line (`degraded: ...`) after `ready`. Checks on the status code or
+  the first line are unaffected; exact matches on the whole body are not.
+
 ## 2026-10-04 - Scrub handshake maps sized for online CPUs
 
 - New collector flag `-scrub-handshake-lru` (`auto`, `percpu` or `common`;
