@@ -20,6 +20,7 @@ import (
 	"PacketYeeter/pkg/geoip"
 	"PacketYeeter/pkg/grpctls"
 	"PacketYeeter/pkg/metrics"
+	"PacketYeeter/pkg/nic"
 
 	"github.com/cilium/ebpf/perf"
 	"github.com/prometheus/client_golang/prometheus"
@@ -93,6 +94,7 @@ type Config struct {
 	SynCookieStyle  ebpf.SynCookieStyle
 	SynCookieSynPPS uint32        // auto mode: per-destination SYNs/s that start challenges
 	SynCookieTTL    time.Duration // how long a source stays verified
+	SynCookieMaxPPS uint32        // challenges per second across all CPUs, 0 = unlimited
 }
 
 // Collector is a thin relay layer that:
@@ -375,6 +377,7 @@ func (c *Collector) Start(ctx context.Context) error {
 				"style":   c.Config.SynCookieStyle,
 				"syn_pps": c.Config.SynCookieSynPPS,
 				"ttl":     c.Config.SynCookieTTL,
+				"max_pps": c.Config.SynCookieMaxPPS,
 				"dry_run": c.Config.DryRun,
 			}).Info("SYN cookie challenges enabled")
 		}
@@ -400,6 +403,7 @@ func (c *Collector) Start(ctx context.Context) error {
 			"outside": c.Config.Interface,
 			"inside":  c.Config.InsideInterface,
 		}).Info("xdp_scrub attached: forwarding clean traffic from outside to inside port")
+		c.logScrubPorts()
 	} else {
 		c.Logger.Info("eBPF programs loaded and attached")
 	}
@@ -586,6 +590,8 @@ func (c *Collector) connectToAnalyzer() error {
 	conn, err := grpc.DialContext(ctx, c.Config.AnalyzerAddr,
 		grpc.WithTransportCredentials(c.analyzerCreds),
 		grpc.WithBlock(),
+		// Otherwise a TLS failure surfaces only as "context deadline exceeded".
+		grpc.WithReturnConnectionError(),
 		grpc.WithKeepaliveParams(keepalive.ClientParameters{
 			Time:                10 * time.Second,
 			Timeout:             3 * time.Second,
@@ -2238,4 +2244,25 @@ func parsePolicyRules(spec string) ([]ebpf.PolicyRule, error) {
 	}
 
 	return rules, errors.Join(errs...)
+}
+
+// logScrubPorts records how each scrub port is attached and warns about
+// states that make forwarding slow or lossy (docs/scrub-hardware.md).
+func (c *Collector) logScrubPorts() {
+	for _, p := range c.Loader.ScrubPorts() {
+		fields := logrus.Fields{"role": p.Role, "interface": p.Name, "xdp_mode": "native"}
+		if p.Generic {
+			fields["xdp_mode"] = "generic"
+		}
+		if p.Features != nil {
+			fields["xdp_features"] = p.Features.XDP.String()
+			fields["xdp_rx_metadata"] = p.Features.RxMetadata.String()
+		} else if p.FeaturesErr != nil {
+			fields["xdp_features"] = "unknown: " + p.FeaturesErr.Error()
+		}
+		c.Logger.WithFields(fields).Info("Scrub port attached")
+		for _, w := range nic.ScrubPortWarnings(p.Role, p.Generic, p.Features) {
+			c.Logger.WithFields(logrus.Fields{"role": p.Role, "interface": p.Name}).Warn(w)
+		}
+	}
 }

@@ -213,3 +213,33 @@ func TestAnalyzerWatchDecisionsControlClientNames(t *testing.T) {
 		}
 	}
 }
+
+// A connection outliving -grpc-max-connection-age is closed after the grace
+// period even with a stream open, so long-lived collectors and controllers
+// re-handshake against the current certificates and CA bundle.
+func TestAnalyzerMaxConnectionAgeEndsLongStreams(t *testing.T) {
+	a := startTestAnalyzer(t, func(cfg *analyzer.Config) {
+		cfg.GRPCMaxConnectionAge = 300 * time.Millisecond
+		cfg.GRPCMaxConnectionAgeGrace = 200 * time.Millisecond
+	})
+	client := dialAnalyzer(t, a.Config.ListenAddr, grpctls.ClientConfig{})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	stream, err := client.StreamSignals(ctx)
+	if err != nil {
+		t.Fatalf("open signal stream: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := stream.Recv()
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if status.Code(err) != codes.Unavailable {
+			t.Fatalf("stream ended with %v, want Unavailable", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("stream outlived -grpc-max-connection-age plus grace")
+	}
+}

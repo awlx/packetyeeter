@@ -41,6 +41,7 @@ func (c *Collector) synCookieConfig() ebpf.SynCookieConfig {
 		Style:  c.Config.SynCookieStyle,
 		SynPPS: c.Config.SynCookieSynPPS,
 		TTL:    c.Config.SynCookieTTL,
+		MaxPPS: c.Config.SynCookieMaxPPS,
 	}
 }
 
@@ -76,6 +77,9 @@ func validateModeConfig(cfg Config) (warnings []string, err error) {
 		}
 		if cfg.SynCookieSynPPS != 0 && cfg.SynCookieSynPPS != DefaultSynCookieSynPPS {
 			warnings = append(warnings, "-scrub-syn-cookie-syn-pps has no effect in host mode")
+		}
+		if cfg.SynCookieMaxPPS != 0 {
+			warnings = append(warnings, "-scrub-syn-cookie-max-pps has no effect in host mode")
 		}
 		if cfg.SynCookieTTL != 0 && cfg.SynCookieTTL != DefaultSynCookieTTL {
 			warnings = append(warnings, "-scrub-syn-cookie-ttl has no effect in host mode")

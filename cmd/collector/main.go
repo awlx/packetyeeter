@@ -34,6 +34,7 @@ func main() {
 		synCookies      = flag.String("scrub-syn-cookies", "off", "Scrub mode: answer SYNs from unverified sources with a SYN cookie instead of forwarding them: off, auto (only destinations over -scrub-syn-cookie-syn-pps) or on. Linux 6.0+")
 		synCookieStyle  = flag.String("scrub-syn-cookie-style", "oos", "Scrub mode: oos (out-of-sequence SYN-ACK; the client's RST verifies it and its SYN retry passes) or reset (valid SYN-ACK; the client's ACK verifies it and the node resets that connection)")
 		synCookiePPS    = flag.Uint("scrub-syn-cookie-syn-pps", collector.DefaultSynCookieSynPPS, "Scrub mode: SYNs per second to one destination, across all CPUs, that start challenges in -scrub-syn-cookies auto (held for 30s)")
+		synCookieMax    = flag.Uint("scrub-syn-cookie-max-pps", 0, "Scrub mode: max SYN cookie challenges sent per second across all CPUs; unverified SYNs over it are dropped unanswered (0 = unlimited)")
 		synCookieTTL    = flag.Duration("scrub-syn-cookie-ttl", collector.DefaultSynCookieTTL, "Scrub mode: how long a source that answered a challenge stays verified")
 		analyzerAddr    = flag.String("analyzer-addr", "127.0.0.1:9090", "Analyzer gRPC address")
 		analyzerTLSCA   = flag.String("analyzer-tls-ca", "", "PEM CA bundle that verifies the analyzer's certificate; enables TLS. Re-read on change")
@@ -132,6 +133,7 @@ func main() {
 		SynCookieStyle:  cookieStyle,
 		SynCookieSynPPS: uint32(min(*synCookiePPS, math.MaxUint32)),
 		SynCookieTTL:    *synCookieTTL,
+		SynCookieMaxPPS: uint32(min(*synCookieMax, math.MaxUint32)),
 	}
 
 	coll, err := collector.New(cfg, logger)
