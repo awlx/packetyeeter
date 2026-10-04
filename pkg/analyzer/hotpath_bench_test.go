@@ -85,7 +85,7 @@ func BenchmarkMarkBlocked(b *testing.B) {
 			a := newOfflineAnalyzer(b, false)
 			now := time.Now()
 			for i := 0; i < n; i++ {
-				a.recentBlocks[benchIP(i).String()] = now
+				a.recentBlocks[benchIP(i).String()] = &blockReservation{at: now, scopes: scopeLocal}
 			}
 			ips := make([]net.IP, 1<<16)
 			for i := range ips {
@@ -140,7 +140,7 @@ func BenchmarkRateLimitedFlood40k(b *testing.B) {
 		for _, ip := range ips {
 			trackBlocked(ip, "AS64500")
 			a.ReputationHelper.PenalizeIP(ip, 10.0, "Rate limit exceeded")
-			a.sendCommand(cs, &apiv1.Command{Type: apiv1.CommandType_COMMAND_BLOCK_IP, Ip: ip, Reason: "Rate limit exceeded"})
+			a.sendCommand(cs, &apiv1.Command{Type: apiv1.CommandType_COMMAND_BLOCK_IP, Ip: ip, Reason: "Rate limit exceeded"}, false)
 		}
 	}
 }

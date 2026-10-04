@@ -242,16 +242,16 @@ func (a *Analyzer) processHTTPRequest(sig *apiv1.Signal, ip net.IP, asn string, 
 	}
 
 	// Apply rate limiting for HTTP/SPOE signals
-	if a.checkRateLimit(ip, asn) {
+	if limited, fanout := a.checkRateLimitFor(cs, ip, asn); limited {
 		if !a.Config.DryRun {
 			metrics.HAProxyBlocks.Inc()
 			metrics.HTTPFloodBlocks.Inc()
-			a.ReputationHelper.PenalizeIP(ip, 10.0, "Rate limit exceeded")
+			a.penalizeRateLimited(ip, fanout)
 			a.sendCommand(cs, &apiv1.Command{
 				Type:   apiv1.CommandType_COMMAND_BLOCK_IP,
 				Ip:     sig.Ip,
 				Reason: "Rate limit exceeded",
-			})
+			}, fanout)
 		}
 		return
 	}
@@ -757,7 +757,7 @@ func (a *Analyzer) processHTTPRequest(sig *apiv1.Signal, ip net.IP, asn string, 
 				Type:   apiv1.CommandType_COMMAND_BLOCK_IP,
 				Ip:     sig.Ip,
 				Reason: fmt.Sprintf("HTTP reputation threshold exceeded: %.0f", score),
-			})
+			}, a.scrubReputationExceeded(cs, ip))
 		}
 	}
 }

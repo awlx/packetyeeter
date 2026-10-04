@@ -59,7 +59,7 @@ func main() {
 		maxConnAge     = flag.Duration("grpc-max-connection-age", analyzer.DefaultGRPCMaxConnectionAge, "Close gRPC connections after this long (±10%) so clients re-handshake against the current certificates and CA bundle; 0 = never")
 		maxConnGrace   = flag.Duration("grpc-max-connection-age-grace", analyzer.DefaultGRPCMaxConnectionAgeGrace, "How long open streams may continue after -grpc-max-connection-age before the connection is cut")
 		controlClients = flag.String("control-client-names", "", "Comma-separated client certificate DNS SANs/CommonNames allowed to call PushRules and WatchDecisions (requires -tls-client-ca; empty = any authenticated client)")
-		scrubClients   = flag.String("scrub-client-names", "", "Comma-separated client certificate DNS SANs/CommonNames of scrub collectors whose blocks are sent to every other listed scrub collector (requires -tls-client-ca; empty = no cross-node fan-out). Only gates fan-out: any connected collector still adds evidence to shared per-source state")
+		scrubClients   = flag.String("scrub-client-names", "", "Comma-separated client certificate DNS SANs/CommonNames of trusted scrub collectors (requires -tls-client-ca; empty = no cross-node fan-out). A block fans out to every listed scrub collector only when evidence from listed scrub collectors alone crosses the threshold. Other collectors still feed shared per-source state and can get a source blocked on the single stream that next reports it")
 
 		sustainedDefaults = sustained.DefaultConfig()
 

@@ -131,13 +131,13 @@ var (
 
 	ScrubCommandFanout = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "packetyeeter_scrub_command_fanout_total",
-		Help: "Block and unblock commands successfully sent to scrub collectors other than the originating one (accepted by the transport, not confirmed enforced)",
+		Help: "Fan-out commands (blocks; unblocks would take the same path) successfully sent to scrub collectors other than the originating one (accepted by the transport, not confirmed enforced)",
 	})
 
-	ScrubCommandFanoutDropped = promauto.NewCounter(prometheus.CounterOpts{
+	ScrubCommandFanoutDropped = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "packetyeeter_scrub_command_fanout_dropped_total",
-		Help: "Block and unblock commands not fanned out to a scrub collector because its outbound queue was full",
-	})
+		Help: "Fan-out commands (blocks; unblocks would take the same path) not sent to a scrub collector, by reason: queue_full (its outbound queue was full) or role_changed (it stopped being a trusted scrub collector after the command was queued)",
+	}, []string{"reason"})
 
 	CollectorSendStalls = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "packetyeeter_collector_send_stalls_total",
@@ -943,6 +943,10 @@ var (
 var highCardinalityEnabled atomic.Bool
 
 func init() {
+	// Export both fixed reasons at 0 so alerts see the series before a drop.
+	for _, reason := range []string{"queue_full", "role_changed"} {
+		ScrubCommandFanoutDropped.WithLabelValues(reason)
+	}
 	// Default off; allow env override for debugging
 	if v := os.Getenv("PACKETYEETER_HIGH_CARDINALITY_METRICS"); v != "" {
 		if v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "yes") {

@@ -112,6 +112,11 @@ func TestTrackBlockedCapped(t *testing.T) {
 	}
 }
 
+// markBlocked reserves a local block of ip with no recipients.
+func (a *Analyzer) markBlocked(ip net.IP) {
+	a.reserveBlock(ip, scopeLocal, nil, time.Now())
+}
+
 func TestRecentBlocksTTLIndependentOfSweep(t *testing.T) {
 	a, err := New(Config{})
 	if err != nil {
@@ -120,9 +125,9 @@ func TestRecentBlocksTTLIndependentOfSweep(t *testing.T) {
 	t.Cleanup(a.cancel)
 	now := time.Now()
 	expired, live, stale := net.ParseIP("192.0.2.1"), net.ParseIP("192.0.2.2"), net.ParseIP("192.0.2.3")
-	a.recentBlocks[expired.String()] = now.Add(-recentBlockTTL - time.Second)
-	a.recentBlocks[live.String()] = now.Add(-recentBlockTTL + 5*time.Second)
-	a.recentBlocks[stale.String()] = now.Add(-3 * recentBlockTTL)
+	a.recentBlocks[expired.String()] = &blockReservation{at: now.Add(-recentBlockTTL - time.Second), scopes: scopeLocal}
+	a.recentBlocks[live.String()] = &blockReservation{at: now.Add(-recentBlockTTL + 5*time.Second), scopes: scopeLocal}
+	a.recentBlocks[stale.String()] = &blockReservation{at: now.Add(-3 * recentBlockTTL), scopes: scopeLocal}
 	// Future, so a slow -race run cannot cross the sweep interval.
 	a.recentBlocksSwept = now.Add(time.Hour)
 

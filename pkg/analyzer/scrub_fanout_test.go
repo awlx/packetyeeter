@@ -120,7 +120,7 @@ func TestScrubBlockReachesEveryTrustedScrubCollectorOnce(t *testing.T) {
 	_, untrusted := registerRole(t, a, "scrub")
 
 	before := testutil.ToFloat64(metrics.ScrubCommandFanout)
-	a.sendCommand(scrubA, blockCmd("192.0.2.20"))
+	a.sendCommand(scrubA, blockCmd("192.0.2.20"), true)
 
 	for name, f := range map[string]*fakeCollectorStream{"origin": fakeA, "peer": fakeB} {
 		if got := f.waitForCommand(t); got.GetType() != apiv1.CommandType_COMMAND_BLOCK_IP ||
@@ -141,7 +141,7 @@ func TestScrubBlockReachesEveryTrustedScrubCollectorOnce(t *testing.T) {
 
 	// Dedup covers the whole fan-out: the peer crossing the threshold next
 	// must not re-send.
-	a.sendCommand(scrubB, blockCmd("192.0.2.20"))
+	a.sendCommand(scrubB, blockCmd("192.0.2.20"), true)
 	fakeA.expectNoCommand(t)
 	fakeB.expectNoCommand(t)
 	w.expectNone(t)
@@ -160,7 +160,7 @@ func TestUntrustedScrubOriginDoesNotFanOut(t *testing.T) {
 	for name, cn := range map[string]string{"no certificate": "", "unlisted certificate": "other.example.net"} {
 		fake := newFakeCollectorStream()
 		rogue := registerStream(t, a, "scrub", cn, fake)
-		a.sendCommand(rogue, blockCmd("192.0.2.30"))
+		a.sendCommand(rogue, blockCmd("192.0.2.30"), true)
 		if got := fake.waitForCommand(t); got.GetType() != apiv1.CommandType_COMMAND_BLOCK_IP {
 			t.Fatalf("%s: origin got %v, want its own block", name, got)
 		}
@@ -180,7 +180,7 @@ func TestUntrustedScrubPeerReceivesNothing(t *testing.T) {
 	registerStream(t, a, "scrub", "other.example.net", other)
 	_, noCert := registerRole(t, a, "scrub")
 
-	a.sendCommand(origin, blockCmd("192.0.2.31"))
+	a.sendCommand(origin, blockCmd("192.0.2.31"), true)
 	fakeOrigin.waitForCommand(t)
 	other.expectNoCommand(t)
 	noCert.expectNoCommand(t)
@@ -195,7 +195,7 @@ func TestEmptyScrubAllowlistDisablesFanout(t *testing.T) {
 		t.Fatal("certificate trusted with an empty -scrub-client-names")
 	}
 
-	a.sendCommand(origin, blockCmd("192.0.2.32"))
+	a.sendCommand(origin, blockCmd("192.0.2.32"), true)
 	fakeOrigin.waitForCommand(t)
 	peerFake.expectNoCommand(t)
 }
@@ -212,7 +212,7 @@ func TestScrubFanoutStalledPeerDoesNotDelayOrigin(t *testing.T) {
 
 	for i := range 10 {
 		start := time.Now()
-		a.sendCommand(origin, blockCmd(fmt.Sprintf("192.0.2.%d", 100+i)))
+		a.sendCommand(origin, blockCmd(fmt.Sprintf("192.0.2.%d", 100+i)), true)
 		if d := time.Since(start); d > 250*time.Millisecond {
 			t.Fatalf("command %d took %v with a stalled peer", i, d)
 		}
@@ -239,7 +239,7 @@ func TestScrubFanoutKeepsPerPeerOrder(t *testing.T) {
 		ip := fmt.Sprintf("10.0.%d.%d", i/250, i%250)
 		for _, cmd := range []*apiv1.Command{blockCmd(ip), unblockCmd(ip)} {
 			want = append(want, cmd)
-			a.sendCommand(origin, cmd)
+			a.sendCommand(origin, cmd, true)
 		}
 	}
 	for i, w := range want {
@@ -258,15 +258,15 @@ func TestScrubFanoutQueueOverflowDrops(t *testing.T) {
 	stalled := newStalledStream(t)
 	registerStream(t, a, "scrub", trustedScrubName, stalled)
 
-	a.sendCommand(origin, unblockCmd("192.0.2.40"))
+	a.sendCommand(origin, unblockCmd("192.0.2.40"), true)
 	<-stalled.entered // the worker holds this one; the queue is empty
 
-	before := testutil.ToFloat64(metrics.ScrubCommandFanoutDropped)
+	before := testutil.ToFloat64(metrics.ScrubCommandFanoutDropped.WithLabelValues("queue_full"))
 	const extra = 20
 	for range scrubFanoutQueueSize + extra {
-		a.sendCommand(origin, unblockCmd("192.0.2.40"))
+		a.sendCommand(origin, unblockCmd("192.0.2.40"), true)
 	}
-	if got := testutil.ToFloat64(metrics.ScrubCommandFanoutDropped) - before; got != extra {
+	if got := testutil.ToFloat64(metrics.ScrubCommandFanoutDropped.WithLabelValues("queue_full")) - before; got != extra {
 		t.Fatalf("dropped = %v, want %d", got, extra)
 	}
 }
@@ -278,19 +278,19 @@ func TestScrubRoleChangeLeavesFanout(t *testing.T) {
 	origin, fakeOrigin := registerTrusted(t, a, "scrub")
 	peerCS, peerFake := registerTrusted(t, a, "scrub")
 
-	a.sendCommand(origin, blockCmd("192.0.2.50"))
+	a.sendCommand(origin, blockCmd("192.0.2.50"), true)
 	fakeOrigin.waitForCommand(t)
 	peerFake.waitForCommand(t)
 
 	peerCS.setRole("host")
-	a.sendCommand(origin, blockCmd("192.0.2.51"))
+	a.sendCommand(origin, blockCmd("192.0.2.51"), true)
 	fakeOrigin.waitForCommand(t)
 	peerFake.expectNoCommand(t)
 
 	// A former scrub origin no longer fans out either.
 	peerCS.setRole("scrub")
 	origin.setRole("host")
-	a.sendCommand(origin, blockCmd("192.0.2.52"))
+	a.sendCommand(origin, blockCmd("192.0.2.52"), true)
 	fakeOrigin.waitForCommand(t)
 	peerFake.expectNoCommand(t)
 }
@@ -303,7 +303,7 @@ func TestScrubBlockFanoutRespectsDryRun(t *testing.T) {
 	scrubA, fakeA := registerTrusted(t, a, "scrub")
 	_, fakeB := registerTrusted(t, a, "scrub")
 
-	a.sendCommand(scrubA, blockCmd("192.0.2.21"))
+	a.sendCommand(scrubA, blockCmd("192.0.2.21"), true)
 	fakeA.expectNoCommand(t)
 	fakeB.expectNoCommand(t)
 	w.expectNone(t)
@@ -316,7 +316,7 @@ func TestScrubBlockFanoutRespectsKillSwitch(t *testing.T) {
 	_, fakeB := registerTrusted(t, a, "scrub")
 
 	a.enforcement.Stop("test")
-	a.sendCommand(scrubA, blockCmd("192.0.2.22"))
+	a.sendCommand(scrubA, blockCmd("192.0.2.22"), true)
 	fakeA.expectNoCommand(t)
 	fakeB.expectNoCommand(t)
 }
@@ -331,7 +331,7 @@ func TestHostBlockStaysOnOriginCollector(t *testing.T) {
 	_, fakeB := registerTrusted(t, a, "host")
 	_, scrub := registerTrusted(t, a, "scrub")
 
-	a.sendCommand(hostA, blockCmd("192.0.2.23"))
+	a.sendCommand(hostA, blockCmd("192.0.2.23"), true)
 	fakeA.waitForCommand(t)
 	fakeB.expectNoCommand(t)
 	scrub.expectNoCommand(t)
@@ -343,13 +343,142 @@ func TestHostBlockStaysOnOriginCollector(t *testing.T) {
 
 // Rate-limit evidence is keyed by source IP, not by collector, so a source
 // split over two scrub nodes is judged on its total.
+func setZeroRefillLimiters(a *Analyzer, burst float64) {
+	noRefill := 0.0
+	cfg := ratelimit.Config{IPRateExact: &noRefill, IPBurst: burst}
+	a.RateLimiter = ratelimit.NewLimiter(cfg)
+	a.ScrubRateLimiter = ratelimit.NewLimiter(cfg)
+}
+
+func tcpSignal(ip string) *apiv1.Signal {
+	return &apiv1.Signal{
+		Type:   apiv1.SignalType_SIGNAL_TCP_METADATA,
+		Source: apiv1.SignalSource_SOURCE_EBPF,
+		Ip:     net.ParseIP(ip).To4(),
+	}
+}
+
+func newRateLimitAnalyzer(t *testing.T) *Analyzer {
+	t.Helper()
+	a := newTestAnalyzer(t)
+	allowScrubNames(a)
+	a.AIEngine = nil
+	a.Config.ReputationThreshold = 1e9
+	setZeroRefillLimiters(a, 10)
+	return a
+}
+
+// A collector outside the allowlist drains a victim's shared bucket without
+// tripping it; the next trusted scrub signal trips the shared limiter, but
+// that block must stay on the trusted node it came from.
+func TestUntrustedEvidenceCannotTriggerFanout(t *testing.T) {
+	for name, rogueCN := range map[string]string{"host without certificate": "", "unlisted certificate": "other.example.net"} {
+		t.Run(name, func(t *testing.T) {
+			a := newRateLimitAnalyzer(t)
+			rogueFake := newBufferedFake(16)
+			rogue := registerStream(t, a, "host", rogueCN, rogueFake)
+			scrubA, fakeA := registerTrusted(t, a, "scrub")
+			_, fakeB := registerTrusted(t, a, "scrub")
+
+			for range 10 {
+				a.processSignal(tcpSignal("198.51.100.9"), rogue)
+			}
+			rogueFake.expectNoCommand(t)
+
+			a.processSignal(tcpSignal("198.51.100.9"), scrubA)
+			if got := fakeA.waitForCommand(t); !net.IP(got.GetIp()).Equal(net.ParseIP("198.51.100.9")) {
+				t.Fatalf("origin got %v, want its local block", got)
+			}
+			fakeB.expectNoCommand(t)
+
+			// Trusted evidence alone still fans out once it crosses the limit;
+			// the origin already has the block.
+			for range 10 {
+				a.processSignal(tcpSignal("198.51.100.9"), scrubA)
+			}
+			if got := fakeB.waitForCommand(t); !net.IP(got.GetIp()).Equal(net.ParseIP("198.51.100.9")) {
+				t.Fatalf("peer got %v, want the trusted fan-out", got)
+			}
+			fakeA.expectNoCommand(t)
+			rogueFake.expectNoCommand(t)
+		})
+	}
+}
+
+// A local block reserved by an untrusted stream must not swallow a trusted
+// fan-out decision for the same source within the dedup TTL.
+func TestLocalBlockDoesNotSuppressTrustedFanout(t *testing.T) {
+	a := newWatchAnalyzer(t, Config{})
+	allowScrubNames(a)
+	w := startWatch(t, a, "ctl", nil, 8)
+
+	rogue, rogueFake := registerRole(t, a, "scrub")
+	scrubA, fakeA := registerTrusted(t, a, "scrub")
+	scrubB, fakeB := registerTrusted(t, a, "scrub")
+	_, fakeC := registerTrusted(t, a, "scrub")
+
+	a.sendCommand(rogue, blockCmd("192.0.2.60"), true)
+	rogueFake.waitForCommand(t)
+	w.next(t)
+
+	a.sendCommand(scrubA, blockCmd("192.0.2.60"), true)
+	for name, f := range map[string]*fakeCollectorStream{"origin": fakeA, "peer B": fakeB, "peer C": fakeC} {
+		if got := f.waitForCommand(t); !net.IP(got.GetIp()).Equal(net.ParseIP("192.0.2.60")) {
+			t.Fatalf("%s got %v, want the block", name, got)
+		}
+	}
+	rogueFake.expectNoCommand(t)
+	w.next(t)
+
+	// The fan-out is now reserved: repeats are suppressed.
+	a.sendCommand(scrubB, blockCmd("192.0.2.60"), true)
+	a.sendCommand(rogue, blockCmd("192.0.2.60"), true)
+	for _, f := range []*fakeCollectorStream{fakeA, fakeB, fakeC, rogueFake} {
+		f.expectNoCommand(t)
+	}
+	w.expectNone(t)
+}
+
+func TestFanoutIneligibleDecisionStaysLocal(t *testing.T) {
+	a := newWatchAnalyzer(t, Config{})
+	allowScrubNames(a)
+	origin, fakeOrigin := registerTrusted(t, a, "scrub")
+	_, peerFake := registerTrusted(t, a, "scrub")
+
+	a.sendCommand(origin, blockCmd("192.0.2.61"), false)
+	fakeOrigin.waitForCommand(t)
+	peerFake.expectNoCommand(t)
+}
+
+func TestBroadcastNeedsTrustedEvidenceForScrubNodes(t *testing.T) {
+	a := newRateLimitAnalyzer(t)
+	rogue, rogueFake := registerRole(t, a, "host")
+	scrubA, fakeA := registerTrusted(t, a, "scrub")
+
+	// Evidence from the untrusted stream only.
+	a.processSignal(tcpSignal("198.51.100.70"), rogue)
+	a.Broadcast(blockCmd("198.51.100.70"))
+	rogueFake.waitForCommand(t)
+	fakeA.expectNoCommand(t)
+
+	// A local reservation does not suppress a later Broadcast, and trusted
+	// evidence lets it reach the scrub node.
+	a.sendCommand(rogue, blockCmd("198.51.100.71"), false)
+	rogueFake.waitForCommand(t)
+	a.processSignal(tcpSignal("198.51.100.71"), scrubA)
+	a.Broadcast(blockCmd("198.51.100.71"))
+	if got := fakeA.waitForCommand(t); !net.IP(got.GetIp()).Equal(net.ParseIP("198.51.100.71")) {
+		t.Fatalf("scrub node got %v, want the broadcast block", got)
+	}
+	rogueFake.expectNoCommand(t)
+}
+
 func TestSplitSourceAcrossScrubNodesJudgedOnTotal(t *testing.T) {
 	a := newTestAnalyzer(t)
 	allowScrubNames(a)
 	a.AIEngine = nil
 	a.Config.ReputationThreshold = 1e9
-	noRefill := 0.0
-	a.RateLimiter = ratelimit.NewLimiter(ratelimit.Config{IPRateExact: &noRefill, IPBurst: 10})
+	setZeroRefillLimiters(a, 10)
 
 	scrubA, fakeA := registerTrusted(t, a, "scrub")
 	scrubB, fakeB := registerTrusted(t, a, "scrub")
