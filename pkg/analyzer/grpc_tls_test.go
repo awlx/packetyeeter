@@ -29,6 +29,27 @@ func TestNewRejectsControlClientNamesWithoutClientCA(t *testing.T) {
 	}
 }
 
+func TestNewRejectsScrubClientNamesWithoutClientCA(t *testing.T) {
+	dir := t.TempDir()
+	ca := grpctlstest.NewCA(t, "ca")
+	cert, key := ca.IssueServer(t, "analyzer", "localhost").Write(t, dir, "analyzer")
+	for name, tlsCfg := range map[string]grpctls.ServerConfig{
+		"plaintext":       {},
+		"server TLS only": {CertFile: cert, KeyFile: key},
+	} {
+		_, err := New(Config{TLS: tlsCfg, ScrubClientNames: []string{"scrub-a"}})
+		if err == nil || !strings.Contains(err.Error(), "-scrub-client-names requires -tls-client-ca") {
+			t.Fatalf("%s: error = %v", name, err)
+		}
+	}
+	if _, err := New(Config{
+		TLS:              grpctls.ServerConfig{CertFile: cert, KeyFile: key, ClientCAFile: ca.WriteCA(t, dir, "ca")},
+		ScrubClientNames: []string{"scrub-a"},
+	}); err != nil {
+		t.Fatalf("with mTLS: %v", err)
+	}
+}
+
 func TestNewRejectsBadTLSFlags(t *testing.T) {
 	if _, err := New(Config{TLS: grpctls.ServerConfig{CertFile: "x.crt"}}); err == nil || !strings.Contains(err.Error(), "-tls-key") {
 		t.Fatalf("cert without key: error = %v", err)

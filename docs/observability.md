@@ -178,6 +178,16 @@ Analyzer-side, for `PushRules`:
 - `packetyeeter_rule_deltas_sent_total` (counter): complete rule sets sent to
   scrub collectors (on each push, on connect and once a minute). Compare with
   the collectors' `packetyeeter_scrub_rules_active` to confirm they converged.
+- `packetyeeter_scrub_command_fanout_total` (counter): block and unblock
+  commands successfully sent to scrub collectors other than the originating
+  one, one per extra collector: a block decided with three trusted scrub
+  collectors connected adds 2. Counts transport acceptance, not enforcement.
+  Zero without `-scrub-client-names` (see
+  [scrub mode](operations.md#scrub-mode)).
+- `packetyeeter_scrub_command_fanout_dropped_total` (counter): fan-out commands
+  dropped for a scrub collector because its 256-command outbound queue was
+  full, i.e. that collector is not reading. Any increase means that node
+  missed a block or unblock.
 - `packetyeeter_collector_send_stalls_total` (counter): collector streams the
   analyzer closed because a command send (rules or blocks) blocked for 30
   seconds: the collector stopped reading. It reconnects and is resynced.

@@ -40,15 +40,8 @@ func (a *MethodAuthorizer) Authorize(ctx context.Context, fullMethod string) err
 		return nil
 	}
 	p, ok := peer.FromContext(ctx)
-	var leaf *x509.Certificate
-	if ok {
-		// Only VerifiedChains: PeerCertificates is whatever the client sent.
-		if info, isTLS := p.AuthInfo.(credentials.TLSInfo); isTLS &&
-			len(info.State.VerifiedChains) > 0 && len(info.State.VerifiedChains[0]) > 0 {
-			leaf = info.State.VerifiedChains[0][0]
-		}
-	}
-	if leaf != nil && a.allowed(leaf) {
+	leaf := VerifiedLeaf(ctx)
+	if leaf != nil && CertMatchesNames(leaf, a.names) {
 		return nil
 	}
 	entry := a.log.WithField("method", fullMethod)
@@ -62,8 +55,32 @@ func (a *MethodAuthorizer) Authorize(ctx context.Context, fullMethod string) err
 	return status.Error(codes.PermissionDenied, "client certificate not authorized for this method")
 }
 
-func (a *MethodAuthorizer) allowed(cert *x509.Certificate) bool {
-	for _, want := range a.names {
+// VerifiedLeaf returns the caller's client certificate when the TLS handshake
+// verified it against the client CA, or nil. Only VerifiedChains counts:
+// PeerCertificates is whatever the client sent.
+func VerifiedLeaf(ctx context.Context) *x509.Certificate {
+	p, ok := peer.FromContext(ctx)
+	if !ok {
+		return nil
+	}
+	info, isTLS := p.AuthInfo.(credentials.TLSInfo)
+	if !isTLS || len(info.State.VerifiedChains) == 0 || len(info.State.VerifiedChains[0]) == 0 {
+		return nil
+	}
+	return info.State.VerifiedChains[0][0]
+}
+
+// PeerNameAllowed reports whether the caller presented a verified client
+// certificate carrying one of names.
+func PeerNameAllowed(ctx context.Context, names []string) bool {
+	leaf := VerifiedLeaf(ctx)
+	return leaf != nil && CertMatchesNames(leaf, names)
+}
+
+// CertMatchesNames reports whether cert has one of names as a DNS SAN
+// (case-insensitive) or as its subject CommonName (exact).
+func CertMatchesNames(cert *x509.Certificate, names []string) bool {
+	for _, want := range names {
 		if cert.Subject.CommonName == want {
 			return true
 		}

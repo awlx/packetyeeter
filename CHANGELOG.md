@@ -1,5 +1,40 @@
 # PacketYeeter Changelog
 
+## 2026-10-04 - Scrub block fan-out requires a certificate allowlist
+
+- Scrub block fan-out no longer trusts the role a collector announces. Any
+  client that could reach the signal listener could announce scrub mode,
+  trip the rate limit for a victim address and have it blocked on every scrub
+  node. New analyzer flag `-scrub-client-names` (requires `-tls-client-ca`)
+  lists the scrub collectors' certificate names; a block is fanned out only
+  from and to streams that announced scrub mode with a listed certificate.
+  **Empty (the default) disables cross-node fan-out**: each scrub node again
+  gets only the blocks decided from its own signals. The list only gates
+  fan-out; any connected collector still adds evidence to the shared
+  per-source state.
+- Fan-out commands go through one ordered, bounded queue (256) per scrub
+  peer instead of a goroutine per command, so a block and a later unblock
+  reach each peer in order. A full queue drops the command for that peer and
+  increments the new counter `packetyeeter_scrub_command_fanout_dropped_total`.
+- `packetyeeter_scrub_command_fanout_total` now counts only sends the
+  transport accepted.
+
+## 2026-10-04 - Analyzer blocks reach every scrub node
+
+- A `BLOCK_IP` decided from a scrub collector's signals is now sent to every
+  connected scrub collector, not only the one whose signals crossed the
+  threshold. With ECMP each node sees part of a source, so the other nodes
+  used to keep forwarding a blocked source. Dry-run, the kill switch and the
+  block dedup still apply once per decision, and `WatchDecisions` publishes
+  each block once. Blocks decided from host-mode collectors are unchanged.
+- New counter `packetyeeter_scrub_command_fanout_total`: block and unblock
+  commands successfully sent to scrub collectors other than the originating
+  one.
+- The analyzer's per-source evidence was already keyed by source address, so
+  a source split over several nodes is judged on its total. Collector-side
+  UDP/ICMP rate limits and the 1000 pps flood-signal gate remain per node;
+  see `docs/operations.md#scrub-mode`.
+
 ## 2026-10-04 - Scrub nodes report a lost analyzer stream as degraded
 
 - A scrub node without its analyzer stream keeps filtering, so readiness does

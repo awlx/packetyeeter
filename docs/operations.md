@@ -477,6 +477,47 @@ retransmitted after about 1s and again after 3s, so on a congested victim link
 some legitimate clients exceed the default timeout; raise
 `-handshake-timeout` if that shows up as false positives.
 
+Blocks with several nodes: ECMP gives each node only part of a source's
+traffic, so a `BLOCK_IP` the analyzer decides from a scrub collector's signals
+can be sent to every connected scrub collector, not only the one whose signals
+crossed the threshold. This fan-out is off unless the analyzer runs with mTLS
+(`-tls-client-ca`) and `-scrub-client-names` lists the scrub nodes'
+certificate names (DNS SAN or CommonName), for example
+`-scrub-client-names scrub-1.example.net,scrub-2.example.net`. The role a
+collector announces is not trusted on its own: a block is fanned out only when
+the originating stream announced scrub mode *and* its verified certificate is
+on the list, and only to other streams that meet both conditions. With the
+list empty the analyzer logs at start-up that fan-out is off, and each scrub
+node only gets the blocks decided from its own signals, as before. A stream
+that announces scrub mode with an unlisted certificate is logged once and
+still gets its own blocks and runtime rules.
+
+The allowlist only gates fan-out. Any collector that can connect still adds
+evidence to the analyzer's shared per-source state (rate limit, reputation,
+AI windows), so it can push a source towards a block on its own stream and
+make that source's later blocks from listed nodes more likely. Restrict who
+can connect at all with mTLS and a firewall.
+
+Each node expires a block from the time it received it and its own
+`-block-duration`, so nodes can drop a fanned-out block at slightly different
+times. Dry-run, the kill switch and the 60-second block dedup apply once per
+decision, and `WatchDecisions` publishes it once. Each peer has its own
+ordered queue of 256 commands, sent by one worker, so a stalled peer neither
+delays the originating node nor reorders a block and a later unblock; when a
+peer's queue is full the command is dropped for that peer and
+`packetyeeter_scrub_command_fanout_dropped_total` increases (the send
+watchdog closes a peer that stops reading for 30 seconds).
+`packetyeeter_scrub_command_fanout_total` counts fan-out sends the transport
+accepted. A scrub node that connects after the block does not get it. Blocks
+decided from host-mode collectors still go only to that collector.
+
+The analyzer's evidence (rate limit, reputation, AI windows) is keyed by
+source address, so signals from several nodes add up. The collectors' own
+limits are per node: a source spread over N nodes gets up to N times the
+UDP/ICMP rate limit through until the analyzer blocks it, and a flood signal
+is only sent above 1000 pps per node, so a source below that on every node is
+never reported.
+
 Labs on veth pairs: the veth receiving redirected frames needs GRO enabled
 (`ethtool -K <peer> gro on`) on its peer, and locally generated test traffic
 needs tx checksum offload disabled on the sender. `make e2e-scrub-test` sets
