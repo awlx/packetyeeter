@@ -39,6 +39,11 @@ GEOIP_ASN_PATH=/var/lib/GeoIP/GeoLite2-ASN.mmdb
 # WatchDecisions to those certificate names. Files are re-read when they change.
 # See docs/operations.md#tls-and-mtls.
 # EXTRA_ARGS=-tls-cert /etc/packetyeeter/tls/analyzer.crt -tls-key /etc/packetyeeter/tls/analyzer.key -tls-client-ca /etc/packetyeeter/tls/ca.crt -control-client-names controller.example.net
+#
+# gRPC connections are closed after -grpc-max-connection-age (default 1h; 0 =
+# never) plus -grpc-max-connection-age-grace for open streams, so clients
+# re-handshake against rotated certificates and CA bundles.
+# EXTRA_ARGS=-grpc-max-connection-age 1h -grpc-max-connection-age-grace 30s
 
 # Enable verbose logging
 # EXTRA_ARGS=-v

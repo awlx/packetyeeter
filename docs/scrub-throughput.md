@@ -2,7 +2,8 @@
 
 How to measure what a scrub node (`-mode scrub`) can forward and drop, and the
 reference numbers from the veth lab. See [operations.md](operations.md) for
-scrub mode itself.
+scrub mode itself, and [scrub-hardware.md](scrub-hardware.md) for NIC choice,
+tuning and the throughput model to compare results against.
 
 ## What to measure
 
@@ -44,7 +45,9 @@ path: `ip neigh replace <dst> lladdr <port B MAC> dev <inside> nud permanent`).
 
 Node set-up:
 
-1. Native XDP is required: do not use `-allow-generic`, and check that
+1. Run `yeetctl nic-check -role outside <outside>` and
+   `yeetctl nic-check -role inside <inside>` and clear its warnings.
+   Native XDP is required: do not use `-allow-generic`, and check that
    `ip link show <outside>` reports `xdp` rather than `xdpgeneric`. Generic
    XDP numbers say nothing about capacity.
 2. Spread RX across cores: `ethtool -L <outside> combined <N>` and make sure
@@ -140,6 +143,27 @@ Kernel counters, to cross-check and to find losses outside `xdp_scrub`:
 | NIC | CPU | Kernel | Scenario | Packet size | Rules | Forward Mpps | Drop Mpps | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | | | | | | | | | |
+
+## Program cost per packet
+
+`BPF_STATS=1 ./scripts/xdp_scrub_bench.sh` also reports `xdp_scrub`'s own run
+time per packet, from `kernel.bpf_stats_enabled` (`run_time_ns / run_cnt` of
+the program). The sysctl is restored afterwards. This figure leaves out the
+generator, the veth driver and the redirect's transmit, so it is the
+code-only number to compare across versions, and the input to the model in
+[scrub-hardware.md](scrub-hardware.md).
+
+Enabling the stats adds two clock reads per packet, so pps figures from such
+a run are slightly lower. Scenario `d` (one matching `DROP` rule) measures the
+drop path. `COLLECTOR_ARGS` passes extra collector flags, e.g.
+`COLLECTOR_ARGS="-fingerprint-interval 0"` to measure the cost of
+fingerprints, or `COLLECTOR_ARGS="-scrub-syn-cookies on"` to answer the SYN
+floods with cookie challenges (the `chal pps` column; the challenged SYNs
+also show up as `drop pps`).
+
+On a shared or busy host, single runs scatter widely: VM vCPUs can land on
+efficiency cores. Compare medians of several runs, and A/B the two versions
+in alternating runs rather than one after the other.
 
 ## veth lab reference
 

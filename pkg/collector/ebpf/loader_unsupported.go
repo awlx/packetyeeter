@@ -5,6 +5,8 @@ package ebpf
 import (
 	"fmt"
 	"runtime"
+
+	"PacketYeeter/pkg/nic"
 )
 
 type LoaderConfig struct {
@@ -44,6 +46,16 @@ func (l *Loader) Attach() error {
 }
 
 func (l *Loader) Close() {}
+
+type ScrubPort struct {
+	Role        string
+	Name        string
+	Generic     bool
+	Features    *nic.DevFeatures
+	FeaturesErr error
+}
+
+func (l *Loader) ScrubPorts() []ScrubPort { return nil }
 
 func (l *Loader) GetMaps() *Maps {
 	return l.maps

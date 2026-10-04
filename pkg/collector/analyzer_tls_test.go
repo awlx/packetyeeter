@@ -110,8 +110,13 @@ func TestConnectToAnalyzerVerifiesServer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if err := c.connectToAnalyzer(); err == nil {
+	err = c.connectToAnalyzer()
+	if err == nil {
 		t.Fatal("connected to an analyzer whose certificate is not signed by -analyzer-tls-ca")
+	}
+	// The log must say why, not just that the dial timed out.
+	if !strings.Contains(err.Error(), "certificate") {
+		t.Fatalf("dial error %q does not name the TLS failure", err)
 	}
 }
 

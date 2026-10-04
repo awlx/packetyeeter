@@ -58,7 +58,8 @@ func TestValidateModeConfig(t *testing.T) {
 			c.SynCookieStyle = ebpf.SynCookieStyleReset
 			c.SynCookieSynPPS = 5
 			c.SynCookieTTL = time.Second
-		}, true, 3},
+			c.SynCookieMaxPPS = 100
+		}, true, 4},
 		"syn cookies on": {func(c *Config) { c.SynCookies = ebpf.SynCookiesOn; c.SynCookieTTL = time.Minute }, true, 0},
 		"syn cookies auto": {func(c *Config) {
 			c.SynCookies = ebpf.SynCookiesAuto
