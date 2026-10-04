@@ -11,6 +11,8 @@ import (
 	"os"
 	"slices"
 
+	"PacketYeeter/pkg/nic"
+
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
 	"github.com/cilium/ebpf/features"
@@ -41,6 +43,7 @@ type Loader struct {
 	iface      string
 	scrubLink  link.Link
 	outsideIdx int
+	scrubPorts []ScrubPort
 
 	// TC Filter objects
 	ingressFilter *netlink.BpfFilter
@@ -298,7 +301,7 @@ func (l *Loader) attachScrub() error {
 		return fmt.Errorf("outside and inside interface are both %s", outside.Name)
 	}
 
-	insideLink, err := l.attachXDPWithMode(l.coll.Programs["xdp_pass_inside"], inside)
+	insideLink, insideGeneric, err := l.attachXDPWithMode(l.coll.Programs["xdp_pass_inside"], inside, false)
 	if err != nil {
 		return fmt.Errorf("inside interface %s does not accept XDP: %w", inside.Name, err)
 	}
@@ -308,43 +311,88 @@ func (l *Loader) attachScrub() error {
 		return fmt.Errorf("add inside interface %s to tx_ports: %w", inside.Name, err)
 	}
 
-	scrubLink, err := l.attachXDPWithMode(l.coll.Programs["xdp_scrub"], outside)
+	// Native redirects into a port without native XDP have no ndo_xdp_xmit
+	// (or, on ixgbe/i40e, no XDP TX rings) and are dropped, so a generic
+	// inside port keeps the outside generic too.
+	scrubLink, outsideGeneric, err := l.attachXDPWithMode(l.coll.Programs["xdp_scrub"], outside, insideGeneric)
 	if err != nil {
 		return fmt.Errorf("attach xdp_scrub to %s: %w", outside.Name, err)
 	}
 	l.links = append(l.links, scrubLink)
 	l.scrubLink = scrubLink
 	l.outsideIdx = outside.Index
+	l.scrubPorts = []ScrubPort{
+		scrubPort("outside", outside, outsideGeneric),
+		scrubPort("inside", inside, insideGeneric),
+	}
 	return nil
+}
+
+// ScrubPort is how one scrub-mode port ended up attached.
+type ScrubPort struct {
+	Role     string
+	Name     string
+	Generic  bool
+	Features *nic.DevFeatures // nil when the kernel cannot report them
+	// FeaturesErr is set when Features is nil.
+	FeaturesErr error
+}
+
+func scrubPort(role string, iface *net.Interface, generic bool) ScrubPort {
+	p := ScrubPort{Role: role, Name: iface.Name, Generic: generic}
+	// Queried after attaching: veth, ixgbe and i40e only advertise
+	// ndo-xmit once an XDP program is on the port.
+	f, err := nic.QueryDevFeatures(iface.Index)
+	if err == nil {
+		p.Features = &f
+	} else {
+		p.FeaturesErr = err
+	}
+	return p
+}
+
+// ScrubPorts reports the attach mode and driver XDP features of the outside
+// and inside port, in that order; empty outside scrub mode.
+func (l *Loader) ScrubPorts() []ScrubPort {
+	return l.scrubPorts
 }
 
 // attachXDPWithMode refuses generic XDP in scrub mode unless allowed, because
 // it is far too slow to scrub at line rate and the kernel would otherwise fall
 // back to it silently.
-func (l *Loader) attachXDPWithMode(prog *ebpf.Program, iface *net.Interface) (link.Link, error) {
+// preferGeneric skips the native attempt in auto mode; it is only set once
+// another port already fell back, which requires AllowGeneric.
+func (l *Loader) attachXDPWithMode(prog *ebpf.Program, iface *net.Interface, preferGeneric bool) (link.Link, bool, error) {
 	opts := link.XDPOptions{Program: prog, Interface: iface.Index}
+	generic := func() (link.Link, bool, error) {
+		opts.Flags = link.XDPGenericMode
+		lnk, err := link.AttachXDP(opts)
+		return lnk, true, err
+	}
 	switch l.cfg.XDPMode {
 	case XDPModeGeneric:
 		if !l.cfg.AllowGeneric {
-			return nil, errors.New("generic XDP requires -allow-generic")
+			return nil, false, errors.New("generic XDP requires -allow-generic")
 		}
-		opts.Flags = link.XDPGenericMode
-		return link.AttachXDP(opts)
+		return generic()
 	case XDPModeNative:
 		opts.Flags = link.XDPDriverMode
-		return link.AttachXDP(opts)
+		lnk, err := link.AttachXDP(opts)
+		return lnk, false, err
 	}
 
+	if preferGeneric && l.cfg.AllowGeneric {
+		return generic()
+	}
 	opts.Flags = link.XDPDriverMode
 	lnk, err := link.AttachXDP(opts)
 	if err != nil && l.cfg.AllowGeneric {
-		opts.Flags = link.XDPGenericMode
-		return link.AttachXDP(opts)
+		return generic()
 	}
 	if err != nil {
-		return nil, fmt.Errorf("native XDP unavailable (pass -allow-generic for labs): %w", err)
+		return nil, false, fmt.Errorf("native XDP unavailable (pass -allow-generic for labs): %w", err)
 	}
-	return lnk, nil
+	return lnk, false, nil
 }
 
 // ScrubAttached reports whether xdp_scrub is still attached to the outside port.

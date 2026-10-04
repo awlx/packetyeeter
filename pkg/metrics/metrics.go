@@ -129,6 +129,11 @@ var (
 		Help: "Complete rule sets sent to scrub collectors",
 	})
 
+	CollectorSendStalls = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "packetyeeter_collector_send_stalls_total",
+		Help: "Collector streams closed by the analyzer because a command send blocked past the send timeout",
+	})
+
 	EnforcementSuppressedCommands = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "packetyeeter_enforcement_suppressed_commands_total",
 		Help: "Block commands not issued because the runtime enforcement kill switch is pulled",
@@ -365,7 +370,8 @@ var (
 	ScrubSynCookieDesc = prometheus.NewDesc("packetyeeter_scrub_syncookie_total",
 		"SYN cookie events by family: challenge (SYN-ACK sent), dry_run (would challenge), valid (source verified), "+
 			"invalid (answer without a valid cookie, forwarded), passed (SYN from a verified source), "+
-			"unsupported (unanswerable SYN dropped), error (no cookie, SYN forwarded), activated (auto mode started challenging a destination)",
+			"unsupported (unanswerable SYN dropped), error (no cookie, SYN forwarded), activated (auto mode started challenging a destination), "+
+			"suppressed (SYN over -scrub-syn-cookie-max-pps, dropped unanswered)",
 		[]string{"family", "event"}, nil)
 	ScrubSynCookieVerifiedDesc = prometheus.NewDesc("packetyeeter_scrub_syncookie_verified_sources",
 		"Sources whose SYN cookie verification has not expired, by family",
@@ -661,8 +667,13 @@ var (
 
 	BotVerificationQueueDrops = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "packetyeeter_bot_verification_queue_drops_total",
-		Help: "Bot verification lookups not started, by reason (queue_full, cache_full); the request is treated as unverified",
+		Help: "Bot verification lookups not started, by reason (queue_full: retried on the IP's next request; pending_full: the request is treated as unverified)",
 	}, []string{"reason"})
+
+	BotVerificationCacheEvictions = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "packetyeeter_bot_verification_cache_evictions_total",
+		Help: "Bot verification verdicts evicted before expiry to make room, by pool (verified, unverified)",
+	}, []string{"pool"})
 
 	BotVerificationPending = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "packetyeeter_bot_verification_pending_total",

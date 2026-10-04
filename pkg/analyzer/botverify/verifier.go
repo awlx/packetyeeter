@@ -1,6 +1,7 @@
 package botverify
 
 import (
+	"container/list"
 	"context"
 	"errors"
 	"net"
@@ -108,9 +109,10 @@ type VerificationResult struct {
 	// Pending: no cached verdict yet and a lookup is queued or running.
 	// Carries neither verification nor impersonation.
 	Pending bool
-	// Dropped: no cached verdict and none due in time: no lookup was started
-	// (queue or cache full, or verifier closed), or it has been pending
-	// longer than dnsTimeout. Carries neither verification nor impersonation.
+	// Dropped: no cached verdict and the IP's pending window is used up
+	// (dnsTimeout since it was first answered Pending), the pending table is
+	// full, or the verifier is closed. Carries neither verification nor
+	// impersonation.
 	Dropped bool
 }
 
@@ -161,8 +163,14 @@ type GeoIPProvider interface {
 
 // Verifier handles bot verification with caching
 type Verifier struct {
-	mu              sync.RWMutex
-	cache           map[string]*VerificationResult // IP -> result
+	mu sync.RWMutex
+	// cache holds one verdict per IP. Verified and unverified verdicts are
+	// bounded separately (maxCacheEntries each, oldest evicted first), so a
+	// flood of fake crawler claims can only evict other failed claims, never
+	// a real crawler's verdict, and never stops new verdicts being cached.
+	cache           map[string]*cacheEntry
+	verifiedLRU     *list.List
+	unverifiedLRU   *list.List
 	cacheTTL        time.Duration
 	patterns        []BotPattern
 	dnsTimeout      time.Duration
@@ -178,14 +186,27 @@ type Verifier struct {
 	lookupAddr func(ctx context.Context, addr string) ([]string, error)
 	lookupHost func(ctx context.Context, host string) ([]string, error)
 
-	// Async lookup pool for VerifyAsync. queued holds IPs that are queued or
-	// being looked up, with their enqueue time (guarded by mu), so a burst
-	// from one IP costs one lookup.
+	// Async lookup pool for VerifyAsync. queued holds IPs whose lookup is
+	// queued or running (guarded by mu), so a burst from one IP costs one
+	// lookup.
 	queue  chan asyncJob
-	queued map[string]time.Time
-	ctx    context.Context // cancelled by Close; parent of every DNS lookup
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
+	queued map[string]struct{}
+	// pendingSince is when each IP without a verdict was first answered
+	// Pending. Pending skips heuristics, so it is granted for at most
+	// pendingWindow per IP however the lookup fares (queued, backlogged or
+	// never started); the entry outlives the window by pendingCooldown so a
+	// new window cannot be had by just waiting it out. Bounded by
+	// maxPendingTracked.
+	pendingSince      map[string]time.Time
+	maxPendingTracked int
+	ctx               context.Context // cancelled by Close; parent of every DNS lookup
+	cancel            context.CancelFunc
+	wg                sync.WaitGroup
+}
+
+type cacheEntry struct {
+	*VerificationResult
+	elem *list.Element // in verifiedLRU or unverifiedLRU; Value is the IP
 }
 
 type asyncJob struct {
@@ -199,6 +220,10 @@ type asyncJob struct {
 const (
 	defaultAsyncWorkers   = 16
 	defaultAsyncQueueSize = 1024
+	// Room for ~1000 new bot-claiming IPs per minute beyond the queue;
+	// past it new IPs are unverified, with all heuristics.
+	defaultMaxPendingTracked = 65536
+	pendingCooldown          = transientFailTTL
 )
 
 // NewVerifier creates a new bot verifier
@@ -220,16 +245,20 @@ func newVerifier(cacheTTL, dnsTimeout time.Duration, geoIP GeoIPProvider, worker
 	}
 
 	v := &Verifier{
-		cache:           make(map[string]*VerificationResult),
-		cacheTTL:        cacheTTL,
-		patterns:        KnownBots,
-		dnsTimeout:      dnsTimeout,
-		verifyInFlight:  make(map[string]*sync.Mutex),
-		geoIP:           geoIP,
-		maxCacheEntries: 50000,
-		resolver:        net.DefaultResolver,
-		queue:           make(chan asyncJob, queueSize),
-		queued:          make(map[string]time.Time),
+		cache:             make(map[string]*cacheEntry),
+		verifiedLRU:       list.New(),
+		unverifiedLRU:     list.New(),
+		cacheTTL:          cacheTTL,
+		patterns:          KnownBots,
+		dnsTimeout:        dnsTimeout,
+		verifyInFlight:    make(map[string]*sync.Mutex),
+		geoIP:             geoIP,
+		maxCacheEntries:   50000,
+		resolver:          net.DefaultResolver,
+		queue:             make(chan asyncJob, queueSize),
+		queued:            make(map[string]struct{}),
+		pendingSince:      make(map[string]time.Time),
+		maxPendingTracked: defaultMaxPendingTracked,
 	}
 	v.ctx, v.cancel = context.WithCancel(context.Background())
 	// Default DNS seams call the resolver with the caller-supplied context.
@@ -266,13 +295,18 @@ func (v *Verifier) Close() {
 	v.wg.Wait()
 	v.mu.Lock()
 	clear(v.queued) // discarded jobs must not read as pending forever
+	clear(v.pendingSince)
 	v.mu.Unlock()
 }
 
+// pendingWindow is the most Pending time an IP gets per verification cycle:
+// what an inline lookup would have cost.
+func (v *Verifier) pendingWindow() time.Duration { return v.dnsTimeout }
+
 // VerifyAsync is Verify for the signal-stream hot path: it never waits on DNS.
 // On a cache miss for a known-bot User-Agent it queues a lookup and returns a
-// Pending result (or Dropped if the queue is full); the lookup's verdict is
-// cached for later requests from the IP.
+// Pending result for at most pendingWindow per IP, Dropped after that; the
+// lookup's verdict is cached for later requests from the IP.
 func (v *Verifier) VerifyAsync(ip net.IP, userAgent string) *VerificationResult {
 	if ip == nil || userAgent == "" {
 		return &VerificationResult{IsVerified: false, ErrorMessage: "missing IP or User-Agent"}
@@ -290,36 +324,53 @@ func (v *Verifier) VerifyAsync(ip net.IP, userAgent string) *VerificationResult 
 	defer v.mu.Unlock()
 	// Re-check under the lock: a worker stores the verdict and clears queued
 	// in one critical section, so we see one or the other.
-	if cached, ok := v.cache[ipStr]; ok && time.Since(cached.VerifiedAt) < v.cachedResultTTL(cached) {
-		return cached
-	}
-	if since, inFlight := v.queued[ipStr]; inFlight {
-		// Pending skips heuristics, so cap it at what an inline lookup would
-		// have cost; otherwise a backlog (e.g. a flood of tarpitting PTR
-		// zones) stretches the bypass to minutes per IP.
-		if time.Since(since) > v.dnsTimeout {
-			return &VerificationResult{BotType: pattern.Type, Dropped: true, ErrorMessage: "verification backlog"}
-		}
-		return &VerificationResult{BotType: pattern.Type, Pending: true}
+	entry, hasEntry := v.cache[ipStr]
+	if hasEntry && time.Since(entry.VerifiedAt) < v.cachedResultTTL(entry.VerificationResult) {
+		return entry.VerificationResult
 	}
 	if v.ctx.Err() != nil {
 		return &VerificationResult{BotType: pattern.Type, Dropped: true, ErrorMessage: "verifier closed"}
 	}
-	_, hasEntry := v.cache[ipStr]
-	if !hasEntry && len(v.cache) >= v.maxCacheEntries {
-		// The verdict could not be cached, so Pending would never resolve and
-		// would become a permanent heuristics bypass for every new IP.
-		metrics.BotVerificationQueueDrops.WithLabelValues("cache_full").Inc()
-		return &VerificationResult{BotType: pattern.Type, Dropped: true, ErrorMessage: "verification cache full"}
+	if hasEntry && entry.IsVerified {
+		// Previously verified and only expired (kept until 2*cacheTTL):
+		// revalidate without spending the pending window, so a lookup flood
+		// cannot strip known crawlers of it at every expiry.
+		v.enqueueLocked(ipStr, ip, pattern)
+		return &VerificationResult{BotType: pattern.Type, Pending: true}
+	}
+
+	now := time.Now()
+	since, tracked := v.pendingSince[ipStr]
+	if !tracked {
+		if len(v.pendingSince) >= v.maxPendingTracked {
+			metrics.BotVerificationQueueDrops.WithLabelValues("pending_full").Inc()
+			v.enqueueLocked(ipStr, ip, pattern)
+			return &VerificationResult{BotType: pattern.Type, Dropped: true, ErrorMessage: "too many pending verifications"}
+		}
+		since = now
+		v.pendingSince[ipStr] = now
+	}
+	// Retried on every request, so a lookup dropped by a full queue starts
+	// once there is room.
+	v.enqueueLocked(ipStr, ip, pattern)
+	if now.Sub(since) > v.pendingWindow() {
+		return &VerificationResult{BotType: pattern.Type, Dropped: true, ErrorMessage: "verification backlog"}
+	}
+	return &VerificationResult{BotType: pattern.Type, Pending: true}
+}
+
+// enqueueLocked queues a lookup for ipStr unless one is already queued or
+// running. Caller holds v.mu.
+func (v *Verifier) enqueueLocked(ipStr string, ip net.IP, pattern *BotPattern) {
+	if _, inFlight := v.queued[ipStr]; inFlight {
+		return
 	}
 	select {
 	case v.queue <- asyncJob{ip: ip, pattern: pattern}:
-		v.queued[ipStr] = time.Now()
+		v.queued[ipStr] = struct{}{}
 		metrics.BotVerificationQueueDepth.Set(float64(len(v.queue)))
-		return &VerificationResult{BotType: pattern.Type, Pending: true}
 	default:
 		metrics.BotVerificationQueueDrops.WithLabelValues("queue_full").Inc()
-		return &VerificationResult{BotType: pattern.Type, Dropped: true, ErrorMessage: "verification queue full"}
 	}
 }
 
@@ -337,6 +388,7 @@ func (v *Verifier) worker() {
 			// A lookup cut short by shutdown says nothing about the peer.
 			if v.ctx.Err() == nil {
 				v.storeLocked(ipStr, result)
+				delete(v.pendingSince, ipStr)
 			}
 			delete(v.queued, ipStr)
 			v.mu.Unlock()
@@ -347,8 +399,8 @@ func (v *Verifier) worker() {
 func (v *Verifier) cachedResult(ipStr string) *VerificationResult {
 	v.mu.RLock()
 	defer v.mu.RUnlock()
-	if cached, ok := v.cache[ipStr]; ok && time.Since(cached.VerifiedAt) < v.cachedResultTTL(cached) {
-		return cached
+	if cached, ok := v.cache[ipStr]; ok && time.Since(cached.VerifiedAt) < v.cachedResultTTL(cached.VerificationResult) {
+		return cached.VerificationResult
 	}
 	return nil
 }
@@ -408,9 +460,13 @@ func (v *Verifier) Verify(ip net.IP, userAgent string) *VerificationResult {
 	result := v.verifyDNS(ip, pattern)
 
 	v.mu.Lock()
+	defer v.mu.Unlock()
+	// After Close every lookup fails as cancelled, which reads as a transient
+	// DNS failure; caching it would count against a real crawler.
+	if v.ctx.Err() != nil {
+		return &VerificationResult{BotType: pattern.Type, Dropped: true, ErrorMessage: "verifier closed"}
+	}
 	v.storeLocked(ipStr, result)
-	v.mu.Unlock()
-
 	return result
 }
 
@@ -425,24 +481,42 @@ func (v *Verifier) storeLocked(ipStr string, result *VerificationResult) {
 			// counter persists across re-verification cycles: an attacker
 			// cannot reset it by simply triggering another transient lookup.
 			// It only resets via a definitive result below (overwrite with
-			// TransientFailure=false) or after the IP goes idle past
-			// cacheTTL — accepted residual: an hour of silence buys at most
-			// maxConsecutiveTransientFailures fresh forgiven cycles.
+			// TransientFailure=false), after the IP goes idle past cacheTTL,
+			// or by eviction, which takes maxCacheEntries newer unverified
+			// claims - accepted residual, each reset buys at most
+			// maxConsecutiveTransientFailures unverified (never verified)
+			// cycles.
 			result.ConsecutiveTransientFailures = prev.ConsecutiveTransientFailures + 1
 		} else {
 			result.ConsecutiveTransientFailures = 1
 		}
 	}
-	if exists || len(v.cache) < v.maxCacheEntries {
-		v.cache[ipStr] = result
-	} else if result.TransientFailure {
-		// Fail closed: the cache is saturated and this IP's counter cannot be
-		// tracked. Handing out an untracked forgiving pass here would let an
-		// attacker reset the cap at will by keeping the cache full (50k
-		// bot-claiming IPs — itself an attack condition), so treat the
-		// failure as over-cap instead. Definitive results are unaffected.
-		result.ConsecutiveTransientFailures = maxConsecutiveTransientFailures + 1
+	if exists {
+		v.removeLocked(ipStr, prev)
 	}
+	pool := v.unverifiedLRU
+	if result.IsVerified {
+		pool = v.verifiedLRU
+	}
+	for pool.Len() >= v.maxCacheEntries && pool.Len() > 0 {
+		oldest := pool.Front().Value.(string)
+		v.removeLocked(oldest, v.cache[oldest])
+		if result.IsVerified {
+			metrics.BotVerificationCacheEvictions.WithLabelValues("verified").Inc()
+		} else {
+			metrics.BotVerificationCacheEvictions.WithLabelValues("unverified").Inc()
+		}
+	}
+	v.cache[ipStr] = &cacheEntry{VerificationResult: result, elem: pool.PushBack(ipStr)}
+}
+
+func (v *Verifier) removeLocked(ipStr string, e *cacheEntry) {
+	if e.IsVerified {
+		v.verifiedLRU.Remove(e.elem)
+	} else {
+		v.unverifiedLRU.Remove(e.elem)
+	}
+	delete(v.cache, ipStr)
 }
 
 // verifyDNS performs reverse and forward DNS verification
@@ -576,31 +650,55 @@ func (v *Verifier) cachedResultTTL(result *VerificationResult) time.Duration {
 	return v.cacheTTL
 }
 
-// cleanupLoop periodically removes expired cache entries
+// cleanupLoop periodically removes expired cache and pending entries.
 func (v *Verifier) cleanupLoop() {
 	defer v.wg.Done()
-	ticker := time.NewTicker(10 * time.Minute)
-	defer ticker.Stop()
+	cacheTicker := time.NewTicker(10 * time.Minute)
+	defer cacheTicker.Stop()
+	// pendingSince must turn over faster than its cap fills.
+	pendingTicker := time.NewTicker(15 * time.Second)
+	defer pendingTicker.Stop()
 
 	for {
 		select {
 		case <-v.ctx.Done():
 			return
-		case <-ticker.C:
+		case <-cacheTicker.C:
 			v.cleanup()
+		case <-pendingTicker.C:
+			v.prunePending(time.Now())
 		}
 	}
 }
 
-// cleanup removes expired cache entries
+// cleanup removes expired cache entries. Verified entries are kept for a
+// second cacheTTL so their IP revalidates as Pending; see VerifyAsync.
 func (v *Verifier) cleanup() {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 
 	now := time.Now()
-	for ip, result := range v.cache {
-		if now.Sub(result.VerifiedAt) > v.cacheTTL {
-			delete(v.cache, ip)
+	for ip, e := range v.cache {
+		ttl := v.cacheTTL
+		if e.IsVerified {
+			ttl *= 2
+		}
+		if now.Sub(e.VerifiedAt) > ttl {
+			v.removeLocked(ip, e)
+		}
+	}
+	metrics.BotVerificationCacheSize.Set(float64(len(v.cache)))
+}
+
+func (v *Verifier) prunePending(now time.Time) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	for ip, since := range v.pendingSince {
+		if _, inFlight := v.queued[ip]; inFlight {
+			continue
+		}
+		if now.Sub(since) > v.pendingWindow()+pendingCooldown {
+			delete(v.pendingSince, ip)
 		}
 	}
 }
