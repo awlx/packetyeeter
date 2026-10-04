@@ -163,16 +163,19 @@ func drainFingerprintsIter(fm drainMap) ([]Fingerprint, error) {
 		keys = append(keys, k)
 		out = append(out, sumFingerprints([]FingerprintKey{k}, perCPU, len(perCPU))...)
 	}
+	// Delete what was read even if iteration failed: those entries are
+	// returned now and must not be reported again. The caller retries the
+	// rest before XDP writes to this map again.
+	var iterErr, delErr error
 	if err := it.Err(); err != nil {
-		return out, fmt.Errorf("iterate %s: %w", fm, err)
+		iterErr = fmt.Errorf("iterate %s: %w", fm, err)
 	}
-	var firstErr error
 	for i := range keys {
-		if err := fm.Delete(&keys[i]); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) && firstErr == nil {
-			firstErr = fmt.Errorf("delete from %s: %w", fm, err)
+		if err := fm.Delete(&keys[i]); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) && delErr == nil {
+			delErr = fmt.Errorf("delete from %s: %w", fm, err)
 		}
 	}
-	return out, firstErr
+	return out, errors.Join(iterErr, delErr)
 }
 
 // sumFingerprints folds per-CPU values (cpus consecutive values per key).

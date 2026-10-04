@@ -301,7 +301,17 @@ func (c *Collector) Start(ctx context.Context) error {
 	c.Maps = c.Loader.GetMaps()
 	if scrub {
 		hs := c.Loader.HandshakeSizing()
+		if hs.OnlineErr != nil {
+			c.Logger.WithError(hs.OnlineErr).WithField("assumed_online_cpus", hs.Online).
+				Warn("Could not count online CPUs; sizing scrub handshake maps for all possible CPUs")
+		}
+		mode := c.Config.ScrubHandshakeLRU
+		if mode == "" {
+			mode = ebpf.HandshakeLRUAuto
+		}
 		c.Logger.WithFields(logrus.Fields{
+			"mode":          mode,
+			"est_memory":    fmt.Sprintf("%.0f MiB", float64(hs.EstimatedBytes())/(1<<20)),
 			"entries":       hs.Entries,
 			"per_cpu_lru":   hs.PerCPU,
 			"per_cpu_share": hs.PerCPUShare(),
@@ -2144,6 +2154,7 @@ func (c *Collector) startCollectorMetricsServer() *http.Server {
 			registry.MustRegister(&fingerprintOverflowMetric{read: c.Maps.FingerprintOverflow, logger: c.Logger})
 			registry.MustRegister(metrics.ScrubFingerprintBuckets)
 			registry.MustRegister(metrics.ScrubFingerprintCapped)
+			registry.MustRegister(metrics.ScrubFingerprintDrainErrors)
 			metrics.ScrubFingerprintCapped.WithLabelValues("bucket").Add(0)
 			metrics.ScrubFingerprintCapped.WithLabelValues("destination").Add(0)
 		}

@@ -379,6 +379,10 @@ var (
 		Name: "packetyeeter_scrub_fingerprint_capped_total",
 		Help: "Fingerprint buckets (kind=bucket) and destinations (kind=destination) not sent because of the per-interval caps",
 	}, []string{"kind"})
+	ScrubFingerprintDrainErrors = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "packetyeeter_scrub_fingerprint_drain_errors_total",
+		Help: "Fingerprint intervals that failed to switch or fully drain a fingerprint map; leftovers are retried at the next interval",
+	})
 
 	PerfLostSamples = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "packetyeeter_perf_lost_samples_total",
