@@ -311,6 +311,7 @@ sudo ./packetyeeter-collector -i eth0 -analyzer-addr 127.0.0.1:9090
 | `-scrub-syn-cookie-style` | `oos` | Scrub mode: `oos` (out-of-sequence SYN-ACK; the client's RST verifies it and its SYN retransmission passes) or `reset` (valid SYN-ACK; the client's ACK verifies it, the node resets that first connection). |
 | `-scrub-syn-cookie-syn-pps` | `10000` | Scrub mode: SYNs per second to one destination, across all CPUs, that start challenges in `auto` (held 30 s). |
 | `-scrub-syn-cookie-ttl` | `10m` | Scrub mode: how long a source that answered a challenge stays verified. |
+| `-scrub-handshake-lru` | `auto` | Scrub mode: LRU lists of the handshake maps. `auto` uses per-CPU lists sized for the online CPUs, or one common list when that would need over 1M entries per family; `percpu` or `common` force one. See [scrub handshakes](docs/operations.md#scrub-mode). |
 | `-analyzer-addr` | `127.0.0.1:9090` | Analyzer gRPC address to connect to. |
 | `-analyzer-tls-ca` | `""` | PEM CA bundle that verifies the analyzer's certificate. Enables TLS to the analyzer; unset = plaintext. See [TLS and mTLS](docs/operations.md#tls-and-mtls). |
 | `-analyzer-tls-cert` | `""` | PEM client certificate for mTLS. Requires `-analyzer-tls-key` and `-analyzer-tls-ca`. |

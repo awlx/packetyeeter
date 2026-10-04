@@ -67,6 +67,12 @@ BLOCK_DURATION=300s
 # docs/operations.md#syn-cookies.
 # EXTRA_ARGS=-mode scrub -inside-if eth1 -scrub-syn-cookies auto -scrub-syn-cookie-style oos -scrub-syn-cookie-syn-pps 10000 -scrub-syn-cookie-ttl 10m
 #
+# Scrub mode, handshake map layout: auto (default) sizes per-CPU LRU lists for
+# the online CPUs and falls back to one common list on hosts with far more
+# possible than online CPUs; percpu or common force one. See
+# docs/operations.md#scrub-mode.
+# EXTRA_ARGS=-mode scrub -inside-if eth1 -scrub-handshake-lru auto
+#
 # Fragmented UDP / IPv6 Fragment policy. Default is rate (no hard-drop solely
 # for fragmentation). Use drop only if you intentionally want the legacy
 # unconditional drop behavior.

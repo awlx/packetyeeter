@@ -15,6 +15,7 @@ type LoaderConfig struct {
 	AllowGeneric bool
 	Fingerprints bool
 	SynCookies   bool
+	HandshakeLRU HandshakeLRU
 }
 
 type Loader struct {
@@ -27,6 +28,8 @@ func NewLoader(cfg LoaderConfig) *Loader {
 		iface: cfg.Interface,
 	}
 }
+
+func (l *Loader) HandshakeSizing() HandshakeSizing { return HandshakeSizing{} }
 
 func (l *Loader) ScrubAttached() error {
 	return fmt.Errorf("eBPF collector is only supported on Linux, not %s", runtime.GOOS)

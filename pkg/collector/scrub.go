@@ -73,6 +73,9 @@ func validateModeConfig(cfg Config) (warnings []string, err error) {
 		if cfg.SynCookieTTL != 0 && cfg.SynCookieTTL != DefaultSynCookieTTL {
 			warnings = append(warnings, "-scrub-syn-cookie-ttl has no effect in host mode")
 		}
+		if cfg.ScrubHandshakeLRU != "" && cfg.ScrubHandshakeLRU != ebpf.HandshakeLRUAuto {
+			warnings = append(warnings, "-scrub-handshake-lru has no effect in host mode")
+		}
 		return warnings, nil
 	}
 	return nil, validateScrubConfig(cfg)

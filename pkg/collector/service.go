@@ -89,6 +89,10 @@ type Config struct {
 	SynCookieStyle  ebpf.SynCookieStyle
 	SynCookieSynPPS uint32        // auto mode: per-destination SYNs/s that start challenges
 	SynCookieTTL    time.Duration // how long a source stays verified
+
+	// ScrubHandshakeLRU picks per-CPU or common LRU lists for the scrub
+	// handshake maps (zero value: auto).
+	ScrubHandshakeLRU ebpf.HandshakeLRU
 }
 
 // Collector is a thin relay layer that:
@@ -287,11 +291,22 @@ func (c *Collector) Start(ctx context.Context) error {
 		AllowGeneric: c.Config.AllowGeneric,
 		Fingerprints: scrub && c.Config.FingerprintInterval > 0,
 		SynCookies:   c.synCookiesEnabled(),
+		HandshakeLRU: c.Config.ScrubHandshakeLRU,
 	})
 	if err := c.Loader.Load(); err != nil {
 		return fmt.Errorf("failed to load eBPF: %w", err)
 	}
 	c.Maps = c.Loader.GetMaps()
+	if scrub {
+		hs := c.Loader.HandshakeSizing()
+		c.Logger.WithFields(logrus.Fields{
+			"entries":       hs.Entries,
+			"per_cpu_lru":   hs.PerCPU,
+			"per_cpu_share": hs.PerCPUShare(),
+			"possible_cpus": hs.Possible,
+			"online_cpus":   hs.Online,
+		}).Info("Scrub handshake maps sized")
+	}
 
 	// Enable kernel-space monitor/dry-run mode if requested. This is
 	// independent of the analyzer's own -dry-run flag: it governs whether
