@@ -40,6 +40,11 @@ const (
 	// Each entry preallocates ~100 bytes per family; past twice the base
 	// size the common LRU's lock contention is the cheaper cost.
 	maxScrubHandshakeEntries = 2 * ScrubHandshakeEntries
+
+	// Approximate preallocated bytes per entry (key, value and htab element
+	// overhead) of scrub_handshakes and scrub_handshakes_v6.
+	handshakeEntryBytesV4 = 105
+	handshakeEntryBytesV6 = 129
 )
 
 // HandshakeSizing is the scrub handshake map layout chosen at load time.
@@ -48,6 +53,9 @@ type HandshakeSizing struct {
 	PerCPU   bool   // BPF_F_NO_COMMON_LRU
 	Possible int
 	Online   int
+	// OnlineErr is set when the online CPUs could not be counted and the
+	// sizing assumed every possible CPU is online.
+	OnlineErr error
 }
 
 // PerCPUShare is how many entries one CPU's LRU list holds; with per-CPU
@@ -57,6 +65,11 @@ func (s HandshakeSizing) PerCPUShare() uint32 {
 		return s.Entries
 	}
 	return s.Entries / uint32(s.Possible)
+}
+
+// EstimatedBytes approximates the memory both handshake maps preallocate.
+func (s HandshakeSizing) EstimatedBytes() uint64 {
+	return uint64(s.Entries) * (handshakeEntryBytesV4 + handshakeEntryBytesV6)
 }
 
 // SizeScrubHandshakes sizes the per-CPU LRU so that the online CPUs, not the
@@ -78,7 +91,10 @@ func SizeScrubHandshakes(mode HandshakeLRU, possible, online int) HandshakeSizin
 		s.Entries = ScrubHandshakeEntries
 	default:
 		s.PerCPU = true
-		s.Entries = uint32(min(need, maxScrubHandshakeEntries))
+		// The kernel rounds max_entries down to a multiple of the possible
+		// CPUs; do the same so Entries and PerCPUShare match the map.
+		capped := max(maxScrubHandshakeEntries/possible, 1) * possible
+		s.Entries = uint32(min(need, capped))
 	}
 	return s
 }

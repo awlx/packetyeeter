@@ -32,7 +32,8 @@ func TestSizeScrubHandshakes(t *testing.T) {
 		{HandshakeLRUAuto, 12, 8, 750000, true},
 		// Possible far above online: the common LRU instead.
 		{HandshakeLRUAuto, 128, 8, 500000, false},
-		{HandshakeLRUPerCPU, 128, 8, 1000000, true},
+		{HandshakeLRUPerCPU, 128, 8, 999936, true},
+		{HandshakeLRUPerCPU, 3, 1, 999999, true},
 		{HandshakeLRUCommon, 8, 8, 500000, false},
 		// Unknown online count falls back to possible.
 		{HandshakeLRUAuto, 4, 0, 500000, true},
@@ -41,6 +42,9 @@ func TestSizeScrubHandshakes(t *testing.T) {
 		if got.Entries != tc.entries || got.PerCPU != tc.perCPU {
 			t.Errorf("%s %d/%d: got %d entries per-CPU=%v, want %d per-CPU=%v",
 				tc.mode, tc.online, tc.possible, got.Entries, got.PerCPU, tc.entries, tc.perCPU)
+		}
+		if got.PerCPU && got.Entries%uint32(got.Possible) != 0 {
+			t.Errorf("%s %d/%d: %d entries is not a multiple of the possible CPUs", tc.mode, tc.online, tc.possible, got.Entries)
 		}
 		if got.PerCPU && got.Entries > maxScrubHandshakeEntries {
 			t.Errorf("%s %d/%d: %d entries exceeds the cap", tc.mode, tc.online, tc.possible, got.Entries)
@@ -70,5 +74,11 @@ func TestParseHandshakeLRU(t *testing.T) {
 	}
 	if _, err := ParseHandshakeLRU("shared"); err == nil {
 		t.Error("accepted an unknown mode")
+	}
+}
+
+func TestHandshakeSizingEstimatedBytes(t *testing.T) {
+	if got := (HandshakeSizing{Entries: ScrubHandshakeEntries}).EstimatedBytes() >> 20; got != 111 {
+		t.Errorf("500k entries = %d MiB, want 111", got)
 	}
 }

@@ -433,7 +433,8 @@ times the possible CPUs. On hosts where all possible CPUs are online that is
   If that is not enough (more than twice as many possible as online CPUs,
   typical of VMs with CPU hotplug headroom), the maps fall back to one common
   LRU list with 500k entries.
-- `percpu`: always per-CPU lists, at most 1M entries; with many more possible
+- `percpu`: always per-CPU lists, at most 1M entries (rounded down to a
+  multiple of the possible CPUs, as the kernel does); with many more possible
   than online CPUs each online CPU then holds less than its share.
 - `common`: one LRU list with 500k entries shared by all CPUs. No CPU evicts
   early, but inserts contend on one lock: on the veth bench (3 sender CPUs) a
@@ -441,8 +442,14 @@ times the possible CPUs. On hosts where all possible CPUs are online that is
   with per-CPU lists.
 
 The maps preallocate about 105 bytes per IPv4 and 129 bytes per IPv6 entry:
-about 111 MiB for the pair at 500k entries, 223 MiB at 1M. The collector logs
-the chosen layout at start-up ("Scrub handshake maps sized"). With per-CPU
+about 111 MiB for the pair at 500k entries, 223 MiB at 1M. With `auto` or
+`percpu`, a host with more possible than online CPUs (but at most twice as
+many) gets more than 500k entries, up to twice the memory of earlier releases;
+set `-scrub-handshake-lru common` to keep 500k entries per family if that
+memory matters more than lock contention. The collector logs the chosen mode,
+entries, per-CPU share and estimated memory at start-up ("Scrub handshake maps
+sized"), and warns if it cannot read `/sys/devices/system/cpu/online` (it then
+sizes for all possible CPUs). With per-CPU
 lists a CPU taking most of a flood still evicts its own oldest entries sooner
 than the total size suggests. A SYN evicted before its ACK is never reported.
 

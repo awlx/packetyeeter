@@ -71,11 +71,14 @@ func (l *Loader) sizeScrubHandshakes(spec *ebpf.CollectionSpec, names ...string)
 	if err != nil {
 		return fmt.Errorf("count possible CPUs: %w", err)
 	}
-	online, err := OnlineCPUs()
-	if err != nil {
-		online = possible // only costs per-CPU capacity on hotplug-capable hosts
+	// On failure assume all possible CPUs are online: that only costs
+	// per-CPU capacity on hotplug-capable hosts. The collector logs it.
+	online, onlineErr := OnlineCPUs()
+	if onlineErr != nil {
+		online = possible
 	}
 	l.handshakes = SizeScrubHandshakes(l.cfg.HandshakeLRU, possible, online)
+	l.handshakes.OnlineErr = onlineErr
 	for _, name := range names {
 		m, ok := spec.Maps[name]
 		if !ok {
