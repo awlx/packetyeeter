@@ -333,6 +333,15 @@ var (
 		Help: "Structured kernel-space enforcement incidents by reason",
 	}, []string{"reason"})
 
+	// Read from the kernel at scrape time. Monitor mode counts matches it
+	// lets through, like the policy_block incident reason.
+	PolicyBlockedPacketsDesc = prometheus.NewDesc("packetyeeter_policy_blocked_packets_total",
+		"Packets matching a -policy block rule, by family (passed instead of dropped in monitor mode)",
+		[]string{"family"}, nil)
+	PolicyBlockedBytesDesc = prometheus.NewDesc("packetyeeter_policy_blocked_bytes_total",
+		"Bytes of packets matching a -policy block rule, by family (passed instead of dropped in monitor mode)",
+		[]string{"family"}, nil)
+
 	// Scrub-mode collector counters, read from the kernel at scrape time.
 	ScrubPacketsDesc = prometheus.NewDesc("packetyeeter_scrub_packets_total",
 		"Packets seen by xdp_scrub by verdict (forward, drop, slow_path, local) and family",

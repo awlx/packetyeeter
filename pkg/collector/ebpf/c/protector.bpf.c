@@ -261,23 +261,24 @@ struct {
     __type(value, struct policy_entry);
 } policy_v6 SEC(".maps");
 
-// Counts packets dropped by an explicit POLICY_BLOCK CIDR rule, keyed by
-// source IP, so the collector can surface policy-engine activity even
-// though (unlike blocked_ips) these blocks are never reported back from
-// the analyzer.
-struct {
-    __uint(type, BPF_MAP_TYPE_LRU_HASH);
-    __uint(max_entries, 4096);
-    __type(key, __u32);
-    __type(value, __u64);
-} policy_blocks SEC(".maps");
+// POLICY_BLOCK matches by family (POLICY_STATS_*). Per-CPU totals rather than
+// a per-source map: a spoofed flood from a blocked prefix would otherwise
+// churn a shared LRU on every packet.
+#define POLICY_STATS_V4   0
+#define POLICY_STATS_V6   1
+#define POLICY_STATS_SIZE 2
+
+struct policy_counter {
+    __u64 packets;
+    __u64 bytes;
+};
 
 struct {
-    __uint(type, BPF_MAP_TYPE_LRU_HASH);
-    __uint(max_entries, 4096);
-    __type(key, struct in6_addr);
-    __type(value, __u64);
-} policy_blocks_v6 SEC(".maps");
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, POLICY_STATS_SIZE);
+    __type(key, __u32);
+    __type(value, struct policy_counter);
+} policy_block_stats SEC(".maps");
 
 // Bad Flags (TCP) - separate because handled by existing logic, but could unify?
 // Keeping existing logical to minimize drift for now.
@@ -916,23 +917,12 @@ static __always_inline int source_allowlisted_v6(struct in6_addr *saddr) {
     return bpf_map_lookup_elem(&allowlist_v6, &key) != NULL;
 }
 
-static __always_inline void count_policy_block_v4(__u32 saddr) {
-    __u64 *cnt = bpf_map_lookup_elem(&policy_blocks, &saddr);
-    if (cnt) {
-        __sync_fetch_and_add(cnt, 1);
-    } else {
-        __u64 one = 1;
-        bpf_map_update_elem(&policy_blocks, &saddr, &one, BPF_ANY);
-    }
-}
-
-static __always_inline void count_policy_block_v6(struct in6_addr *saddr) {
-    __u64 *cnt = bpf_map_lookup_elem(&policy_blocks_v6, saddr);
-    if (cnt) {
-        __sync_fetch_and_add(cnt, 1);
-    } else {
-        __u64 one = 1;
-        bpf_map_update_elem(&policy_blocks_v6, saddr, &one, BPF_ANY);
+// Bytes cover the linear part of the frame only, as in scrub_count.
+static __always_inline void count_policy_block(struct xdp_md *ctx, __u32 idx) {
+    struct policy_counter *c = bpf_map_lookup_elem(&policy_block_stats, &idx);
+    if (c) {
+        c->packets++;
+        c->bytes += ctx->data_end - ctx->data;
     }
 }
 
@@ -946,7 +936,7 @@ static __always_inline int check_policy_v4(struct xdp_md *ctx, __u32 saddr, __u6
     if (policy->action == POLICY_MONITOR) {
         *is_monitor = 1;
     } else if (policy->action == POLICY_BLOCK) {
-        count_policy_block_v4(saddr);
+        count_policy_block(ctx, POLICY_STATS_V4);
         emit_incident_v4(ctx, saddr, INCIDENT_POLICY_BLOCK, now);
         if (!*is_monitor) return CHECK_DROP;
     }
@@ -963,7 +953,7 @@ static __always_inline int check_policy_v6(struct xdp_md *ctx, struct in6_addr *
     if (policy->action == POLICY_MONITOR) {
         *is_monitor = 1;
     } else if (policy->action == POLICY_BLOCK) {
-        count_policy_block_v6(saddr);
+        count_policy_block(ctx, POLICY_STATS_V6);
         emit_incident_v6(ctx, saddr, INCIDENT_POLICY_BLOCK, now);
         if (!*is_monitor) return CHECK_DROP;
     }

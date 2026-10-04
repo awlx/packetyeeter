@@ -1,9 +1,15 @@
 package collector
 
 import (
+	"errors"
+	"io"
+	"strings"
 	"testing"
 
 	"PacketYeeter/pkg/collector/ebpf"
+
+	"github.com/prometheus/client_golang/prometheus/testutil"
+	"github.com/sirupsen/logrus"
 )
 
 func TestParsePolicyRules(t *testing.T) {
@@ -54,5 +60,39 @@ func TestParsePolicyRulesInvalidEntriesReported(t *testing.T) {
 	}
 	if len(rules) != 1 || rules[0].Net.String() != "203.0.113.0/24" {
 		t.Fatalf("expected the one valid rule to still parse, got %+v", rules)
+	}
+}
+
+func TestPolicyBlockMetrics(t *testing.T) {
+	m := &policyBlockMetrics{
+		read: func() ([]ebpf.PolicyCounter, error) {
+			return []ebpf.PolicyCounter{{Packets: 3, Bytes: 300}, {Packets: 5, Bytes: 700}}, nil
+		},
+		logger: logrus.New(),
+	}
+	want := `
+# HELP packetyeeter_policy_blocked_bytes_total Bytes of packets matching a -policy block rule, by family (passed instead of dropped in monitor mode)
+# TYPE packetyeeter_policy_blocked_bytes_total counter
+packetyeeter_policy_blocked_bytes_total{family="ipv4"} 300
+packetyeeter_policy_blocked_bytes_total{family="ipv6"} 700
+# HELP packetyeeter_policy_blocked_packets_total Packets matching a -policy block rule, by family (passed instead of dropped in monitor mode)
+# TYPE packetyeeter_policy_blocked_packets_total counter
+packetyeeter_policy_blocked_packets_total{family="ipv4"} 3
+packetyeeter_policy_blocked_packets_total{family="ipv6"} 5
+`
+	if err := testutil.CollectAndCompare(m, strings.NewReader(want)); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestPolicyBlockMetricsReadError(t *testing.T) {
+	logger := logrus.New()
+	logger.SetOutput(io.Discard)
+	m := &policyBlockMetrics{
+		read:   func() ([]ebpf.PolicyCounter, error) { return nil, errors.New("map not loaded") },
+		logger: logger,
+	}
+	if got := testutil.CollectAndCount(m); got != 0 {
+		t.Errorf("series on read error = %d, want 0", got)
 	}
 }
