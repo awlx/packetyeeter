@@ -2,20 +2,32 @@
 
 ## 2026-10-04 - Scrub block fan-out requires a certificate allowlist
 
-- Scrub block fan-out no longer trusts the role a collector announces. Any
-  client that could reach the signal listener could announce scrub mode,
-  trip the rate limit for a victim address and have it blocked on every scrub
-  node. New analyzer flag `-scrub-client-names` (requires `-tls-client-ca`)
-  lists the scrub collectors' certificate names; a block is fanned out only
-  from and to streams that announced scrub mode with a listed certificate.
-  **Empty (the default) disables cross-node fan-out**: each scrub node again
-  gets only the blocks decided from its own signals. The list only gates
-  fan-out; any connected collector still adds evidence to the shared
-  per-source state.
+- Scrub block fan-out no longer trusts the role a collector announces, nor
+  evidence from collectors outside an allowlist. Before, any client that could
+  reach the signal listener could announce scrub mode, or just feed signals
+  for a victim address, and have it blocked on every scrub node.
+- New analyzer flag `-scrub-client-names` (requires `-tls-client-ca`) lists
+  the scrub collectors' certificate names. **Empty (the default) disables
+  cross-node fan-out**: each scrub node gets only the blocks decided from its
+  own signals.
+- A block fans out only when a trusted-only rate limiter or reputation score
+  (fed by listed scrub streams alone) crosses the threshold, and only from
+  and to listed scrub streams. Sources split across trusted nodes are still
+  judged on their total.
+- Not covered: any connected collector still feeds the shared per-source
+  state, so it can get a source blocked on whichever single stream next
+  reports it, including a scrub node. AI-detection and sustained-download
+  blocks (`Broadcast`) still go to every collector, except that with the
+  allowlist set they skip trusted scrub nodes unless a trusted scrub stream
+  reported that source in the last 10 minutes.
+- The 60-second block dedup now tracks which collectors got a block and at
+  what scope: a block reserved by one stream (possibly untrusted) no longer
+  swallows a later trusted fan-out or `Broadcast` of the same source; those
+  still reach every collector that has not had it.
 - Fan-out commands go through one ordered, bounded queue (256) per scrub
-  peer instead of a goroutine per command, so a block and a later unblock
-  reach each peer in order. A full queue drops the command for that peer and
-  increments the new counter `packetyeeter_scrub_command_fanout_dropped_total`.
+  peer, so blocks reach each peer in decision order (only blocks are fanned
+  out today; unblocks would use the same queue). New counter
+  `packetyeeter_scrub_command_fanout_dropped_total{reason="queue_full"|"role_changed"}`.
 - `packetyeeter_scrub_command_fanout_total` now counts only sends the
   transport accepted.
 

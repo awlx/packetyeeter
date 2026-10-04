@@ -478,35 +478,65 @@ some legitimate clients exceed the default timeout; raise
 `-handshake-timeout` if that shows up as false positives.
 
 Blocks with several nodes: ECMP gives each node only part of a source's
-traffic, so a `BLOCK_IP` the analyzer decides from a scrub collector's signals
-can be sent to every connected scrub collector, not only the one whose signals
+traffic, so a `BLOCK_IP` the analyzer decides from scrub collectors' signals
+can be sent to every connected scrub collector, not only the one whose signal
 crossed the threshold. This fan-out is off unless the analyzer runs with mTLS
 (`-tls-client-ca`) and `-scrub-client-names` lists the scrub nodes'
 certificate names (DNS SAN or CommonName), for example
-`-scrub-client-names scrub-1.example.net,scrub-2.example.net`. The role a
-collector announces is not trusted on its own: a block is fanned out only when
-the originating stream announced scrub mode *and* its verified certificate is
-on the list, and only to other streams that meet both conditions. With the
-list empty the analyzer logs at start-up that fan-out is off, and each scrub
-node only gets the blocks decided from its own signals, as before. A stream
-that announces scrub mode with an unlisted certificate is logged once and
-still gets its own blocks and runtime rules.
+`-scrub-client-names scrub-1.example.net,scrub-2.example.net`. A *trusted
+scrub stream* is one whose verified certificate is on the list and that
+announced scrub mode; the announced role alone is not trusted. With the list
+empty the analyzer logs at start-up that fan-out is off, and each scrub node
+only gets the blocks decided from its own signals. A stream that announces
+scrub mode with an unlisted certificate is logged once and still gets its own
+blocks and runtime rules.
 
-The allowlist only gates fan-out. Any collector that can connect still adds
-evidence to the analyzer's shared per-source state (rate limit, reputation,
-AI windows), so it can push a source towards a block on its own stream and
-make that source's later blocks from listed nodes more likely. Restrict who
-can connect at all with mTLS and a firewall.
+What decides a fan-out: the analyzer keeps a second rate limiter (same
+limits) and a second reputation score that only trusted scrub streams feed.
+A block fans out only when that trusted-only state crosses the threshold, the
+originating stream is a trusted scrub stream, and it goes only to other
+trusted scrub streams. Signals from several trusted nodes still add up, so a
+source split across them is judged on their total.
+
+What is and is not protected:
+
+- A collector outside the allowlist (a host-mode collector, an unlisted
+  certificate, or any client on a plaintext listener) cannot cause a block on
+  any scrub node other than the one whose signal crossed the threshold, and
+  cannot stop a trusted fan-out: a block it reserved in the 60-second dedup
+  only for its own stream does not suppress a later trusted fan-out or
+  `Broadcast` of the same source, which still reach every collector that has
+  not had it.
+- It still feeds the shared per-source state (rate limit, reputation, AI
+  windows). It can push a source over the shared threshold, and the next
+  signal for that source from any stream, including a trusted scrub node, then
+  blocks it *on that stream only*. So an untrusted collector can get a
+  victim blocked on one scrub node at a time, not on all of them. Only
+  rate-limit trips from trusted streams feed the trusted reputation; AI and
+  bot-verification penalties do not, so reputation blocks rarely fan out.
+- AI detections and sustained-download holds use `Broadcast`, which sends to
+  every collector as before (host-mode included). With `-scrub-client-names`
+  set it skips trusted scrub collectors unless a trusted scrub stream
+  reported that source in the last 10 minutes, so evidence from untrusted
+  streams alone does not reach them through this path either. With the list
+  empty `Broadcast` reaches every collector, as before.
+- Restrict who can connect at all with mTLS and a firewall; the allowlist
+  does not.
 
 Each node expires a block from the time it received it and its own
 `-block-duration`, so nodes can drop a fanned-out block at slightly different
-times. Dry-run, the kill switch and the 60-second block dedup apply once per
-decision, and `WatchDecisions` publishes it once. Each peer has its own
-ordered queue of 256 commands, sent by one worker, so a stalled peer neither
-delays the originating node nor reorders a block and a later unblock; when a
-peer's queue is full the command is dropped for that peer and
-`packetyeeter_scrub_command_fanout_dropped_total` increases (the send
-watchdog closes a peer that stops reading for 30 seconds).
+times. Dry-run and the kill switch are checked before the dedup, once per
+decision. `WatchDecisions` publishes a decision once; a decision that widens
+an earlier, narrower block of the same source (for example a trusted fan-out
+after a local block) is published again. Each peer has its own ordered queue
+of 256 commands, sent by one worker, so a stalled peer does not delay the
+originating node and blocks reach each peer in decision order (the analyzer
+only fans out blocks today; unblocks would take the same queue). A command
+that cannot be sent to a peer is dropped and counted in
+`packetyeeter_scrub_command_fanout_dropped_total`: `reason="queue_full"` when
+the peer's queue is full (the send watchdog closes a peer that stops reading
+for 30 seconds), `reason="role_changed"` when the peer stopped being a
+trusted scrub stream after the command was queued.
 `packetyeeter_scrub_command_fanout_total` counts fan-out sends the transport
 accepted. A scrub node that connects after the block does not get it. Blocks
 decided from host-mode collectors still go only to that collector.
