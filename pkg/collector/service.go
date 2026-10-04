@@ -580,6 +580,8 @@ func (c *Collector) connectToAnalyzer() error {
 	conn, err := grpc.DialContext(ctx, c.Config.AnalyzerAddr,
 		grpc.WithTransportCredentials(c.analyzerCreds),
 		grpc.WithBlock(),
+		// Otherwise a TLS failure surfaces only as "context deadline exceeded".
+		grpc.WithReturnConnectionError(),
 		grpc.WithKeepaliveParams(keepalive.ClientParameters{
 			Time:                10 * time.Second,
 			Timeout:             3 * time.Second,

@@ -118,9 +118,19 @@ service user). The analyzer unit's `ProtectSystem=strict` still allows reading
 
 Certificates, keys and CA bundles are re-read without a restart: before each
 new TLS handshake the file's modification time and size are checked, and the
-file is parsed again when they changed. Existing connections keep the
-certificate they were established with; collectors pick up a new analyzer
-certificate when they reconnect.
+file is parsed again when they changed. The analyzer also checks
+`-tls-client-ca` every 10 seconds; when it changed, connections whose client
+certificate no longer verifies against it are closed at once (logged as
+`Closing connection: client certificate is not trusted by the reloaded
+-tls-client-ca`), with their open streams. Other connections keep the
+certificates they were established with until the analyzer closes them after
+`-grpc-max-connection-age` (default `1h`, ±10%) plus
+`-grpc-max-connection-age-grace` (default `30s`) for open streams; clients
+then reconnect with a new handshake. So a rotated analyzer certificate or
+client certificate is in use everywhere within about an hour. Collectors
+reconnect on their own and are resynced; controllers holding a
+`WatchDecisions` stream must reconnect too. Set `-grpc-max-connection-age 0`
+to keep connections indefinitely.
 
 - Replace files atomically (write to a temporary file in the same directory,
   then `mv`). A certificate and key that do not match yet, or a file that does
@@ -131,8 +141,10 @@ certificate when they reconnect.
   (`-tls-client-ca`, `-analyzer-tls-ca`), then issue new certificates, then
   remove the old CA.
 - The analyzer does not check revocation lists. To cut off a compromised
-  client certificate, rotate to a new CA or remove its name from
-  `-control-client-names`.
+  client certificate, rotate to a new CA: once the old CA is removed from
+  `-tls-client-ca`, its clients are disconnected within about 10 seconds and
+  cannot reconnect. Removing its name from `-control-client-names` needs a
+  restart, which also ends its connections.
 
 ### Control-plane authorization
 
