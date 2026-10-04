@@ -101,10 +101,43 @@ type Config struct {
 
 	// TLS on the gRPC listener; zero value is plaintext.
 	TLS grpctls.ServerConfig
+	// GRPCMaxConnectionAge closes gRPC connections after this long (0 = never)
+	// so every client re-handshakes against the current certificates and CA
+	// bundle; GRPCMaxConnectionAgeGrace is how long open streams get after
+	// that before the connection is cut.
+	GRPCMaxConnectionAge      time.Duration
+	GRPCMaxConnectionAgeGrace time.Duration
 	// ControlClientNames, when set, restricts ControlMethods to clients whose
 	// verified certificate has one of these DNS SANs or CommonNames.
 	// Requires TLS.ClientCAFile.
 	ControlClientNames []string
+}
+
+const (
+	DefaultGRPCMaxConnectionAge      = time.Hour
+	DefaultGRPCMaxConnectionAgeGrace = 30 * time.Second
+	// How soon a changed -tls-client-ca cuts open connections it no longer
+	// trusts.
+	clientCACheckInterval = 10 * time.Second
+)
+
+// runClientCAEnforcer closes connections whose client certificate a
+// reloaded -tls-client-ca no longer trusts; authorization only looks at the
+// handshake, so they would otherwise keep their streams.
+func (a *Analyzer) runClientCAEnforcer(e grpctls.ClientCAEnforcer) {
+	defer a.wg.Done()
+	ticker := time.NewTicker(clientCACheckInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-a.ctx.Done():
+			return
+		case <-ticker.C:
+			if n := e.CloseUntrusted(); n > 0 {
+				logrus.WithField("connections", n).Warn("Closed gRPC connections no longer trusted by the reloaded client CA bundle")
+			}
+		}
+	}
 }
 
 // ControlMethods are the control-plane RPCs gated by ControlClientNames.
@@ -605,10 +638,18 @@ func (a *Analyzer) Start() error {
 	a.listener = lis
 
 	var opts []grpc.ServerOption
-	opts = append(opts, grpc.KeepaliveParams(keepalive.ServerParameters{
+	kp := keepalive.ServerParameters{
 		Time:    10 * time.Second,
 		Timeout: 3 * time.Second,
-	}))
+	}
+	if a.Config.GRPCMaxConnectionAge > 0 {
+		kp.MaxConnectionAge = a.Config.GRPCMaxConnectionAge
+		kp.MaxConnectionAgeGrace = a.Config.GRPCMaxConnectionAgeGrace
+		if kp.MaxConnectionAgeGrace <= 0 {
+			kp.MaxConnectionAgeGrace = DefaultGRPCMaxConnectionAgeGrace
+		}
+	}
+	opts = append(opts, grpc.KeepaliveParams(kp))
 	opts = append(opts, grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
 		MinTime:             5 * time.Second,
 		PermitWithoutStream: true,
@@ -624,6 +665,10 @@ func (a *Analyzer) Start() error {
 	}
 	if a.grpcCreds != nil {
 		opts = append(opts, grpc.Creds(a.grpcCreds))
+	}
+	if enforcer, ok := a.grpcCreds.(grpctls.ClientCAEnforcer); ok {
+		a.wg.Add(1)
+		go a.runClientCAEnforcer(enforcer)
 	}
 	if a.controlAuthz != nil {
 		opts = append(opts,
