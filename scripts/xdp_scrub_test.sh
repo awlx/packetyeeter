@@ -732,7 +732,7 @@ for _ in $(seq 100); do [[ "$(readyz)" == ready ]] && break; sleep 0.2; done
 kill "$SINK_PID"; wait "$SINK_PID" 2>/dev/null || true
 sleep 0.5
 [[ "$(readyz_code)" == 200 ]] && pass "grace set: 200 within the grace period" || bad "within grace: $(readyz)"
-sleep 2
+for _ in $(seq 25); do [[ "$(readyz)" == *"analyzer: stream down"* ]] && break; sleep 0.2; done
 [[ "$(readyz)" == *"analyzer: stream down"* ]] && pass "grace set: 503 after the grace period" || bad "after grace: $(readyz)"
 ip netns exec "$NS_SCR" "$SINK_BIN" 127.0.0.1:59999 "$CMD_FIFO" >>"$SINK_LOG" 2>&1 &
 SINK_PID=$!
