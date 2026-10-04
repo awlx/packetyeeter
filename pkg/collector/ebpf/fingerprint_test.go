@@ -7,6 +7,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/cilium/ebpf"
 )
 
 func TestFingerprintLayout(t *testing.T) {
@@ -95,5 +97,74 @@ func TestSumFingerprints(t *testing.T) {
 	}
 	if got[1].Key.Proto != 6 || got[1].Packets != 5 || got[1].Bytes != 300 {
 		t.Errorf("second = %+v, want proto 6, 5 packets, 300 bytes", got[1])
+	}
+}
+
+// fakeFPMap is a per-CPU fingerprint map on a kernel without batch ops.
+type fakeFPMap struct {
+	entries map[FingerprintKey][]ScrubCounter
+	order   []FingerprintKey
+	deleted []FingerprintKey
+}
+
+func (m *fakeFPMap) String() string { return "fake-fp" }
+
+func (m *fakeFPMap) BatchLookupAndDelete(*ebpf.MapBatchCursor, any, any, *ebpf.BatchOptions) (int, error) {
+	return 0, fmt.Errorf("map batch lookup and delete: %w", ebpf.ErrNotSupported)
+}
+
+func (m *fakeFPMap) Delete(key any) error {
+	k := *key.(*FingerprintKey)
+	if _, ok := m.entries[k]; !ok {
+		return ebpf.ErrKeyNotExist
+	}
+	delete(m.entries, k)
+	m.deleted = append(m.deleted, k)
+	return nil
+}
+
+type fakeFPIter struct {
+	m   *fakeFPMap
+	pos int
+}
+
+func (it *fakeFPIter) Next(k, v any) bool {
+	for it.pos < len(it.m.order) {
+		key := it.m.order[it.pos]
+		it.pos++
+		if val, ok := it.m.entries[key]; ok {
+			*k.(*FingerprintKey) = key
+			*v.(*[]ScrubCounter) = append([]ScrubCounter(nil), val...)
+			return true
+		}
+	}
+	return false
+}
+
+func (it *fakeFPIter) Err() error { return nil }
+
+func (m *fakeFPMap) iterate() entryIterator { return &fakeFPIter{m: m} }
+
+func TestDrainFingerprintsWithoutBatchOps(t *testing.T) {
+	m := &fakeFPMap{entries: map[FingerprintKey][]ScrubCounter{}}
+	for i, pc := range [][]ScrubCounter{
+		{{1, 100}, {2, 200}},
+		{{0, 0}, {4, 400}},
+		{{0, 0}, {0, 0}},
+	} {
+		k := FingerprintKey{Proto: uint8(i + 1)}
+		m.entries[k] = pc
+		m.order = append(m.order, k)
+	}
+
+	got, err := drainFingerprints(m, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].Packets != 3 || got[0].Bytes != 300 || got[1].Packets != 4 {
+		t.Fatalf("drained %+v, want 3 and 4 packets", got)
+	}
+	if len(m.entries) != 0 || len(m.deleted) != 3 {
+		t.Fatalf("%d entries left, %d deleted; want the map emptied", len(m.entries), len(m.deleted))
 	}
 }

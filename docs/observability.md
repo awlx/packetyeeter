@@ -343,7 +343,8 @@ time:
 - `packetyeeter_scrub_fingerprint_buckets` (gauge): fingerprint buckets read
   in the last `-fingerprint-interval`, before the caps.
 - `packetyeeter_scrub_fingerprint_overflow_total` (counter): packets not
-  fingerprinted because the map was full (a new bucket that did not fit). A
+  fingerprinted because the map was full (a new bucket that did not fit), or,
+  rarely, because the insert lost a bucket-lock race. A
   rising rate is expected under spoofed-source floods; the sent top buckets
   then reflect the earliest traffic of each interval.
 - `packetyeeter_scrub_fingerprint_capped_total{kind}` (counter): buckets

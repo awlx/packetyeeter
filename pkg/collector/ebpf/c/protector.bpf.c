@@ -1906,6 +1906,7 @@ __attribute__((noinline)) int scrub_match_rules(struct rule_pkt *p) {
 #define FP_MAP_SIZE 65536
 #define CONFIG_KEY_FINGERPRINT 6
 #define FP_EEXIST 17
+#define FP_E2BIG 7
 
 struct fp_key {
     __u32 dst[4];
@@ -1978,7 +1979,10 @@ static __always_inline void fp_bump(void *map, struct fp_key *k, __u64 len, __u3
     }
     if (o) {
         o->packets++;
-        o->full_gen = gen;
+        // Only a full map stays full; a failed bucket lock (-EBUSY, or
+        // -ETIMEDOUT/-EDEADLK with rqspinlock) is worth retrying next packet.
+        if (err == -FP_E2BIG)
+            o->full_gen = gen;
     }
 }
 
