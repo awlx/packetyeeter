@@ -10,6 +10,7 @@ import (
 	"PacketYeeter/pkg/analyzer"
 	"PacketYeeter/pkg/grpctls"
 	"PacketYeeter/pkg/grpctls/grpctlstest"
+	"PacketYeeter/pkg/ratelimit"
 )
 
 // recvBlocks forwards every BLOCK_IP a collector stream receives.
@@ -30,8 +31,13 @@ func recvBlocks(stream apiv1.AnalyzerService_StreamSignalsClient) <-chan *apiv1.
 	return out
 }
 
+// fanoutBurst is the per-source burst of the zero-refill limiters the
+// fan-out tests install, so whether a signal trips does not depend on timing.
+const fanoutBurst = 200
+
 // startFanoutAnalyzer runs an mTLS analyzer whose -scrub-client-names are
-// scrub-a and scrub-b, and returns a dialer for clients by certificate name.
+// scrub-a and scrub-b, with zero-refill rate limiters, and returns a dialer
+// for clients by certificate name.
 func startFanoutAnalyzer(t *testing.T) (*analyzer.Analyzer, func(name string) apiv1.AnalyzerServiceClient) {
 	t.Helper()
 	dir := t.TempDir()
@@ -39,17 +45,36 @@ func startFanoutAnalyzer(t *testing.T) (*analyzer.Analyzer, func(name string) ap
 	caFile := ca.WriteCA(t, dir, "ca")
 	serverCert, serverKey := ca.IssueServer(t, "analyzer", "127.0.0.1").Write(t, dir, "analyzer")
 
-	a := startTestAnalyzer(t, func(cfg *analyzer.Config) {
-		cfg.TLS = grpctls.ServerConfig{CertFile: serverCert, KeyFile: serverKey, ClientCAFile: caFile}
-		cfg.ScrubClientNames = []string{"scrub-a", "scrub-b"}
-		cfg.DryRun = false
-		cfg.EnableWatchAPI = true
+	cfg := analyzer.Config{
+		ListenAddr:     reserveTCPAddr(t),
+		MetricsAddr:    reserveTCPAddr(t),
+		JA4DBCachePath: writeJA4Cache(t),
+		StateDir:       t.TempDir(),
+		AIWorkers:      1,
+		AIQueueSize:    100,
+		EnableWatchAPI: true,
+		TLS:            grpctls.ServerConfig{CertFile: serverCert, KeyFile: serverKey, ClientCAFile: caFile},
 		// Isolate the rate-limit path: no reputation or AI blocks.
-		cfg.ReputationThreshold = 1e9
-		cfg.AIBlockScoreThreshold = 1e9
-		cfg.AISuspiciousScoreThreshold = 1e9
-		cfg.DisableDDoSCategory = true
-	})
+		ScrubClientNames:           []string{"scrub-a", "scrub-b"},
+		ReputationThreshold:        1e9,
+		AIConfidenceThreshold:      0.1,
+		AIBlockScoreThreshold:      1e9,
+		AISuspiciousScoreThreshold: 1e9,
+		DisableDDoSCategory:        true,
+	}
+	a, err := analyzer.New(cfg)
+	if err != nil {
+		t.Fatalf("create analyzer: %v", err)
+	}
+	noRefill := 0.0
+	limits := ratelimit.Config{IPRateExact: &noRefill, IPBurst: fanoutBurst}
+	a.RateLimiter = ratelimit.NewLimiter(limits)
+	a.ScrubRateLimiter = ratelimit.NewLimiter(limits)
+	if err := a.Start(); err != nil {
+		t.Fatalf("start analyzer: %v", err)
+	}
+	t.Cleanup(a.Close)
+
 	dial := func(name string) apiv1.AnalyzerServiceClient {
 		cert, key := ca.IssueClient(t, name, name).Write(t, dir, name)
 		return dialAnalyzer(t, a.Config.ListenAddr, grpctls.ClientConfig{CAFile: caFile, CertFile: cert, KeyFile: key})
@@ -108,10 +133,9 @@ func TestScrubBlockFanoutOverGRPC(t *testing.T) {
 	}
 	blocksA, blocksB, blocksHost := recvBlocks(scrubA), recvBlocks(scrubB), recvBlocks(host)
 
-	// Default per-IP burst is 200: each node alone stays at it, the total
-	// exceeds it.
+	// Each node alone stays at the burst; the total exceeds it.
 	src := net.ParseIP("198.51.100.77").To4()
-	sendSignals(t, src, 200, scrubA, scrubB)
+	sendSignals(t, src, fanoutBurst, scrubA, scrubB)
 
 	for name, ch := range map[string]<-chan *apiv1.Command{"A": blocksA, "B": blocksB} {
 		select {
@@ -146,6 +170,27 @@ func TestScrubBlockFanoutOverGRPC(t *testing.T) {
 	}
 }
 
+func expectBlock(t *testing.T, ctx context.Context, name string, ch <-chan *apiv1.Command, want net.IP) {
+	t.Helper()
+	select {
+	case cmd := <-ch:
+		if !net.IP(cmd.GetIp()).Equal(want) {
+			t.Fatalf("%s got block for %v, want %v", name, net.IP(cmd.GetIp()), want)
+		}
+	case <-ctx.Done():
+		t.Fatalf("%s never received the block for %v", name, want)
+	}
+}
+
+func expectNoBlock(t *testing.T, name string, ch <-chan *apiv1.Command) {
+	t.Helper()
+	select {
+	case cmd := <-ch:
+		t.Fatalf("%s received %v", name, cmd)
+	case <-time.After(500 * time.Millisecond):
+	}
+}
+
 // A collector with a valid certificate that is not on -scrub-client-names
 // can announce scrub mode and trip the limiter for a victim, but the block
 // stays on its own stream and never reaches the real scrub nodes.
@@ -162,19 +207,48 @@ func TestUntrustedScrubCannotFanOutOverGRPC(t *testing.T) {
 	blocksA, blocksRogue := recvBlocks(scrubA), recvBlocks(rogue)
 
 	victim := net.ParseIP("198.51.100.88").To4()
-	sendSignals(t, victim, 201, rogue)
+	sendSignals(t, victim, fanoutBurst+1, rogue)
 
+	expectBlock(t, ctx, "rogue", blocksRogue, victim)
+	expectNoBlock(t, "trusted scrub node", blocksA)
+}
+
+// An unlisted collector drains a victim's shared bucket without tripping it;
+// the next trusted scrub signal trips the shared limiter, but the block stays
+// on that trusted node instead of fanning out.
+func TestUntrustedEvidenceCannotTriggerFanoutOverGRPC(t *testing.T) {
+	_, dial := startFanoutAnalyzer(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	scrubA := connectScrubCollector(t, ctx, dial("scrub-a"))
+	recvRules(t, scrubA)
+	scrubB := connectScrubCollector(t, ctx, dial("scrub-b"))
+	recvRules(t, scrubB)
+	rogue, err := dial("rogue-host").StreamSignals(ctx)
+	if err != nil {
+		t.Fatalf("open rogue stream: %v", err)
+	}
+	blocksA, blocksB, blocksRogue := recvBlocks(scrubA), recvBlocks(scrubB), recvBlocks(rogue)
+
+	victim := net.ParseIP("198.51.100.99").To4()
+	sendSignals(t, victim, fanoutBurst, rogue)
+	// The analyzer handles a stream's signals in order and ends it only after
+	// the last one, so once the rogue stream closes its evidence is in.
+	if err := rogue.CloseSend(); err != nil {
+		t.Fatalf("close rogue stream: %v", err)
+	}
 	select {
-	case cmd := <-blocksRogue:
-		if !net.IP(cmd.GetIp()).Equal(victim) {
-			t.Fatalf("rogue got block for %v, want %v", net.IP(cmd.GetIp()), victim)
+	case cmd, open := <-blocksRogue:
+		if open {
+			t.Fatalf("rogue received %v without crossing the limit", cmd)
 		}
 	case <-ctx.Done():
-		t.Fatal("rogue collector never received its own block")
+		t.Fatal("rogue stream never ended")
 	}
-	select {
-	case cmd := <-blocksA:
-		t.Fatalf("trusted scrub node received %v from an untrusted origin", cmd)
-	case <-time.After(500 * time.Millisecond):
-	}
+	sendSignals(t, victim, 1, scrubA)
+
+	expectBlock(t, ctx, "scrub A", blocksA, victim)
+	expectNoBlock(t, "scrub B", blocksB)
 }
