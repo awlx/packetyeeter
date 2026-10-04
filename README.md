@@ -302,7 +302,7 @@ sudo ./packetyeeter-collector -i eth0 -analyzer-addr 127.0.0.1:9090
 | `-inside-if` | `""` | Scrub mode: inside port clean traffic is forwarded to. Required in scrub mode; rejected in host mode. |
 | `-xdp-mode` | `auto` | XDP attach mode: `auto` (kernel default; in scrub mode native, failing unless `-allow-generic`), `native`, or `generic`. |
 | `-allow-generic` | `false` | Scrub mode: allow generic XDP. Labs only; far slower than native. Rejected in host mode. |
-| `-readyz-analyzer-grace` | `0` | Scrub mode: `0` leaves the analyzer out of readiness; a lost stream only marks the node degraded (`/readyz` body, `packetyeeter_scrub_analyzer_stream_up`). Above 0, `/readyz` needs the stream (not ready until it first connects) and stays ready this long after it breaks. Forwarding never depends on the analyzer. |
+| `-readyz-analyzer-grace` | `0` | Scrub mode: `0` leaves the analyzer out of readiness; a lost stream only marks the node degraded (`/readyz` body, `packetyeeter_scrub_analyzer_stream_up`). Above 0, `/readyz` needs the stream (not ready until the first rule set arrives from the analyzer) and stays ready this long after it breaks. Forwarding never depends on the analyzer. |
 | `-readyz-drain` | `5s` | Scrub mode: how long `/readyz` reports not ready on shutdown before XDP detaches. The control plane keeps running meanwhile. |
 | `-handshake-timeout` | `3s` | How long a SYN may go without the client's ACK before it is reported to the analyzer as an incomplete handshake. Applies in both modes. |
 | `-scrub-slow-path-pps` | `100000` | Scrub mode: max packets/s handed to the kernel slow path across all CPUs; excess is dropped (counted in monitor mode). `0` = unlimited. |

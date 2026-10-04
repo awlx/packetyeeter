@@ -732,18 +732,37 @@ log "analyzer stream: degraded by default, readiness only with -readyz-analyzer-
 stop_collector
 readyz() { scr curl -s "http://$METRICS/readyz" || true; }
 readyz_code() { scr curl -s -o /dev/null -w '%{http_code}' "http://$METRICS/readyz" || true; }
+# start_sink [sync]: "sync" answers the role signal with a rule set, as the
+# analyzer does; without it the sink accepts the stream but sends no rules.
+start_sink() {
+  if [[ "${1:-}" == sync ]]; then
+    ip netns exec "$NS_SCR" env SINK_SYNC_RULES=1 "$SINK_BIN" 127.0.0.1:59999 "$CMD_FIFO" >>"$SINK_LOG" 2>&1 &
+  else
+    ip netns exec "$NS_SCR" "$SINK_BIN" 127.0.0.1:59999 "$CMD_FIFO" >>"$SINK_LOG" 2>&1 &
+  fi
+  SINK_PID=$!
+}
+stop_sink() { kill "$SINK_PID" 2>/dev/null || true; wait "$SINK_PID" 2>/dev/null || true; }
+# Streams under 30s grow the collector's redial backoff up to 30s.
+REDIAL_WAIT=225 # x 0.2s
+losses() { grep -c "Lost connection to analyzer" "$COLLECTOR_LOG" || true; }
+stream_up() { metric packetyeeter_scrub_analyzer_stream_up; }
+down_seconds() { metric packetyeeter_scrub_analyzer_stream_down_seconds; }
 start_collector
 [[ "$(readyz_code)" == 200 && "$(readyz)" == *"degraded: analyzer stream not connected yet"* ]] \
   && pass "no analyzer: /readyz 200 and reports degraded" || bad "no analyzer, default: $(readyz_code) $(readyz)"
-[[ "$(metric packetyeeter_scrub_analyzer_stream_up)" == 0 ]] && increased 0 "$(metric packetyeeter_scrub_analyzer_stream_down_seconds)" \
-  && pass "stream_up 0, down_seconds rising" || bad "stream_up=$(metric packetyeeter_scrub_analyzer_stream_up) down=$(metric packetyeeter_scrub_analyzer_stream_down_seconds)"
+[[ "$(stream_up)" == 0 ]] && increased 0 "$(down_seconds)" \
+  && pass "stream_up 0, down_seconds rising" || bad "stream_up=$(stream_up) down=$(down_seconds)"
 stop_collector
+stop_sink
+start_sink sync
+sleep 0.5
 start_collector -analyzer-addr 127.0.0.1:59999
-for _ in $(seq 25); do [[ "$(metric packetyeeter_scrub_analyzer_stream_up)" == 1 ]] && break; sleep 0.2; done
-[[ "$(readyz)" == ready && "$(metric packetyeeter_scrub_analyzer_stream_down_seconds)" == 0 ]] \
-  && pass "stream up: not degraded" || bad "stream up: $(readyz), down_seconds=$(metric packetyeeter_scrub_analyzer_stream_down_seconds)"
-kill "$SINK_PID"; wait "$SINK_PID" 2>/dev/null || true
-for _ in $(seq 25); do [[ "$(metric packetyeeter_scrub_analyzer_stream_up)" == 0 ]] && break; sleep 0.2; done
+for _ in $(seq 25); do [[ "$(stream_up)" == 1 ]] && break; sleep 0.2; done
+[[ "$(readyz)" == ready && "$(down_seconds)" == 0 ]] \
+  && pass "stream up: not degraded" || bad "stream up: $(readyz), down_seconds=$(down_seconds)"
+stop_sink
+for _ in $(seq 25); do [[ "$(stream_up)" == 0 ]] && break; sleep 0.2; done
 sleep 1
 [[ "$(readyz_code)" == 200 && "$(readyz)" == *"degraded: analyzer stream down for"* ]] \
   && pass "analyzer lost: /readyz stays 200, reports degraded" || bad "analyzer lost, default: $(readyz_code) $(readyz)"
@@ -754,27 +773,52 @@ launch_collector -analyzer-addr 127.0.0.1:59999 -readyz-analyzer-grace 2s
 for _ in $(seq 25); do [[ "$(readyz)" == *"analyzer: stream not connected yet"* ]] && break; sleep 0.2; done
 [[ "$(readyz)" == *"analyzer: stream not connected yet"* ]] && pass "grace set: /readyz 503 until the analyzer stream is up" \
   || bad "grace set, no analyzer: $(readyz)"
-ip netns exec "$NS_SCR" "$SINK_BIN" 127.0.0.1:59999 "$CMD_FIFO" >>"$SINK_LOG" 2>&1 &
-SINK_PID=$!
-for _ in $(seq 100); do [[ "$(readyz)" == ready ]] && break; sleep 0.2; done
-[[ "$(readyz)" == ready ]] && pass "grace set: /readyz 200 once the stream is up" || bad "grace set, analyzer up: $(readyz)"
-# A stream that breaks within 30s does not end the outage counted since start-up.
-kill "$SINK_PID"; wait "$SINK_PID" 2>/dev/null || true
+# A stream alone is not enough: the node needs the analyzer's rule set.
+before=$(connects)
+start_sink
+for _ in $(seq "$REDIAL_WAIT"); do (( $(connects) > before )) && break; sleep 0.2; done
+sleep 2
+[[ "$(readyz_code)" == 503 && "$(readyz)" == *"no rules received yet"* && "$(stream_up)" == 0 ]] \
+  && pass "grace set: /readyz 503 while the stream sends no rules" \
+  || bad "stream without rules: $(readyz_code) $(readyz) stream_up=$(stream_up)"
+stop_sink
+start_sink sync
+for _ in $(seq "$REDIAL_WAIT"); do [[ "$(readyz)" == ready ]] && break; sleep 0.2; done
+[[ "$(readyz)" == ready && "$(stream_up)" == 1 ]] && pass "grace set: /readyz 200 once the first rule set arrives" \
+  || bad "grace set, analyzer up: $(readyz) stream_up=$(stream_up)"
+# A stream that ends before sending rules (an analyzer at -max-collectors
+# accepts and drops it) must not end the outage: down_seconds keeps counting
+# from the loss of the synced stream, past the short stream's own age.
+stop_sink
+lost=$(date +%s.%N)
 for _ in $(seq 25); do [[ "$(readyz)" == *"analyzer: stream down"* ]] && break; sleep 0.2; done
-[[ "$(readyz)" == *"analyzer: stream down"* ]] && pass "grace set: short-lived stream does not restart the grace" \
-  || bad "short-lived stream: $(readyz)"
-ip netns exec "$NS_SCR" "$SINK_BIN" 127.0.0.1:59999 "$CMD_FIFO" >>"$SINK_LOG" 2>&1 &
-SINK_PID=$!
-for _ in $(seq 100); do [[ "$(readyz)" == ready ]] && break; sleep 0.2; done
-sleep 31 # past analyzerConnectionStable, so the loss starts a fresh grace period
-kill "$SINK_PID"; wait "$SINK_PID" 2>/dev/null || true
+before=$(connects)
+start_sink
+for _ in $(seq "$REDIAL_WAIT"); do (( $(connects) > before )) && break; sleep 0.2; done
+opened=$(date +%s.%N)
+sleep 3
+during="$(readyz_code) $(stream_up)"
+before=$(losses)
+stop_sink
+for _ in $(seq 50); do (( $(losses) > before )) && break; sleep 0.1; done
+sleep 0.5
+down=$(down_seconds)
+awk -v d="$down" -v l="$lost" -v o="$opened" -v n="$(date +%s.%N)" \
+  'BEGIN {exit !(d >= n - l - 1.5 && d > n - o + 1)}' && [[ "$during" == "503 0" ]] \
+  && pass "grace set: stream without rules does not restart the grace (down ${down}s)" \
+  || bad "unsynced stream: during=$during down_seconds=$down, lost $(awk -v l="$lost" -v n="$(date +%s.%N)" 'BEGIN{printf "%.1f", n-l}')s ago"
+[[ "$(readyz)" == *"analyzer: stream down"* ]] && pass "grace set: still 503 after the unsynced stream" \
+  || bad "after unsynced stream: $(readyz)"
+start_sink sync
+for _ in $(seq "$REDIAL_WAIT"); do [[ "$(readyz)" == ready ]] && break; sleep 0.2; done
+# The loss of a synced stream starts a fresh grace period, however short it lived.
+stop_sink
 sleep 0.5
 [[ "$(readyz_code)" == 200 ]] && pass "grace set: 200 within the grace period" || bad "within grace: $(readyz)"
 for _ in $(seq 25); do [[ "$(readyz)" == *"analyzer: stream down"* ]] && break; sleep 0.2; done
 [[ "$(readyz)" == *"analyzer: stream down"* ]] && pass "grace set: 503 after the grace period" || bad "after grace: $(readyz)"
-ip netns exec "$NS_SCR" "$SINK_BIN" 127.0.0.1:59999 "$CMD_FIFO" >>"$SINK_LOG" 2>&1 &
-SINK_PID=$!
-for _ in $(seq 100); do [[ "$(readyz)" == ready ]] && break; sleep 0.2; done
+start_sink sync
+for _ in $(seq "$REDIAL_WAIT"); do [[ "$(readyz)" == ready ]] && break; sleep 0.2; done
 [[ "$(readyz)" == ready ]] && pass "grace set: /readyz recovers when the analyzer returns" || bad "after analyzer restart: $(readyz)"
 stop_collector
 start_collector

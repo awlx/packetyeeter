@@ -236,10 +236,17 @@ func TestAnalyzerReadiness(t *testing.T) {
 		t.Fatal("failed first dial reported ready")
 	}
 	a.set(true)
-	if err := a.check(); err != nil {
-		t.Fatalf("connected: %v", err)
+	if err := a.check(); err == nil || !strings.Contains(err.Error(), "no rules received yet") {
+		t.Fatalf("connected without rules: %v, want not ready", err)
 	}
-	now = now.Add(analyzerConnectionStable)
+	if up, _ := a.status(); up {
+		t.Fatal("connected without rules reported up")
+	}
+	a.markSynced()
+	if err := a.check(); err != nil {
+		t.Fatalf("synced: %v", err)
+	}
+	now = now.Add(time.Second)
 	a.set(false)
 	now = now.Add(29 * time.Second)
 	if err := a.check(); err != nil {
@@ -251,25 +258,56 @@ func TestAnalyzerReadiness(t *testing.T) {
 		t.Fatalf("after grace: %v, want down for 30s", err)
 	}
 	a.set(true)
+	if err := a.check(); err == nil {
+		t.Fatal("reconnected without rules reported ready past the grace")
+	}
+	a.markSynced()
 	if err := a.check(); err != nil {
-		t.Fatalf("reconnected: %v", err)
+		t.Fatalf("reconnected and synced: %v", err)
+	}
+	if up, down := a.status(); !up || down != 0 {
+		t.Fatalf("synced: up=%v down=%s", up, down)
 	}
 
-	// An analyzer that accepts the stream and drops it at once (collector
-	// capacity) must not keep the node ready by restarting the clock.
-	now = now.Add(analyzerConnectionStable)
+	// An analyzer that accepts the stream and drops it before sending rules
+	// (collector capacity) must not keep the node ready by restarting the
+	// clock, however long the stream lived.
+	lost := now
 	a.set(false)
 	for range 3 {
 		now = now.Add(20 * time.Second)
 		a.set(true)
-		now = now.Add(time.Millisecond)
+		now = now.Add(time.Minute)
 		a.set(false)
 	}
 	if err := a.check(); err == nil {
-		t.Fatal("flapping stream kept the node ready past the grace")
+		t.Fatal("unsynced streams kept the node ready past the grace")
 	}
-	if _, down := a.status(); down < time.Minute {
-		t.Fatalf("flapping stream: down %s, want counted from the last stable loss", down)
+	if _, down := a.status(); down != now.Sub(lost) {
+		t.Fatalf("unsynced streams: down %s, want %s counted from the last synced loss", down, now.Sub(lost))
+	}
+
+	// markSynced without an open stream (a late apply) changes nothing.
+	a.markSynced()
+	if up, _ := a.status(); up {
+		t.Fatal("markSynced without a stream reported up")
+	}
+}
+
+func TestAnalyzerReadinessRefusedStreamAtStartup(t *testing.T) {
+	now := time.Unix(1000, 0)
+	a := newAnalyzerReadiness(time.Hour)
+	a.now = func() time.Time { return now }
+
+	// The analyzer at -max-collectors: the stream opens and is refused at once.
+	a.set(true)
+	now = now.Add(time.Millisecond)
+	a.set(false)
+	if err := a.check(); err == nil || !strings.Contains(err.Error(), "not connected yet") {
+		t.Fatalf("refused stream: %v, want not ready within the grace", err)
+	}
+	if err := a.degraded(); err == nil {
+		t.Fatal("refused stream: not degraded")
 	}
 }
 
@@ -286,10 +324,14 @@ func TestAnalyzerDegraded(t *testing.T) {
 		t.Fatalf("never connected: %v", err)
 	}
 	a.set(true)
-	if up, down := a.status(); !up || down != 0 || a.degraded() != nil {
-		t.Fatalf("connected: up=%v down=%s degraded=%v", up, down, a.degraded())
+	if err := a.degraded(); err == nil || !strings.Contains(err.Error(), "analyzer stream connected, no rules received yet (5s)") {
+		t.Fatalf("connected without rules: %v", err)
 	}
-	now = now.Add(analyzerConnectionStable)
+	a.markSynced()
+	if up, down := a.status(); !up || down != 0 || a.degraded() != nil {
+		t.Fatalf("synced: up=%v down=%s degraded=%v", up, down, a.degraded())
+	}
+	now = now.Add(time.Second)
 	a.set(false)
 	now = now.Add(12 * time.Second)
 	if err := a.degraded(); err == nil || !strings.Contains(err.Error(), "analyzer stream down for 12s") {
@@ -311,10 +353,10 @@ func TestAnalyzerDegraded(t *testing.T) {
 		logger:   logrus.New(),
 	}
 	want := `
-# HELP packetyeeter_scrub_analyzer_stream_down_seconds Seconds the analyzer stream has been down (since start-up if it never connected), 0 while up
+# HELP packetyeeter_scrub_analyzer_stream_down_seconds Seconds the analyzer stream has been down (since start-up if no stream ever delivered rules), 0 while up
 # TYPE packetyeeter_scrub_analyzer_stream_down_seconds gauge
 packetyeeter_scrub_analyzer_stream_down_seconds 12
-# HELP packetyeeter_scrub_analyzer_stream_up 1 while the analyzer stream is connected, else 0 (node degraded: no new rules or blocks, filtering continues)
+# HELP packetyeeter_scrub_analyzer_stream_up 1 while the analyzer stream is connected and has delivered its rule set, else 0 (node degraded: no new rules or blocks, filtering continues)
 # TYPE packetyeeter_scrub_analyzer_stream_up gauge
 packetyeeter_scrub_analyzer_stream_up 0
 `

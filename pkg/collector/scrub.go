@@ -307,15 +307,20 @@ func (c *Collector) scrubReadinessChecks() []readinessCheck {
 // analyzerReadiness tracks the analyzer stream. Without it the node gets no
 // new rules or blocks but keeps filtering with what it has, so by default it
 // only reports the node degraded; -readyz-analyzer-grace opts into gating.
+//
+// A stream counts as up only once it has delivered and applied a rule set:
+// the analyzer accepts a stream before it decides to keep it (it refuses
+// collectors over -max-collectors right after) and sends the rules after
+// the collector announces its role, so an open stream alone proves nothing.
 type analyzerReadiness struct {
 	grace time.Duration
 	now   func() time.Time
 
 	mu        sync.Mutex
-	up        bool
-	everUp    bool
-	upSince   time.Time
-	downSince time.Time // start-up until the first connect
+	connected bool      // a stream is open, synced or not
+	up        bool      // the open stream has applied a rule set
+	everUp    bool      // some stream has applied a rule set since start-up
+	downSince time.Time // start-up until the first synced stream
 }
 
 func newAnalyzerReadiness(grace time.Duration) *analyzerReadiness {
@@ -323,7 +328,7 @@ func newAnalyzerReadiness(grace time.Duration) *analyzerReadiness {
 }
 
 // status reports whether the stream is up and, if not, for how long it has
-// been down (since start-up if it never connected).
+// been down (since start-up if no stream ever synced).
 func (a *analyzerReadiness) status() (up bool, down time.Duration) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -341,26 +346,46 @@ func (a *analyzerReadiness) degraded() error {
 	if a.up {
 		return nil
 	}
-	down := a.now().Sub(a.downSince)
-	if !a.everUp {
-		return fmt.Errorf("analyzer stream not connected yet (%s)", down.Truncate(time.Second))
-	}
-	return fmt.Errorf("analyzer stream down for %s", down.Truncate(time.Second))
+	return fmt.Errorf("analyzer %s", a.downReasonLocked())
 }
 
-func (a *analyzerReadiness) set(up bool) {
+func (a *analyzerReadiness) downReasonLocked() string {
+	down := a.now().Sub(a.downSince).Truncate(time.Second)
+	switch {
+	case !a.everUp && a.connected:
+		return fmt.Sprintf("stream connected, no rules received yet (%s)", down)
+	case !a.everUp:
+		return fmt.Sprintf("stream not connected yet (%s)", down)
+	case a.connected:
+		return fmt.Sprintf("stream down for %s (reconnected, no rules received yet)", down)
+	}
+	return fmt.Sprintf("stream down for %s", down)
+}
+
+// set records a stream opening (true) or ending (false). A new stream is not
+// up until markSynced. Only the loss of a synced stream restarts the outage
+// clock: attempts the analyzer refuses or drops before sending rules must
+// not keep the node ready by resetting it on every redial.
+func (a *analyzerReadiness) set(connected bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	switch {
-	case !a.up && up:
-		a.upSince = a.now()
-	case a.up && !up && a.now().Sub(a.upSince) >= analyzerConnectionStable:
-		// A stream the analyzer drops at once (e.g. at collector capacity)
-		// must not restart the outage clock on every redial.
+	if !connected && a.up {
 		a.downSince = a.now()
 	}
-	a.up = up
-	a.everUp = a.everUp || up
+	a.connected = connected
+	a.up = false
+}
+
+// markSynced records that the open stream delivered a rule set the node
+// applied (an empty replacement set counts).
+func (a *analyzerReadiness) markSynced() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !a.connected {
+		return
+	}
+	a.up = true
+	a.everUp = true
 }
 
 func (a *analyzerReadiness) check() error {
@@ -370,14 +395,13 @@ func (a *analyzerReadiness) check() error {
 	case a.up:
 		return nil
 	case !a.everUp:
-		// No rules or blocks have been received since start-up.
-		return errors.New("stream not connected yet")
+		// No rules have been received since start-up.
+		return errors.New(a.downReasonLocked())
 	}
-	down := a.now().Sub(a.downSince)
-	if down < a.grace {
+	if a.now().Sub(a.downSince) < a.grace {
 		return nil
 	}
-	return fmt.Errorf("stream down for %s", down.Truncate(time.Second))
+	return errors.New(a.downReasonLocked())
 }
 
 func (c *Collector) scrubReady() error {

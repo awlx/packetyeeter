@@ -3,6 +3,9 @@
 // per received signal (id, type, and IP family; every field for scrub
 // fingerprints). Given a second argument, a file (typically a FIFO), it also
 // sends every line of it, a protojson Command, to all connected collectors.
+// With SINK_SYNC_RULES=1 it answers a scrub collector's role signal with an
+// empty replacement rule set, as the analyzer does, which the collector needs
+// before it counts the stream as up.
 package main
 
 import (
@@ -23,6 +26,7 @@ type collectorStream = grpc.BidiStreamingServer[apiv1.Signal, apiv1.Command]
 
 type sink struct {
 	apiv1.UnimplementedAnalyzerServiceServer
+	syncRules bool
 
 	mu      sync.Mutex
 	streams map[collectorStream]struct{}
@@ -45,6 +49,16 @@ func (s *sink) StreamSignals(stream collectorStream) error {
 		}
 		if err != nil {
 			return err
+		}
+		if s.syncRules && sig.Type == apiv1.SignalType_SIGNAL_UNKNOWN && sig.GetMetadata()["role"] == "scrub" {
+			s.mu.Lock()
+			err := stream.Send(&apiv1.Command{
+				Type:  apiv1.CommandType_COMMAND_SET_RULES,
+				Rules: &apiv1.RuleSetDelta{Replace: true},
+			})
+			s.mu.Unlock()
+			fmt.Printf("SYNCED rules err=%v\n", err)
+			continue
 		}
 		if fp := sig.Fingerprint; sig.Type == apiv1.SignalType_SIGNAL_SCRUB_FINGERPRINT && fp != nil {
 			fmt.Printf("FINGERPRINT collector=%s dst=%s proto=%d dport=%d size=%d ttl=%d src_net=%s dropped=%t packets=%d bytes=%d interval=%d\n",
@@ -97,7 +111,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "listen:", err)
 		os.Exit(1)
 	}
-	sk := &sink{streams: map[collectorStream]struct{}{}}
+	sk := &sink{streams: map[collectorStream]struct{}{}, syncRules: os.Getenv("SINK_SYNC_RULES") == "1"}
 	if len(os.Args) > 2 {
 		go sk.sendCommands(os.Args[2])
 	}
