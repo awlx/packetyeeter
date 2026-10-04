@@ -386,9 +386,11 @@ With `-scrub-syn-cookies` on or auto (see
 `ipv6`. They are per-CPU kernel counters summed at scrape time, so unlike
 `packetyeeter_kernel_incidents_total{reason="policy_block"}` they are not
 capped by the incident emit budget. In monitor mode (`-dry-run`) they count
-matches that were passed instead of dropped. Bytes cover the linear part of
-each frame, so multi-buffer (jumbo) frames are undercounted. There is no
-per-source breakdown; use incidents for sampled source addresses.
+matches that were passed instead of dropped. Allowlisted sources, and in
+scrub mode packets a PASS or DROP rule matches first, are not counted. Bytes
+cover the linear part of each frame, so multi-buffer (jumbo) frames are
+undercounted. There is no per-source breakdown; use incidents for sampled
+source addresses.
 
 ## Collector perf-ring health
 

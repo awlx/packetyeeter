@@ -303,7 +303,7 @@ func checkBlockedUnchanged(t *testing.T, coll *ebpf.Collection, p *ebpf.Program)
 }
 
 // Policy-block matches land in the per-family counter, read the way the
-// collector's metric does, and never in any per-source map.
+// collector's metric does.
 func checkPolicyBlockCounts(t *testing.T, coll *ebpf.Collection, p *ebpf.Program) {
 	t.Helper()
 	maps := &pyebpf.Maps{PolicyBlockStats: coll.Maps["policy_block_stats"]}
@@ -317,8 +317,12 @@ func checkPolicyBlockCounts(t *testing.T, coll *ebpf.Collection, p *ebpf.Program
 		runProg(t, p, pkt, n)
 	}
 	// Non-matching sources must not count.
-	runProg(t, p, vIPv4(17, vClean4, vDst4, vUDP()), n)
-	runProg(t, p, vIPv6(17, vPolMon6, vDst6, vUDP()), n)
+	for _, pkt := range [][]byte{
+		vIPv4(17, vClean4, vDst4, vUDP()), vIPv4(17, vPolMon4, vDst4, vUDP()),
+		vIPv6(17, vClean6, vDst6, vUDP()), vIPv6(17, vPolMon6, vDst6, vUDP()),
+	} {
+		runProg(t, p, pkt, n)
+	}
 	after, err := maps.ReadPolicyBlockStats()
 	if err != nil {
 		t.Fatalf("read policy_block_stats: %v", err)
@@ -330,9 +334,9 @@ func checkPolicyBlockCounts(t *testing.T, coll *ebpf.Collection, p *ebpf.Program
 			t.Errorf("%s: policy_block_stats delta %d packets/%d bytes, want %d/%d",
 				family, gotP, gotB, n, n*len(pkts[i]))
 		}
-	}
-	if after[0].Packets < n+1 {
-		t.Errorf("ipv4: %d policy-block packets in total, want the corpus packet counted too", after[0].Packets)
+		if after[i].Packets < n+1 {
+			t.Errorf("%s: %d policy-block packets in total, want the corpus packet counted too", family, after[i].Packets)
+		}
 	}
 }
 
