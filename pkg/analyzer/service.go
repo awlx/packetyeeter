@@ -101,10 +101,43 @@ type Config struct {
 
 	// TLS on the gRPC listener; zero value is plaintext.
 	TLS grpctls.ServerConfig
+	// GRPCMaxConnectionAge closes gRPC connections after this long (0 = never)
+	// so every client re-handshakes against the current certificates and CA
+	// bundle; GRPCMaxConnectionAgeGrace is how long open streams get after
+	// that before the connection is cut.
+	GRPCMaxConnectionAge      time.Duration
+	GRPCMaxConnectionAgeGrace time.Duration
 	// ControlClientNames, when set, restricts ControlMethods to clients whose
 	// verified certificate has one of these DNS SANs or CommonNames.
 	// Requires TLS.ClientCAFile.
 	ControlClientNames []string
+}
+
+const (
+	DefaultGRPCMaxConnectionAge      = time.Hour
+	DefaultGRPCMaxConnectionAgeGrace = 30 * time.Second
+	// How soon a changed -tls-client-ca cuts open connections it no longer
+	// trusts.
+	clientCACheckInterval = 10 * time.Second
+)
+
+// runClientCAEnforcer closes connections whose client certificate a
+// reloaded -tls-client-ca no longer trusts; authorization only looks at the
+// handshake, so they would otherwise keep their streams.
+func (a *Analyzer) runClientCAEnforcer(e grpctls.ClientCAEnforcer) {
+	defer a.wg.Done()
+	ticker := time.NewTicker(clientCACheckInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-a.ctx.Done():
+			return
+		case <-ticker.C:
+			if n := e.CloseUntrusted(); n > 0 {
+				logrus.WithField("connections", n).Warn("Closed gRPC connections no longer trusted by the reloaded client CA bundle")
+			}
+		}
+	}
 }
 
 // ControlMethods are the control-plane RPCs gated by ControlClientNames.
@@ -262,6 +295,9 @@ type Analyzer struct {
 	// Per instance rather than a package variable: syncs started by
 	// StopEnforcement outlive the call that started them. 0 = default.
 	ruleSyncTimeout time.Duration
+	// How long one command Send may block before the stream is ended.
+	// 0 = default.
+	commandSendTimeout time.Duration
 
 	// Connected collectors
 	collectors   map[string]*collectorStream
@@ -282,17 +318,31 @@ type Analyzer struct {
 	cancel    context.CancelFunc
 	closeOnce sync.Once
 	wg        sync.WaitGroup
+	// Orders goTracked's wg.Add before close's wg.Wait.
+	trackMu   sync.Mutex
 	startTime time.Time
 }
 
 type collectorStream struct {
 	stream apiv1.AnalyzerService_StreamSignalsServer
 	sendMu sync.Mutex
+	// abort ends the stream; StreamSignals sets it. A Send that stalls past
+	// the send timeout calls it so the collector reconnects instead of
+	// holding sendMu, and every sender queued behind it, forever.
+	abort context.CancelCauseFunc
 
 	role atomic.Value // string, from the collector's role signal
 
-	rulesMu sync.Mutex
+	// At most one rule sync runs per collector; requests made meanwhile wait
+	// for one more send that covers them all.
+	syncMu      sync.Mutex
+	syncing     bool
+	syncWaiters []chan<- error
 }
+
+// errCommandSendStalled ends a collector stream whose Send did not return in
+// time: the collector stopped reading commands.
+var errCommandSendStalled = errors.New("collector stopped reading commands")
 
 // setRole stores role and returns the previous one.
 func (cs *collectorStream) setRole(role string) string {
@@ -605,10 +655,18 @@ func (a *Analyzer) Start() error {
 	a.listener = lis
 
 	var opts []grpc.ServerOption
-	opts = append(opts, grpc.KeepaliveParams(keepalive.ServerParameters{
+	kp := keepalive.ServerParameters{
 		Time:    10 * time.Second,
 		Timeout: 3 * time.Second,
-	}))
+	}
+	if a.Config.GRPCMaxConnectionAge > 0 {
+		kp.MaxConnectionAge = a.Config.GRPCMaxConnectionAge
+		kp.MaxConnectionAgeGrace = a.Config.GRPCMaxConnectionAgeGrace
+		if kp.MaxConnectionAgeGrace <= 0 {
+			kp.MaxConnectionAgeGrace = DefaultGRPCMaxConnectionAgeGrace
+		}
+	}
+	opts = append(opts, grpc.KeepaliveParams(kp))
 	opts = append(opts, grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
 		MinTime:             5 * time.Second,
 		PermitWithoutStream: true,
@@ -624,6 +682,10 @@ func (a *Analyzer) Start() error {
 	}
 	if a.grpcCreds != nil {
 		opts = append(opts, grpc.Creds(a.grpcCreds))
+	}
+	if enforcer, ok := a.grpcCreds.(grpctls.ClientCAEnforcer); ok {
+		a.wg.Add(1)
+		go a.runClientCAEnforcer(enforcer)
 	}
 	if a.controlAuthz != nil {
 		opts = append(opts,
@@ -799,8 +861,9 @@ func (a *Analyzer) unregisterCollector(id string) {
 
 // StreamSignals implements the bidirectional streaming RPC
 func (a *Analyzer) StreamSignals(stream apiv1.AnalyzerService_StreamSignalsServer) error {
-	ctx := stream.Context()
-	cs := &collectorStream{stream: stream}
+	ctx, abort := context.WithCancelCause(stream.Context())
+	defer abort(nil)
+	cs := &collectorStream{stream: stream, abort: abort}
 	collectorID := a.registerCollector(ctx, cs)
 	if collectorID == "" {
 		logrus.WithField("max_collectors", a.Config.MaxCollectors).
@@ -811,6 +874,26 @@ func (a *Analyzer) StreamSignals(stream apiv1.AnalyzerService_StreamSignalsServe
 
 	logrus.WithField("collector", collectorID).Info("Collector connected")
 
+	// Recv runs apart so a stalled Send can end the stream: returning from
+	// here finishes the RPC, which unblocks both Recv and Send.
+	recvErr := make(chan error, 1)
+	go func() { recvErr <- a.recvSignals(ctx, collectorID, cs) }()
+	select {
+	case err := <-recvErr:
+		return err
+	case <-a.ctx.Done():
+		return nil
+	case <-ctx.Done():
+		if cause := context.Cause(ctx); errors.Is(cause, errCommandSendStalled) {
+			logrus.WithField("collector", collectorID).Warn("Closed stream of collector that stopped reading commands")
+			return status.Error(codes.Unavailable, cause.Error())
+		}
+		return ctx.Err()
+	}
+}
+
+func (a *Analyzer) recvSignals(ctx context.Context, collectorID string, cs *collectorStream) error {
+	stream := cs.stream
 	signalCounts := make(map[string]int)
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
@@ -1185,12 +1268,57 @@ func (a *Analyzer) isDuplicateBlockCommand(cmd *apiv1.Command) bool {
 }
 
 func (a *Analyzer) sendToStream(cs *collectorStream, cmd *apiv1.Command) {
-	cs.sendMu.Lock()
-	defer cs.sendMu.Unlock()
-
-	if err := cs.stream.Send(cmd); err != nil {
+	if err := a.sendLocked(cs, cmd); err != nil {
 		logrus.WithError(err).Debug("Failed to send command to collector")
 	}
+}
+
+// defaultCommandSendTimeout is generous: Send only blocks once the HTTP/2
+// flow-control window is full, and a full rule set is up to 3 MiB.
+const defaultCommandSendTimeout = 30 * time.Second
+
+// sendLocked sends one command under sendMu. A Send still blocked after the
+// send timeout ends the stream, which also unblocks it.
+func (a *Analyzer) sendLocked(cs *collectorStream, cmd *apiv1.Command) error {
+	cs.sendMu.Lock()
+	defer cs.sendMu.Unlock()
+	limit := a.commandSendTimeout
+	if limit <= 0 {
+		limit = defaultCommandSendTimeout
+	}
+	watchdog := time.AfterFunc(limit, func() {
+		metrics.CollectorSendStalls.Inc()
+		logrus.WithField("timeout", limit).Warn("Collector stopped reading commands; closing its stream")
+		if cs.abort != nil {
+			cs.abort(errCommandSendStalled)
+		}
+	})
+	defer watchdog.Stop()
+	return cs.stream.Send(cmd)
+}
+
+// lifetime is the analyzer's context; Background for one built without New.
+func (a *Analyzer) lifetime() context.Context {
+	if a.ctx == nil {
+		return context.Background()
+	}
+	return a.ctx
+}
+
+// goTracked runs f in a goroutine close waits for, unless the analyzer is
+// shutting down.
+func (a *Analyzer) goTracked(f func()) bool {
+	a.trackMu.Lock()
+	defer a.trackMu.Unlock()
+	if a.ctx != nil && a.ctx.Err() != nil {
+		return false
+	}
+	a.wg.Add(1)
+	go func() {
+		defer a.wg.Done()
+		f()
+	}()
+	return true
 }
 
 const (
@@ -2030,6 +2158,9 @@ func (a *Analyzer) Close() {
 
 func (a *Analyzer) close() {
 	a.cancel()
+	// Barrier: a goTracked past its ctx check has called wg.Add by now.
+	a.trackMu.Lock()
+	a.trackMu.Unlock() //nolint:staticcheck // empty critical section is the point
 
 	if a.BotVerifier != nil {
 		a.BotVerifier.Close()

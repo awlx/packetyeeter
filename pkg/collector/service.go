@@ -20,6 +20,7 @@ import (
 	"PacketYeeter/pkg/geoip"
 	"PacketYeeter/pkg/grpctls"
 	"PacketYeeter/pkg/metrics"
+	"PacketYeeter/pkg/nic"
 
 	"github.com/cilium/ebpf/perf"
 	"github.com/prometheus/client_golang/prometheus"
@@ -89,6 +90,7 @@ type Config struct {
 	SynCookieStyle  ebpf.SynCookieStyle
 	SynCookieSynPPS uint32        // auto mode: per-destination SYNs/s that start challenges
 	SynCookieTTL    time.Duration // how long a source stays verified
+	SynCookieMaxPPS uint32        // challenges per second across all CPUs, 0 = unlimited
 
 	// ScrubHandshakeLRU picks per-CPU or common LRU lists for the scrub
 	// handshake maps (zero value: auto).
@@ -384,6 +386,7 @@ func (c *Collector) Start(ctx context.Context) error {
 				"style":   c.Config.SynCookieStyle,
 				"syn_pps": c.Config.SynCookieSynPPS,
 				"ttl":     c.Config.SynCookieTTL,
+				"max_pps": c.Config.SynCookieMaxPPS,
 				"dry_run": c.Config.DryRun,
 			}).Info("SYN cookie challenges enabled")
 		}
@@ -409,6 +412,7 @@ func (c *Collector) Start(ctx context.Context) error {
 			"outside": c.Config.Interface,
 			"inside":  c.Config.InsideInterface,
 		}).Info("xdp_scrub attached: forwarding clean traffic from outside to inside port")
+		c.logScrubPorts()
 	} else {
 		c.Logger.Info("eBPF programs loaded and attached")
 	}
@@ -593,6 +597,8 @@ func (c *Collector) connectToAnalyzer() error {
 	conn, err := grpc.DialContext(ctx, c.Config.AnalyzerAddr,
 		grpc.WithTransportCredentials(c.analyzerCreds),
 		grpc.WithBlock(),
+		// Otherwise a TLS failure surfaces only as "context deadline exceeded".
+		grpc.WithReturnConnectionError(),
 		grpc.WithKeepaliveParams(keepalive.ClientParameters{
 			Time:                10 * time.Second,
 			Timeout:             3 * time.Second,
@@ -2094,6 +2100,30 @@ func (c *Collector) emitSignal(signal *apiv1.Signal) {
 	c.sendSignal(signal)
 }
 
+// policyBlockMetrics reads the kernel counters at scrape time, so the
+// exported counters are exact rather than sampled by a poll loop.
+type policyBlockMetrics struct {
+	read   func() ([]ebpf.PolicyCounter, error)
+	logger *logrus.Logger
+}
+
+func (m *policyBlockMetrics) Describe(ch chan<- *prometheus.Desc) {
+	ch <- metrics.PolicyBlockedPacketsDesc
+	ch <- metrics.PolicyBlockedBytesDesc
+}
+
+func (m *policyBlockMetrics) Collect(ch chan<- prometheus.Metric) {
+	st, err := m.read()
+	if err != nil {
+		m.logger.WithError(err).Warn("Failed to read policy block counters")
+		return
+	}
+	for i, family := range ebpf.PolicyFamilyNames {
+		ch <- prometheus.MustNewConstMetric(metrics.PolicyBlockedPacketsDesc, prometheus.CounterValue, float64(st[i].Packets), family)
+		ch <- prometheus.MustNewConstMetric(metrics.PolicyBlockedBytesDesc, prometheus.CounterValue, float64(st[i].Bytes), family)
+	}
+}
+
 // startCollectorMetricsServer creates a metrics server that only exposes SPOE-related metrics
 func (c *Collector) startCollectorMetricsServer() *http.Server {
 	// Create a custom registry that only includes SPOE handler metrics
@@ -2113,6 +2143,9 @@ func (c *Collector) startCollectorMetricsServer() *http.Server {
 	// observable here -- the analyzer's registry would report a constant 0.
 	registry.MustRegister(metrics.EgressVolumeSignals)
 	registry.MustRegister(metrics.EgressBytesReported)
+	if c.Maps != nil {
+		registry.MustRegister(&policyBlockMetrics{read: c.Maps.ReadPolicyBlockStats, logger: c.Logger})
+	}
 
 	mux := http.NewServeMux()
 	if c.Config.Mode == ebpf.ModeScrub {
@@ -2244,4 +2277,25 @@ func parsePolicyRules(spec string) ([]ebpf.PolicyRule, error) {
 	}
 
 	return rules, errors.Join(errs...)
+}
+
+// logScrubPorts records how each scrub port is attached and warns about
+// states that make forwarding slow or lossy (docs/scrub-hardware.md).
+func (c *Collector) logScrubPorts() {
+	for _, p := range c.Loader.ScrubPorts() {
+		fields := logrus.Fields{"role": p.Role, "interface": p.Name, "xdp_mode": "native"}
+		if p.Generic {
+			fields["xdp_mode"] = "generic"
+		}
+		if p.Features != nil {
+			fields["xdp_features"] = p.Features.XDP.String()
+			fields["xdp_rx_metadata"] = p.Features.RxMetadata.String()
+		} else if p.FeaturesErr != nil {
+			fields["xdp_features"] = "unknown: " + p.FeaturesErr.Error()
+		}
+		c.Logger.WithFields(fields).Info("Scrub port attached")
+		for _, w := range nic.ScrubPortWarnings(p.Role, p.Generic, p.Features) {
+			c.Logger.WithFields(logrus.Fields{"role": p.Role, "interface": p.Name}).Warn(w)
+		}
+	}
 }

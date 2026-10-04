@@ -1,6 +1,7 @@
 package ebpf
 
 import (
+	"errors"
 	"fmt"
 	"net"
 )
@@ -42,6 +43,42 @@ func ParsePolicyAction(s string) (PolicyAction, error) {
 	default:
 		return 0, fmt.Errorf("unknown policy action %q (want \"block\" or \"monitor\")", s)
 	}
+}
+
+// PolicyFamilyNames indexes policy_block_stats (POLICY_STATS_* in
+// protector.bpf.c).
+var PolicyFamilyNames = []string{"ipv4", "ipv6"}
+
+// PolicyCounter mirrors struct policy_counter in protector.bpf.c.
+type PolicyCounter struct {
+	Packets uint64
+	Bytes   uint64
+}
+
+// ReadPolicyBlockStats returns policy_block_stats summed over CPUs, indexed
+// like PolicyFamilyNames.
+func (m *Maps) ReadPolicyBlockStats() ([]PolicyCounter, error) {
+	if m.PolicyBlockStats == nil {
+		return nil, errors.New("policy_block_stats map not loaded")
+	}
+	totals := make([]PolicyCounter, len(PolicyFamilyNames))
+	for i := range totals {
+		var perCPU []PolicyCounter
+		if err := m.PolicyBlockStats.Lookup(uint32(i), &perCPU); err != nil {
+			return nil, fmt.Errorf("read policy_block_stats[%d]: %w", i, err)
+		}
+		totals[i] = sumPolicyCounters(perCPU)
+	}
+	return totals, nil
+}
+
+func sumPolicyCounters(perCPU []PolicyCounter) PolicyCounter {
+	var total PolicyCounter
+	for _, v := range perCPU {
+		total.Packets += v.Packets
+		total.Bytes += v.Bytes
+	}
+	return total
 }
 
 // PolicyRule is a single per-CIDR policy engine entry.

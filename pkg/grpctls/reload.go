@@ -80,6 +80,13 @@ func (s *fileSource[T]) get() T {
 	return v
 }
 
+// peek returns the loaded value without checking the files.
+func (s *fileSource[T]) peek() T {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.current
+}
+
 func (s *fileSource[T]) read() (T, error) {
 	data := make([][]byte, len(s.files))
 	for i, f := range s.files {

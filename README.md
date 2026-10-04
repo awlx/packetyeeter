@@ -310,6 +310,7 @@ sudo ./packetyeeter-collector -i eth0 -analyzer-addr 127.0.0.1:9090
 | `-scrub-syn-cookies` | `off` | Scrub mode: answer SYNs from unverified sources with a SYN cookie instead of forwarding them; `auto` only for destinations over `-scrub-syn-cookie-syn-pps`, `on` for all. Linux 6.0+. See [SYN cookies](docs/operations.md#syn-cookies). |
 | `-scrub-syn-cookie-style` | `oos` | Scrub mode: `oos` (out-of-sequence SYN-ACK; the client's RST verifies it and its SYN retransmission passes) or `reset` (valid SYN-ACK; the client's ACK verifies it, the node resets that first connection). |
 | `-scrub-syn-cookie-syn-pps` | `10000` | Scrub mode: SYNs per second to one destination, across all CPUs, that start challenges in `auto` (held 30 s). |
+| `-scrub-syn-cookie-max-pps` | `0` | Scrub mode: max challenges sent per second across all CPUs; unverified SYNs over it are dropped unanswered and counted as `suppressed`. `0` = unlimited. |
 | `-scrub-syn-cookie-ttl` | `10m` | Scrub mode: how long a source that answered a challenge stays verified. |
 | `-scrub-handshake-lru` | `auto` | Scrub mode: LRU lists of the handshake maps. `auto` uses per-CPU lists sized for the online CPUs, or one common list when that would need over 1M entries per family; `percpu` or `common` force one. See [scrub handshakes](docs/operations.md#scrub-mode). |
 | `-analyzer-addr` | `127.0.0.1:9090` | Analyzer gRPC address to connect to. |
@@ -341,6 +342,8 @@ sudo ./packetyeeter-collector -i eth0 -analyzer-addr 127.0.0.1:9090
 | `-tls-key` | `""` | PEM private key for `-tls-cert`. |
 | `-tls-client-ca` | `""` | PEM CA bundle. When set, every gRPC client must present a certificate signed by it (mTLS). Requires `-tls-cert`. |
 | `-control-client-names` | `""` | Comma-separated client certificate DNS SANs or CommonNames allowed to call the control-plane RPCs (`PushRules`, `WatchDecisions`). Requires `-tls-client-ca`. Empty = any authenticated client. |
+| `-grpc-max-connection-age` | `1h` | Close gRPC connections after this long (±10%), so collectors and controllers re-handshake against the current certificates and CA bundle. `0` = never. |
+| `-grpc-max-connection-age-grace` | `30s` | How long open streams may continue after `-grpc-max-connection-age` before the connection is cut. |
 | `-metrics-addr` | `:9091` | Prometheus metrics HTTP listen address. |
 | `-inspect-addr` | `127.0.0.1:9092` | Read-only HTTP inspector UI address. |
 | `-inspect-trusted-hosts` | `""` | Comma-separated extra Host/Origin hostnames the inspector trusts for state-mutating requests, in addition to loopback (e.g. a reverse-proxy hostname). Read-only GETs are never gated. |
@@ -406,6 +409,7 @@ PacketYeeter is designed to be monitored via **Prometheus** and **Grafana**.
     *   `packetyeeter_tcp_syn_flood_blocks_total`: SYN flood blocks.
     *   `packetyeeter_tcp_bad_flags_blocks_total`: invalid TCP flag blocks.
     *   `packetyeeter_kernel_incidents_total{reason}`: structured kernel-space incident records (collector endpoint), broken down by reason (`blocked_ip`, `policy_block`, `icmp_rate`, `udp_rate`, `udp_frag`, `bad_flags`). See "Structured Incident Logging" above.
+    *   `packetyeeter_policy_blocked_packets_total{family}`, `packetyeeter_policy_blocked_bytes_total{family}`: packets/bytes matching a `-policy` block rule (collector endpoint).
     *   `packetyeeter_udp_max_rate_pps`, `packetyeeter_icmp_max_rate_pps`: peak UDP/ICMP PPS.
     *   `packetyeeter_ja4t_suspicious_total`: suspicious JA4T abuse events.
     *   `packetyeeter_high_latency_handshakes_total`, `packetyeeter_high_latency_max_ms`, `packetyeeter_latency_ewma_by_asn_ms`: JA4L latency signals.
@@ -467,6 +471,13 @@ and bot summaries currently return empty collector-side state until analyzer
 state is exposed over the management API.
 
 For an interactive live view, run `yeetexplorer` (a terminal UI dashboard).
+
+`yeetctl nic-check [-role outside|inside] <iface>` runs locally, without the
+collector socket, and only reads state. It reports a NIC's driver, firmware,
+XDP attach mode and driver XDP features, queues, IRQ affinity, rings and
+offloads; warns about settings that make scrub mode slow or lossy; and
+predicts `xdp_scrub` throughput for the driver. See
+[docs/scrub-hardware.md](docs/scrub-hardware.md).
 
 ## Running as a Service (Systemd)
 

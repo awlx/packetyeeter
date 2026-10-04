@@ -22,8 +22,7 @@ type Maps struct {
 	AllowListV6         *ebpf.Map
 	PolicyV4            *ebpf.Map
 	PolicyV6            *ebpf.Map
-	PolicyBlocks        *ebpf.Map
-	PolicyBlocksV6      *ebpf.Map
+	PolicyBlockStats    *ebpf.Map // Per-CPU POLICY_BLOCK matches by family
 	Events              *ebpf.Map // Perf Event Array
 	Incidents           *ebpf.Map // Structured incident logging perf event array
 	EgressBytes         *ebpf.Map // Cumulative egress bytes per IPv4 client

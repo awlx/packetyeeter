@@ -17,14 +17,18 @@
 #   c1  clean UDP + SYN flood from one fixed 4-tuple (handshake lookup hits)
 #   c2  clean UDP + SYN flood from random sources (one LRU insert per SYN);
 #       compared with c1, which has the same packet mix
+#   d   a DROP rule matching the flow, 1 sender CPU (drop path cost)
 #
 # Requires root, the eBPF toolchain, curl, python3, ethtool, bpftool, tc and
 # trafgen (netsniff-ng). Run:
 #   sudo ./scripts/xdp_scrub_bench.sh
 # Tunables: DURATION (s, default 10), REPS (default 3), SYN_CPUS (default 3),
 # GEN_CPU_OFFSET (first generator CPU, default 1), SCENARIOS (default
-# "a b b2 b3 b4 c0 c1 c2"; b* are reported against a, c2 against c1),
-# COLLECTOR_ARGS (extra collector flags, e.g. "-scrub-syn-cookies on").
+# "a b b2 b3 b4 c0 c1 c2 d"; b* and d are reported against a, c2 against c1),
+# BPF_STATS (1 = also report xdp_scrub's own ns per packet from
+# kernel.bpf_stats_enabled; adds two clock reads per packet, so pps drop a
+# little; default 0), COLLECTOR_ARGS (extra collector flags, split on
+# whitespace, e.g. "-scrub-syn-cookies on" or "-fingerprint-interval 0").
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -32,7 +36,10 @@ DURATION="${DURATION:-10}"
 REPS="${REPS:-3}"
 SYN_CPUS="${SYN_CPUS:-3}"
 GEN_CPU_OFFSET="${GEN_CPU_OFFSET:-1}"
-SCENARIOS="${SCENARIOS:-a b b2 b3 b4 c0 c1 c2}"
+SCENARIOS="${SCENARIOS:-a b b2 b3 b4 c0 c1 c2 d}"
+BPF_STATS="${BPF_STATS:-0}"
+COLLECTOR_ARGS="${COLLECTOR_ARGS:-}"
+STATS_WAS=""
 want() { [[ " $SCENARIOS " == *" $1 "* ]]; }
 WARMUP=2
 TOKEN="$(printf '%04x' $((RANDOM % 65536)))"
@@ -84,13 +91,14 @@ cleanup() {
     log "trafgen (pgid $GEN_PID) did not exit; leaving namespaces ${CREATED_NS[*]} in place"
   fi
   rm -f "$CMD_FIFO" "$COLLECTOR_BIN" "$SINK_BIN"
+  [[ -n "$STATS_WAS" ]] && sysctl -qw kernel.bpf_stats_enabled="$STATS_WAS"
   log "cleaned up (logs in $WORK)"
 }
 trap cleanup EXIT
 
 [[ $EUID -eq 0 ]] || die "must run as root: sudo $0"
 for s in $SCENARIOS; do
-  [[ " a b b2 b3 b4 c0 c1 c2 " == *" $s "* ]] || die "unknown scenario $s in SCENARIOS"
+  [[ " a b b2 b3 b4 c0 c1 c2 d " == *" $s "* ]] || die "unknown scenario $s in SCENARIOS"
 done
 for t in clang go curl python3 ethtool bpftool ip tc trafgen; do
   command -v "$t" >/dev/null || die "missing $t (Debian/Ubuntu: apt install clang llvm libbpf-dev linux-tools-generic curl python3 ethtool netsniff-ng)"
@@ -215,6 +223,19 @@ for mid in json.load(sys.stdin)["map_ids"]:
     if m["name"] == sys.argv[1]:
         print(mid)' "$1"
 }
+SCRUB_PROG_ID=$(scr bpftool -j net show dev out0 | python3 -c 'import json,sys; print(json.load(sys.stdin)[0]["xdp"][0]["id"])')
+if [[ "$BPF_STATS" == 1 ]]; then
+  STATS_WAS=$(sysctl -n kernel.bpf_stats_enabled)
+  sysctl -qw kernel.bpf_stats_enabled=1
+fi
+# "run_time_ns run_cnt" of xdp_scrub; both stay 0 without BPF_STATS=1.
+prog_stats() {
+  bpftool -j prog show id "$SCRUB_PROG_ID" | python3 -c '
+import json, sys
+p = json.load(sys.stdin)
+print(p.get("run_time_ns", 0), p.get("run_cnt", 0))'
+}
+
 # The per-source UDP limit (default 2500 pps) would drop a single-source
 # benchmark flow; config_map[2] has no flag, so raise it directly.
 bpftool map update id "$(scrub_map_id config_map)" key 2 0 0 0 value 0xff 0xff 0xff 0xff
@@ -252,13 +273,14 @@ tc_pkts() { # PREF
   dst tc -s filter show dev dst0 ingress pref "$1" | awk '/Sent/ {print $4; exit}'
 }
 snapshot() {
-  printf '%s %s %s %s %s %s\n' "$(date +%s.%N)" "$(tc_pkts 1)" "$(tc_pkts 2)" \
+  printf '%s %s %s %s %s %s %s\n' "$(date +%s.%N)" "$(tc_pkts 1)" "$(tc_pkts 2)" \
     "$(metric packetyeeter_scrub_packets_total 'family="ipv4",verdict="forward"')" \
     "$(metric packetyeeter_scrub_packets_total 'family="ipv4",verdict="drop"')" \
-    "$(metric packetyeeter_scrub_syncookie_total 'event="challenge",family="ipv4"')"
+    "$(metric packetyeeter_scrub_syncookie_total 'event="challenge",family="ipv4"')" "$(prog_stats)"
 }
 
-# run_once CFG CPUS: sets RUN to "udp_pps syn_pps fwd_pps drop_pps challenge_pps". Not run
+# run_once CFG CPUS: sets RUN to
+# "udp_pps syn_pps fwd_pps drop_pps challenge_pps bpf_ns_per_pkt". Not run
 # in a subshell, so cleanup always knows the generator's pid.
 run_once() {
   # Own process group, so stop_gen can signal trafgen's forked workers too.
@@ -279,7 +301,9 @@ run_once() {
   sleep 1
   RUN=$(awk -v a="$a" -v b="$b" 'BEGIN {
     split(a, x, " "); split(b, y, " "); t = y[1] - x[1]
-    printf "%.0f %.0f %.0f %.0f %.0f\n", (y[2]-x[2])/t, (y[3]-x[3])/t, (y[4]-x[4])/t, (y[5]-x[5])/t, (y[6]-x[6])/t }')
+    n = y[8] - x[8]
+    printf "%.0f %.0f %.0f %.0f %.0f %.0f\n", (y[2]-x[2])/t, (y[3]-x[3])/t, (y[4]-x[4])/t, (y[5]-x[5])/t,
+      (y[6]-x[6])/t, (n > 0 ? (y[7]-x[7])/n : 0) }')
 }
 
 declare -A RES
@@ -289,7 +313,7 @@ measure() {
   for i in $(seq "$REPS"); do
     run_once "$2" "$3"
     local r="$RUN"
-    log "  $1 run $i: udp_rx=$(cut -d' ' -f1 <<<"$r") syn_rx=$(cut -d' ' -f2 <<<"$r") fwd=$(cut -d' ' -f3 <<<"$r") drop=$(cut -d' ' -f4 <<<"$r") challenge=$(cut -d' ' -f5 <<<"$r") pps"
+    log "  $1 run $i: udp_rx=$(cut -d' ' -f1 <<<"$r") syn_rx=$(cut -d' ' -f2 <<<"$r") fwd=$(cut -d' ' -f3 <<<"$r") drop=$(cut -d' ' -f4 <<<"$r") challenge=$(cut -d' ' -f5 <<<"$r") pps bpf=$(cut -d' ' -f6 <<<"$r") ns/pkt"
     runs+=("$r")
   done
   RES[$1]=$(printf '%s\n' "${runs[@]}" | python3 -c '
@@ -358,6 +382,23 @@ for mode in worst port span mixed; do
   wait_rules 0
 done
 
+if want d; then
+  log "d: one DROP rule matching the flow, 1 CPU"
+  python3 - "$EXPIRES" "$DST4" "$WORK" <<'EOF'
+import json, sys
+exp, dst, work = sys.argv[1:4]
+r = {"id": "d", "dstPrefix": dst + "/32", "protocols": [17], "action": "RULE_ACTION_DROP",
+     "priority": 1, "expiresAt": exp}
+json.dump({"upsert": [r]}, open(f"{work}/rules_add.json", "w"))
+json.dump({"remove": ["d"]}, open(f"{work}/rules_del.json", "w"))
+EOF
+  send_rules "$(cat "$WORK/rules_add.json")"
+  wait_rules 1
+  measure d "$WORK/udp.cfg" 1
+  send_rules "$(cat "$WORK/rules_del.json")"
+  wait_rules 0
+fi
+
 want c0 && { log "c0: clean UDP only, $SYN_CPUS CPUs"; measure c0 "$WORK/udp.cfg" "$SYN_CPUS"; }
 want c1 && { log "c1: clean UDP + fixed-tuple SYN flood (1:3), $SYN_CPUS CPUs"; measure c1 "$WORK/syn_fixed.cfg" "$SYN_CPUS"; }
 want c2 && { log "c2: clean UDP + random-source SYN flood (1:3), $SYN_CPUS CPUs"; measure c2 "$WORK/syn_rand.cfg" "$SYN_CPUS"; }
@@ -370,12 +411,15 @@ echo
 echo "Collector flags: ${COLLECTOR_ARGS:-none}"
 echo "Kernel $(uname -r), $(nproc) CPUs ($(lscpu 2>/dev/null | awk -F': *' '/^Vendor ID/ {v = $2} /^Model name/ {m = $2} END {print (m != "" && m != "-") ? m : v}'))," \
   "load $(cut -d' ' -f1-3 /proc/loadavg); veth, native XDP, median of ${REPS}x ${DURATION}s"
-printf '%-4s %-46s %12s %12s %12s %4s %10s %10s\n' scen description "udp rx pps" "syn rx pps" "fwd pps" ref "fwd delta" "udp delta"
+printf '%-4s %-46s %12s %12s %12s %12s %12s %4s %10s %10s %7s\n' scen description "udp rx pps" "syn rx pps" "fwd pps" \
+  "drop pps" "chal pps" ref "fwd delta" "udp delta" "bpf ns"
 row() { # NAME REF DESCRIPTION
   want "$1" || return 0
-  printf '%-4s %-46s %12s %12s %12s %4s %10s %10s\n' "$1" "$3" "$(col "$1" 1)" "$(col "$1" 2)" "$(col "$1" 3)" "$2" \
+  printf '%-4s %-46s %12s %12s %12s %12s %12s %4s %10s %10s %7s\n' "$1" "$3" "$(col "$1" 1)" "$(col "$1" 2)" \
+    "$(col "$1" 3)" "$(col "$1" 4)" "$(col "$1" 5)" "$2" \
     "$( [[ "$1" == "$2" ]] && echo ref || delta "$(col "$2" 3)" "$(col "$1" 3)")" \
-    "$( [[ "$1" == "$2" ]] && echo ref || delta "$(col "$2" 1)" "$(col "$1" 1)")"
+    "$( [[ "$1" == "$2" ]] && echo ref || delta "$(col "$2" 1)" "$(col "$1" 1)")" \
+    "$( [[ "$BPF_STATS" == 1 ]] && col "$1" 6 || echo -)"
 }
 row a  a  "no rules, 1 CPU"
 row b  a  "4096 rules, 32 on dst, worst-case miss, 1 CPU"
@@ -386,9 +430,6 @@ row c0 c0 "clean UDP, $SYN_CPUS CPUs"
 row c1 c0 "UDP + fixed-tuple SYN 1:3, $SYN_CPUS CPUs"
 # Against c1: same packet mix, so the difference is the LRU inserts.
 row c2 c1 "UDP + random-source SYN 1:3, $SYN_CPUS CPUs"
-drops=""
-for n in a b b2 b3 b4 c0 c1 c2; do want "$n" && drops+=" $n=$(col "$n" 4)"; done
-echo "drop verdict pps (should be ~0 unless SYN cookies challenge the SYNs):$drops"
-challenges=""
-for n in a b b2 b3 b4 c0 c1 c2; do want "$n" && challenges+=" $n=$(col "$n" 5)"; done
-echo "SYN cookie challenge pps:$challenges"
+row d  a  "DROP rule matching the flow, 1 CPU"
+echo "drop pps must be ~0 except in d (the drop rate) and when SYN cookies challenge the SYNs;"
+echo "chal pps (SYN cookie challenges) is 0 unless COLLECTOR_ARGS enables -scrub-syn-cookies"
