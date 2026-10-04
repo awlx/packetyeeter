@@ -19,15 +19,19 @@
   reports it, including a scrub node. AI-detection and sustained-download
   blocks (`Broadcast`) still go to every collector, except that with the
   allowlist set they skip trusted scrub nodes unless a trusted scrub stream
-  reported that source in the last 10 minutes.
-- The 60-second block dedup now tracks which collectors got a block and at
-  what scope: a block reserved by one stream (possibly untrusted) no longer
-  swallows a later trusted fan-out or `Broadcast` of the same source; those
-  still reach every collector that has not had it.
+  reported that source in the last 10 minutes. That evidence is global: one
+  trusted scrub report admits the `Broadcast` to all trusted scrub nodes.
+- The 60-second block dedup is now per collector: a block one collector got
+  no longer swallows another node's own block, a trusted fan-out or a
+  `Broadcast` of the same source within the window. Before, an ECMP cluster
+  without fan-out blocked a source on about one node per minute.
+  `WatchDecisions` publishes a source once per scope (local, fan-out,
+  broadcast) per window.
 - Fan-out commands go through one ordered, bounded queue (256) per scrub
-  peer, so blocks reach each peer in decision order (only blocks are fanned
-  out today; unblocks would use the same queue). New counter
-  `packetyeeter_scrub_command_fanout_dropped_total{reason="queue_full"|"role_changed"}`.
+  peer, so fan-out blocks reach each peer in decision order. The ordering
+  covers fan-out blocks only, not other command paths (only blocks are
+  fanned out today; unblocks would use the same queue). New counter
+  `packetyeeter_scrub_command_fanout_dropped_total{reason="queue_full"|"role_changed"|"peer_gone"}`.
 - `packetyeeter_scrub_command_fanout_total` now counts only sends the
   transport accepted.
 

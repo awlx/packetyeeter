@@ -189,6 +189,8 @@ Analyzer-side, for `PushRules`:
   256-command outbound queue was full, i.e. that collector is not reading;
   any increase means that node missed a block. `reason="role_changed"`: it
   stopped being a trusted scrub collector after the command was queued.
+  `reason="peer_gone"`: its stream ended (disconnect, stall timeout or
+  analyzer shutdown) with the command still queued.
 - `packetyeeter_collector_send_stalls_total` (counter): collector streams the
   analyzer closed because a command send (rules or blocks) blocked for 30
   seconds: the collector stopped reading. It reconnects and is resynced.

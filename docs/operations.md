@@ -503,10 +503,10 @@ What is and is not protected:
 - A collector outside the allowlist (a host-mode collector, an unlisted
   certificate, or any client on a plaintext listener) cannot cause a block on
   any scrub node other than the one whose signal crossed the threshold, and
-  cannot stop a trusted fan-out: a block it reserved in the 60-second dedup
-  only for its own stream does not suppress a later trusted fan-out or
-  `Broadcast` of the same source, which still reach every collector that has
-  not had it.
+  cannot stop another collector's block: the 60-second dedup is per
+  collector, so a block it got does not suppress another node's own block, a
+  trusted fan-out or a `Broadcast` of the same source, which still reach every
+  collector that has not had it.
 - It still feeds the shared per-source state (rate limit, reputation, AI
   windows). It can push a source over the shared threshold, and the next
   signal for that source from any stream, including a trusted scrub node, then
@@ -518,25 +518,36 @@ What is and is not protected:
   every collector as before (host-mode included). With `-scrub-client-names`
   set it skips trusted scrub collectors unless a trusted scrub stream
   reported that source in the last 10 minutes, so evidence from untrusted
-  streams alone does not reach them through this path either. With the list
-  empty `Broadcast` reaches every collector, as before.
+  streams alone does not reach them through this path either. That evidence
+  is global, not per node: one trusted scrub report for a source admits the
+  `Broadcast` to *all* trusted scrub nodes. A `Broadcast` sent before the
+  trusted report is sent again to the scrub nodes when the AI engine repeats
+  it within 60 seconds. With the list empty `Broadcast` reaches every
+  collector, as before.
 - Restrict who can connect at all with mTLS and a firewall; the allowlist
   does not.
 
 Each node expires a block from the time it received it and its own
 `-block-duration`, so nodes can drop a fanned-out block at slightly different
 times. Dry-run and the kill switch are checked before the dedup, once per
-decision. `WatchDecisions` publishes a decision once; a decision that widens
-an earlier, narrower block of the same source (for example a trusted fan-out
-after a local block) is published again. Each peer has its own ordered queue
-of 256 commands, sent by one worker, so a stalled peer does not delay the
-originating node and blocks reach each peer in decision order (the analyzer
-only fans out blocks today; unblocks would take the same queue). A command
-that cannot be sent to a peer is dropped and counted in
+decision. The dedup suppresses a repeat `BLOCK_IP` to a collector that got
+one for the same source in the last 60 seconds; with fan-out off each node
+still gets the blocks decided from its own signals. `WatchDecisions`
+publishes a source once per scope (local, fan-out, broadcast) within the
+dedup window, not once per collector: a trusted fan-out after a local block
+is published again, a second node's own local block is not.
+
+Each peer has its own ordered queue of 256 commands, sent by one worker, so a
+stalled peer does not delay the originating node and fan-out blocks reach
+each peer in decision order. The ordering covers fan-out blocks only, not
+the origin's own commands, rule sets or `Broadcast`, which take other paths
+(the analyzer only fans out blocks today; unblocks would take the same
+queue). A command that cannot be sent to a peer is dropped and counted in
 `packetyeeter_scrub_command_fanout_dropped_total`: `reason="queue_full"` when
 the peer's queue is full (the send watchdog closes a peer that stops reading
 for 30 seconds), `reason="role_changed"` when the peer stopped being a
-trusted scrub stream after the command was queued.
+trusted scrub stream after the command was queued, `reason="peer_gone"` when
+its stream ended with the command still queued.
 `packetyeeter_scrub_command_fanout_total` counts fan-out sends the transport
 accepted. A scrub node that connects after the block does not get it. Blocks
 decided from host-mode collectors still go only to that collector.
