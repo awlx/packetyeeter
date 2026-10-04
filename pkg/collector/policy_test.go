@@ -71,7 +71,7 @@ func TestPolicyBlockMetrics(t *testing.T) {
 		logger: logrus.New(),
 	}
 	want := `
-# HELP packetyeeter_policy_blocked_bytes_total Bytes of packets matching a -policy block rule, by family
+# HELP packetyeeter_policy_blocked_bytes_total Bytes of packets matching a -policy block rule, by family (passed instead of dropped in monitor mode)
 # TYPE packetyeeter_policy_blocked_bytes_total counter
 packetyeeter_policy_blocked_bytes_total{family="ipv4"} 300
 packetyeeter_policy_blocked_bytes_total{family="ipv6"} 700

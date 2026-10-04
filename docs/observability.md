@@ -395,9 +395,23 @@ With `-scrub-syn-cookies` on or auto (see
 `ipv6`. They are per-CPU kernel counters summed at scrape time, so unlike
 `packetyeeter_kernel_incidents_total{reason="policy_block"}` they are not
 capped by the incident emit budget. In monitor mode (`-dry-run`) they count
-matches that were passed instead of dropped. Allowlisted sources, and in
-scrub mode packets a PASS or DROP rule matches first, are not counted. Bytes
-cover the linear part of each frame, so multi-buffer (jumbo) frames are
+matches that were passed instead of dropped. Packets skip the counters, and
+the policy check, when they are:
+
+- from an allowlisted source;
+- from a source whose most specific `-policy` match is a `monitor` rule;
+- not IPv4 or IPv6 (ARP and other non-IP frames), have an Ethernet/VLAN header
+  that does not parse, or are stacked deeper than the parsed VLAN tags (host
+  mode passes unparseable frames and, outside monitor mode, drops over-stacked
+  VLAN frames fail-closed; scrub mode counts both as malformed);
+- truncated before the end of the fixed IPv4/IPv6 header (host mode passes
+  them), or in scrub mode have a bad IP version or IPv4 IHL (malformed);
+- in scrub mode, addressed to a multicast, broadcast, or IPv6 link-local
+  destination, or IPv6 neighbour discovery (ICMPv6 133-137) to one of the
+  node's own addresses;
+- in scrub mode, matched first by a scrub PASS or DROP rule.
+
+Bytes cover the linear part of each frame, so multi-buffer (jumbo) frames are
 undercounted. There is no per-source breakdown; use incidents for sampled
 source addresses.
 
