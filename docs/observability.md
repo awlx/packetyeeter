@@ -178,16 +178,35 @@ Analyzer-side, for `PushRules`:
 - `packetyeeter_rule_deltas_sent_total` (counter): complete rule sets sent to
   scrub collectors (on each push, on connect and once a minute). Compare with
   the collectors' `packetyeeter_scrub_rules_active` to confirm they converged.
-- `packetyeeter_scrub_command_fanout_total` (counter): block and unblock
-  commands successfully sent to scrub collectors other than the originating
-  one, one per extra collector: a block decided with three trusted scrub
-  collectors connected adds 2. Counts transport acceptance, not enforcement.
-  Zero without `-scrub-client-names` (see
-  [scrub mode](operations.md#scrub-mode)).
-- `packetyeeter_scrub_command_fanout_dropped_total` (counter): fan-out commands
-  dropped for a scrub collector because its 256-command outbound queue was
-  full, i.e. that collector is not reading. Any increase means that node
-  missed a block or unblock.
+- `packetyeeter_scrub_command_fanout_total` (counter): fan-out commands
+  successfully sent to scrub collectors other than the originating one, one
+  per extra collector: a block fanned out with three trusted scrub collectors
+  connected adds 2. Counts transport acceptance, not enforcement. Only blocks
+  are fanned out today; unblocks would be counted the same way. Zero without
+  `-scrub-client-names` (see [scrub mode](operations.md#scrub-mode)).
+- `packetyeeter_scrub_command_fanout_dropped_total{reason}` (counter): fan-out
+  commands not sent to a scrub collector. `reason="queue_full"`: its
+  256-command outbound queue was full, i.e. that collector is not reading;
+  any increase means that node missed a block. `reason="role_changed"`: it
+  stopped being a trusted scrub collector after the command was queued.
+  `reason="peer_gone"`: its stream ended (disconnect, stall timeout or
+  analyzer shutdown) with the command still queued, or the command was
+  queued after the stream ended. The `reason` label is new (the
+  counter had no labels before): plain selectors still match, now one series
+  per reason, so alerts or panels that expect a single series should use
+  `sum(...)` or `by (reason)`.
+- `packetyeeter_scrub_shared_only_blocks_skipped_total{kind}` (counter):
+  rate-limit (`kind="rate_limit"`) or reputation (`kind="reputation"`) blocks
+  not sent to a trusted scrub collector because only the shared state, not
+  the trusted-only state, crossed the threshold. A steady rise means
+  collectors outside `-scrub-client-names` are driving a source the scrub
+  nodes see little of. Zero without `-scrub-client-names`.
+- `packetyeeter_scrub_evidence_entries` (gauge): sources a trusted scrub
+  collector reported in the last 10 minutes, which admit `Broadcast` blocks
+  to trusted scrub collectors. Capped at 200000.
+- `packetyeeter_scrub_evidence_evictions_total` (counter): entries evicted
+  from that set at the cap before their 10 minutes ran out. A source evicted
+  this way is not `Broadcast` to scrub nodes until they report it again.
 - `packetyeeter_collector_send_stalls_total` (counter): collector streams the
   analyzer closed because a command send (rules or blocks) blocked for 30
   seconds: the collector stopped reading. It reconnects and is resynced.

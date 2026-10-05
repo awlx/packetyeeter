@@ -112,11 +112,13 @@ type Config struct {
 	// Requires TLS.ClientCAFile.
 	ControlClientNames []string
 	// ScrubClientNames lists the client certificate DNS SANs or CommonNames
-	// whose streams may take part in scrub block fan-out. A block decided
-	// from a scrub stream reaches the other scrub streams only when both are
-	// on this list; empty disables cross-node fan-out. It does not gate
-	// signals: any connected stream still adds evidence to the shared
-	// per-source state. Requires TLS.ClientCAFile.
+	// of trusted scrub collectors. A block fans out from one trusted scrub
+	// stream to the others only when evidence from trusted scrub streams
+	// alone (ScrubRateLimiter, ScrubReputation) crossed the threshold; empty
+	// disables cross-node fan-out. It does not gate signals: any connected
+	// stream still feeds the shared per-source state and can get a source
+	// blocked on the one stream that next reports it. Requires
+	// TLS.ClientCAFile.
 	ScrubClientNames []string
 }
 
@@ -262,6 +264,17 @@ type Analyzer struct {
 	asnRateLimiters map[string]*ratelimit.TokenBucket
 	rateLimitersMu  sync.RWMutex
 	RateLimiter     *ratelimit.Limiter
+	// ScrubRateLimiter has RateLimiter's configuration but is fed only by
+	// trusted scrub streams (see isTrustedScrub); only its verdict makes a
+	// rate-limit block eligible for scrub fan-out.
+	ScrubRateLimiter *ratelimit.Limiter
+	// ScrubReputation is fed only by penalties from ScrubRateLimiter trips;
+	// only its score makes a reputation block eligible for scrub fan-out.
+	// nil: reputation blocks never fan out.
+	ScrubReputation *reputation.Engine
+	// scrubEvidence remembers which sources trusted scrub streams reported
+	// recently; Broadcast sends to trusted scrub collectors only for those.
+	scrubEvidence *evidenceSet
 
 	// HTTP rate tracking (EWMA)
 	httpRateByIP  map[string]*ewma.State
@@ -282,7 +295,7 @@ type Analyzer struct {
 	enforcement enforcementState
 
 	// Recent block dedup
-	recentBlocks      map[string]time.Time
+	recentBlocks      map[string]*blockReservation
 	recentBlocksSwept time.Time
 	recentBlocksMu    sync.Mutex
 
@@ -346,9 +359,15 @@ type collectorStream struct {
 	// fanout queues block commands decided from other scrub nodes, drained
 	// in order by one worker; nil for streams that can never receive them.
 	fanout chan *apiv1.Command
+	// fanoutMu orders enqueues against the worker closing the queue, so a
+	// command enqueued after the final drain is counted, not lost.
+	fanoutMu     sync.RWMutex
+	fanoutClosed bool
 	// warnedUntrusted limits the "scrub but not trusted" warning to once per
 	// stream.
 	warnedUntrusted atomic.Bool
+	// key identifies the stream in block reservations; see dedupKey.
+	key atomic.Uint64
 
 	// At most one rule sync runs per collector; requests made meanwhile wait
 	// for one more send that covers them all.
@@ -365,6 +384,18 @@ var errCommandSendStalled = errors.New("collector stopped reading commands")
 func (cs *collectorStream) setRole(role string) string {
 	prev, _ := cs.role.Swap(role).(string)
 	return prev
+}
+
+// streamKeySeq numbers collector streams for the block dedup.
+var streamKeySeq atomic.Uint64
+
+// dedupKey identifies cs in block reservations, assigned on first use.
+func (cs *collectorStream) dedupKey() uint64 {
+	if k := cs.key.Load(); k != 0 {
+		return k
+	}
+	cs.key.CompareAndSwap(0, streamKeySeq.Add(1))
+	return cs.key.Load()
 }
 
 func (cs *collectorStream) isScrub() bool {
@@ -449,13 +480,14 @@ func New(cfg Config) (*Analyzer, error) {
 		ipRateLimiters:         make(map[string]*ratelimit.TokenBucket),
 		asnRateLimiters:        make(map[string]*ratelimit.TokenBucket),
 		RateLimiter:            ratelimit.NewLimiter(ratelimit.DefaultConfig()),
+		scrubEvidence:          newEvidenceSet(scrubEvidenceTTL, scrubEvidenceMaxEntries),
 		httpRateByIP:           make(map[string]*ewma.State),
 		httpRateByASN:          make(map[string]*ewma.State),
 		proxyLagByASN:          make(map[string]*ewma.State),
 		latencyAnomalyThrottle: make(map[string]time.Time),
 		pathWindows:            make(map[string]*pathWindow),
 		httpErrorWindows:       make(map[string]*httpErrorWindow),
-		recentBlocks:           make(map[string]time.Time),
+		recentBlocks:           make(map[string]*blockReservation),
 		ctx:                    ctx,
 		cancel:                 cancel,
 		startTime:              time.Now(),
@@ -466,6 +498,9 @@ func New(cfg Config) (*Analyzer, error) {
 		a.Config.WatchBufferSize = a.watch.bufferSize
 	}
 	a.ReputationHelper = NewReputationHelper(nil) // Will be set during Start()
+	if len(cfg.ScrubClientNames) > 0 {
+		a.ScrubRateLimiter = ratelimit.NewLimiter(ratelimit.DefaultConfig())
+	}
 	if len(cfg.ControlClientNames) > 0 {
 		a.controlAuthz = grpctls.NewMethodAuthorizer(ControlMethods, cfg.ControlClientNames, logrus.StandardLogger())
 	}
@@ -513,6 +548,15 @@ func (a *Analyzer) Start() error {
 	}
 	a.Reputation = rep
 	a.ReputationHelper = NewReputationHelper(a.Reputation)
+	if len(a.Config.ScrubClientNames) > 0 {
+		srep := reputation.New(30*time.Minute, 0.95, a.Config.ReputationThreshold)
+		srep.SetMaxEntries(a.Config.ReputationMaxEntries)
+		srep.SetMaxEntryAge(a.Config.ReputationMaxAge)
+		if a.Config.ReputationIPScoreCap > 0 {
+			srep.SetIPScoreCap(a.Config.ReputationIPScoreCap)
+		}
+		a.ScrubReputation = srep
+	}
 	logrus.WithFields(logrus.Fields{
 		"threshold":     a.Config.ReputationThreshold,
 		"max_entries":   a.Config.ReputationMaxEntries,
@@ -837,6 +881,9 @@ func (a *Analyzer) Start() error {
 			case <-cleanupTicker.C:
 				a.cleanupTrackingMaps()
 			case <-gaugeTicker.C:
+				if a.scrubEvidence != nil {
+					metrics.ScrubEvidenceEntries.Set(float64(a.scrubEvidence.len()))
+				}
 				if a.RateLimiter != nil {
 					ipCnt, asnCnt := a.RateLimiter.GetStats()
 					metrics.RateLimitActiveIPs.Set(float64(ipCnt))
@@ -870,8 +917,9 @@ func (a *Analyzer) Start() error {
 // concurrent streams would otherwise grow the collectors map, its per-stream
 // goroutines, and the Broadcast fan-out without limit. The caller closes the
 // stream when it gets an empty id.
-// registerCollector admits cs and, when its verified certificate is on
-// -scrub-client-names, starts its fan-out worker, which stops when ctx (the
+//
+// When the verified client certificate is on -scrub-client-names it marks cs
+// as trusted and starts its fan-out worker, which stops when ctx (the
 // stream) or the analyzer ends.
 func (a *Analyzer) registerCollector(ctx context.Context, cs *collectorStream) string {
 	addr := "unknown"
@@ -1013,6 +1061,9 @@ func (a *Analyzer) processSignal(sig *apiv1.Signal, cs *collectorStream) {
 	}
 
 	ip := net.IP(sig.Ip)
+	if cs.isTrustedScrub() {
+		a.scrubEvidence.add(ip)
+	}
 	asn := "Unknown"
 	if a.GeoIP != nil {
 		asn, _ = a.GeoIP.LookupWithDefaults(ip)
@@ -1075,7 +1126,7 @@ func (a *Analyzer) processSignal(sig *apiv1.Signal, cs *collectorStream) {
 	}
 
 	// Rate limiting check
-	if a.checkRateLimit(ip, asn) {
+	if limited, fanout := a.checkRateLimitFor(cs, ip, asn); limited {
 		if logrus.IsLevelEnabled(logrus.DebugLevel) {
 			logrus.WithFields(logrus.Fields{
 				"ip":  ip.String(),
@@ -1084,7 +1135,10 @@ func (a *Analyzer) processSignal(sig *apiv1.Signal, cs *collectorStream) {
 		}
 
 		if !a.Config.DryRun {
-			a.ReputationHelper.PenalizeIP(ip, 10.0, "Rate limit exceeded")
+			a.penalizeRateLimited(ip, fanout)
+			if a.skipSharedOnlyBlock(cs, fanout, "rate_limit") {
+				return
+			}
 			// Increment appropriate block metric based on signal type
 			switch sig.Type {
 			case apiv1.SignalType_SIGNAL_UDP_FLOOD:
@@ -1104,7 +1158,7 @@ func (a *Analyzer) processSignal(sig *apiv1.Signal, cs *collectorStream) {
 				Type:   apiv1.CommandType_COMMAND_BLOCK_IP,
 				Ip:     sig.Ip,
 				Reason: "Rate limit exceeded",
-			})
+			}, fanout)
 		}
 		return
 	}
@@ -1238,6 +1292,10 @@ func (a *Analyzer) processSignal(sig *apiv1.Signal, cs *collectorStream) {
 	}
 
 	if score > a.Config.ReputationThreshold {
+		fanout := a.scrubReputationExceeded(cs, ip)
+		if !a.Config.DryRun && a.skipSharedOnlyBlock(cs, fanout, "reputation") {
+			return
+		}
 		shouldBlock := a.mlConfirmsReputationBlock(ip, asn, score, "signal")
 
 		if shouldBlock && !a.Config.DryRun {
@@ -1266,12 +1324,17 @@ func (a *Analyzer) processSignal(sig *apiv1.Signal, cs *collectorStream) {
 				Type:   apiv1.CommandType_COMMAND_BLOCK_IP,
 				Ip:     sig.Ip,
 				Reason: fmt.Sprintf("Reputation threshold exceeded: %.0f", score),
-			})
+			}, fanout)
 		}
 	}
 }
 
-func (a *Analyzer) sendCommand(cs *collectorStream, cmd *apiv1.Command) {
+// sendCommand issues cmd, decided from cs's signals, to cs. fanoutEligible
+// says the decision rests on trusted scrub evidence alone (ScrubRateLimiter
+// or ScrubReputation); only then, and only when cs itself is a trusted scrub
+// stream, is a block or unblock also queued for every other trusted scrub
+// stream. Any other decision stays on cs.
+func (a *Analyzer) sendCommand(cs *collectorStream, cmd *apiv1.Command, fanoutEligible bool) {
 	if a.Config.DryRun {
 		// cmd.String() renders the whole proto even when Debug is off.
 		if logrus.IsLevelEnabled(logrus.DebugLevel) {
@@ -1287,15 +1350,31 @@ func (a *Analyzer) sendCommand(cs *collectorStream, cmd *apiv1.Command) {
 		return
 	}
 
-	if a.isDuplicateBlockCommand(cmd) {
+	scope := scopeLocal
+	targets := []*collectorStream{cs}
+	if fanoutEligible && cs.isTrustedScrub() && fansOutToScrub(cmd) {
+		scope = scopeFanout
+		targets = append(targets, a.trustedScrubPeers(cs)...)
+	}
+	targets, publish := a.reserveCommand(cmd, scope, targets)
+	if len(targets) == 0 {
 		return
 	}
 
-	a.publishCommand(cmd)
-	if cs.isTrustedScrub() && fansOutToScrub(cmd) {
-		a.sendToScrubPeers(cs, cmd)
+	if publish {
+		a.publishCommand(cmd)
 	}
-	a.sendToStream(cs, cmd)
+	toOrigin := false
+	for _, t := range targets {
+		if t == cs {
+			toOrigin = true
+			continue
+		}
+		a.enqueueScrubFanout(t, cmd)
+	}
+	if toOrigin {
+		a.sendToStream(cs, cmd)
+	}
 }
 
 // fansOutToScrub reports whether cmd must reach every scrub collector rather
@@ -1313,22 +1392,61 @@ func fansOutToScrub(cmd *apiv1.Command) bool {
 // this far behind is stalled; the send watchdog closes its stream.
 const scrubFanoutQueueSize = 256
 
-// sendToScrubPeers queues cmd for every trusted scrub collector except
-// origin. ECMP splits a source's traffic across scrub nodes, so a block on
-// one node alone leaves the rest forwarding it. Queued, not sent, so a
-// stalled peer cannot hold up origin's signal stream; one FIFO per peer
-// keeps a block and a later unblock in order.
-func (a *Analyzer) sendToScrubPeers(origin *collectorStream, cmd *apiv1.Command) {
+// trustedScrubPeers returns every trusted scrub stream except origin. ECMP
+// splits a source's traffic across scrub nodes, so a block on one node alone
+// leaves the rest forwarding it.
+func (a *Analyzer) trustedScrubPeers(origin *collectorStream) []*collectorStream {
 	a.collectorsMu.RLock()
 	defer a.collectorsMu.RUnlock()
+	var peers []*collectorStream
 	for _, cs := range a.collectors {
-		if cs == origin || cs.fanout == nil || !cs.isTrustedScrub() {
-			continue
+		if cs != origin && cs.fanout != nil && cs.isTrustedScrub() && !cs.fanoutIsClosed() {
+			peers = append(peers, cs)
 		}
+	}
+	return peers
+}
+
+// enqueueScrubFanout queues cmd for a scrub peer without blocking: a stalled
+// peer cannot hold up the origin's signal stream. One FIFO per peer keeps
+// fan-out commands in decision order; other commands to the peer (its own
+// blocks, rule sets, Broadcast) are not ordered against them. Today only
+// blocks are fanned out; unblocks would take the same queue.
+func (a *Analyzer) enqueueScrubFanout(cs *collectorStream, cmd *apiv1.Command) {
+	if cs.fanout == nil {
+		return
+	}
+	cs.fanoutMu.RLock()
+	defer cs.fanoutMu.RUnlock()
+	if cs.fanoutClosed {
+		metrics.ScrubCommandFanoutDropped.WithLabelValues("peer_gone").Inc()
+		return
+	}
+	select {
+	case cs.fanout <- cmd:
+	default:
+		metrics.ScrubCommandFanoutDropped.WithLabelValues("queue_full").Inc()
+	}
+}
+
+func (cs *collectorStream) fanoutIsClosed() bool {
+	cs.fanoutMu.RLock()
+	defer cs.fanoutMu.RUnlock()
+	return cs.fanoutClosed
+}
+
+// drainScrubFanout closes cs's queue to new commands once its worker stops
+// and empties it, counting each command it held as reason="peer_gone".
+func drainScrubFanout(cs *collectorStream) {
+	cs.fanoutMu.Lock()
+	cs.fanoutClosed = true
+	cs.fanoutMu.Unlock()
+	for {
 		select {
-		case cs.fanout <- cmd:
+		case <-cs.fanout:
+			metrics.ScrubCommandFanoutDropped.WithLabelValues("peer_gone").Inc()
 		default:
-			metrics.ScrubCommandFanoutDropped.Inc()
+			return
 		}
 	}
 }
@@ -1336,7 +1454,9 @@ func (a *Analyzer) sendToScrubPeers(origin *collectorStream, cmd *apiv1.Command)
 // runScrubFanout sends cs's queued fan-out commands in order until its
 // stream or the analyzer ends. Ending the stream also unblocks a Send in
 // progress, so shutdown does not wait out the send watchdog.
+// Commands still queued when it stops are counted as reason="peer_gone".
 func (a *Analyzer) runScrubFanout(ctx context.Context, id string, cs *collectorStream) {
+	defer drainScrubFanout(cs)
 	for {
 		select {
 		case <-ctx.Done():
@@ -1345,10 +1465,12 @@ func (a *Analyzer) runScrubFanout(ctx context.Context, id string, cs *collectorS
 			return
 		case cmd := <-cs.fanout:
 			if ctx.Err() != nil || a.lifetime().Err() != nil {
+				metrics.ScrubCommandFanoutDropped.WithLabelValues("peer_gone").Inc()
 				return
 			}
 			// The role can change after the command was queued.
 			if !cs.isTrustedScrub() {
+				metrics.ScrubCommandFanoutDropped.WithLabelValues("role_changed").Inc()
 				continue
 			}
 			if err := a.sendLocked(cs, cmd); err != nil {
@@ -1358,25 +1480,6 @@ func (a *Analyzer) runScrubFanout(ctx context.Context, id string, cs *collectorS
 			metrics.ScrubCommandFanout.Inc()
 		}
 	}
-}
-
-// isDuplicateBlockCommand dedups block commands per IP for a short TTL,
-// marking the IP as blocked when it is not a duplicate. It must run once per
-// block decision — never once per collector — or a multi-collector fan-out
-// suppresses the command for every collector after the first.
-func (a *Analyzer) isDuplicateBlockCommand(cmd *apiv1.Command) bool {
-	if cmd.Type != apiv1.CommandType_COMMAND_BLOCK_IP || len(cmd.Ip) == 0 {
-		return false
-	}
-	ip := net.IP(cmd.Ip)
-	if a.wasRecentlyBlocked(ip) {
-		if logrus.IsLevelEnabled(logrus.DebugLevel) {
-			logrus.WithFields(logrus.Fields{"ip": ip.String()}).Debug("Block command skipped (recently blocked)")
-		}
-		return true
-	}
-	a.markBlocked(ip)
-	return false
 }
 
 func (a *Analyzer) sendToStream(cs *collectorStream, cmd *apiv1.Command) {
@@ -1433,48 +1536,139 @@ func (a *Analyzer) goTracked(f func()) bool {
 	return true
 }
 
+// recentBlockTTL is how long a BLOCK_IP sent to a collector suppresses
+// repeats to that collector.
 const (
 	recentBlockTTL = 60 * time.Second
 	// Sweeping on every mark made each block O(len(recentBlocks)) under
-	// recentBlocksMu; wasRecentlyBlocked checks the TTL itself, so a lagging
-	// sweep never extends dedup.
+	// recentBlocksMu; reserveBlock checks the TTL itself, so a lagging sweep
+	// never extends dedup.
 	recentBlocksSweepInterval = time.Second
 )
 
-func (a *Analyzer) markBlocked(ip net.IP) {
-	if ip == nil {
-		return
+// blockScope is how far a block decision reaches.
+type blockScope uint8
+
+const (
+	scopeLocal     blockScope = 1 << iota // the originating collector only
+	scopeFanout                           // origin plus every trusted scrub collector
+	scopeBroadcast                        // every eligible collector (Broadcast)
+)
+
+// blockScopes lists the scopes in index order for blockReservation.published.
+var blockScopes = [...]blockScope{scopeLocal, scopeFanout, scopeBroadcast}
+
+func (s blockScope) index() int {
+	for i, b := range blockScopes {
+		if b == s {
+			return i
+		}
 	}
+	panic(fmt.Sprintf("unknown block scope %d", s))
+}
+
+// blockReservation is the dedup entry for one source address: when each
+// collector last got the block and when each scope was last published. sent
+// is keyed by dedupKey, not the stream, so an entry does not keep a
+// disconnected collector's stream alive. at is the newest of those times.
+type blockReservation struct {
+	at        time.Time
+	published [len(blockScopes)]time.Time
+	sent      map[uint64]time.Time
+}
+
+// publishedWithin reports whether scope was published within recentBlockTTL
+// before now.
+func (r *blockReservation) publishedWithin(scope blockScope, now time.Time) bool {
+	p := r.published[scope.index()]
+	return !p.IsZero() && now.Sub(p) < recentBlockTTL
+}
+
+// reserveCommand dedups BLOCK_IP commands per source and collector and
+// returns the targets that still need cmd and whether the decision should be
+// published on WatchDecisions; other commands pass through. It must run once
+// per decision - never once per collector.
+func (a *Analyzer) reserveCommand(cmd *apiv1.Command, scope blockScope, targets []*collectorStream) ([]*collectorStream, bool) {
+	if cmd.GetType() != apiv1.CommandType_COMMAND_BLOCK_IP || len(cmd.GetIp()) == 0 {
+		return targets, true
+	}
+	ip := net.IP(cmd.GetIp())
+	out, publish := a.reserveBlock(ip, scope, targets, time.Now())
+	if len(out) == 0 && logrus.IsLevelEnabled(logrus.DebugLevel) {
+		logrus.WithFields(logrus.Fields{"ip": ip.String()}).Debug("Block command skipped (recently blocked)")
+	}
+	return out, publish
+}
+
+// reserveBlock records a block of ip at scope and returns which of targets
+// have not had it within recentBlockTTL; only those get it. Dedup is per
+// collector: a block one collector got never stops another collector's own
+// decision, a trusted fan-out or a Broadcast from reaching collectors that
+// have not had it. publish is true when something is sent and this scope was
+// not published within recentBlockTTL, so WatchDecisions shows a source at
+// most once per scope per TTL - and again every TTL while the attack goes
+// on, however the sends to individual collectors interleave.
+func (a *Analyzer) reserveBlock(ip net.IP, scope blockScope, targets []*collectorStream, now time.Time) (fresh []*collectorStream, publish bool) {
 	key := ip.String()
-	now := time.Now()
 	a.recentBlocksMu.Lock()
 	defer a.recentBlocksMu.Unlock()
-	a.recentBlocks[key] = now
+
+	r, ok := a.recentBlocks[key]
+	if !ok || now.Sub(r.at) >= recentBlockTTL {
+		r = &blockReservation{}
+		ok = false
+	}
+	for k, at := range r.sent {
+		if now.Sub(at) >= recentBlockTTL {
+			delete(r.sent, k)
+		}
+	}
+	for _, t := range targets {
+		k := t.dedupKey()
+		if at, got := r.sent[k]; got && now.Sub(at) < recentBlockTTL {
+			continue
+		}
+		if r.sent == nil {
+			r.sent = make(map[uint64]time.Time, len(targets))
+		}
+		r.sent[k] = now
+		fresh = append(fresh, t)
+	}
+	if len(fresh) == 0 {
+		return nil, false
+	}
+	r.at = now
+	if !ok {
+		a.recentBlocks[key] = r
+		a.sweepRecentBlocksLocked(now)
+	}
+	if !r.publishedWithin(scope, now) {
+		r.published[scope.index()] = now
+		publish = true
+	}
+	return fresh, publish
+}
+
+func (a *Analyzer) sweepRecentBlocksLocked(now time.Time) {
 	if now.Sub(a.recentBlocksSwept) < recentBlocksSweepInterval {
 		return
 	}
 	a.recentBlocksSwept = now
-	for k, ts := range a.recentBlocks {
-		if now.Sub(ts) > recentBlockTTL*2 {
+	for k, old := range a.recentBlocks {
+		if now.Sub(old.at) > recentBlockTTL*2 {
 			delete(a.recentBlocks, k)
 		}
 	}
 }
 
-func (a *Analyzer) wasRecentlyBlocked(ip net.IP) bool {
-	if ip == nil {
-		return false
-	}
-	key := ip.String()
-	a.recentBlocksMu.Lock()
-	defer a.recentBlocksMu.Unlock()
-	if ts, ok := a.recentBlocks[key]; ok {
-		return time.Since(ts) < recentBlockTTL
-	}
-	return false
-}
-
-// Broadcast sends a command to all connected collectors
+// Broadcast sends a command to all connected collectors. It serves AI
+// detections and sustained-download holds, which are judged on evidence
+// from every collector, so for a BLOCK_IP it skips trusted scrub collectors
+// unless a trusted scrub stream reported the source recently: evidence from
+// untrusted streams alone does not reach them. That evidence is global: one
+// trusted scrub report admits every trusted scrub collector. A later
+// Broadcast of the same source reaches collectors that became eligible
+// since, not the ones that already have it.
 func (a *Analyzer) Broadcast(cmd *apiv1.Command) {
 	if a.Config.DryRun {
 		logrus.WithFields(logrus.Fields{"cmd": cmd.String()}).Debug("Dry run: not broadcasting command")
@@ -1489,9 +1683,13 @@ func (a *Analyzer) Broadcast(cmd *apiv1.Command) {
 	// slot: reserving would mark the IP "recently blocked" for the TTL even
 	// though nothing enforced it, so a collector that (re)connects within the
 	// window would have the re-issued block suppressed and never receive it.
+	gateScrub := cmd.GetType() == apiv1.CommandType_COMMAND_BLOCK_IP && !a.scrubEvidence.has(net.IP(cmd.GetIp()))
 	a.collectorsMu.RLock()
 	recipients := make([]*collectorStream, 0, len(a.collectors))
 	for _, cs := range a.collectors {
+		if gateScrub && cs.isTrustedScrub() {
+			continue
+		}
 		recipients = append(recipients, cs)
 	}
 	a.collectorsMu.RUnlock()
@@ -1502,11 +1700,14 @@ func (a *Analyzer) Broadcast(cmd *apiv1.Command) {
 		return
 	}
 
-	if a.isDuplicateBlockCommand(cmd) {
+	recipients, publish := a.reserveCommand(cmd, scopeBroadcast, recipients)
+	if len(recipients) == 0 {
 		return
 	}
 
-	a.publishCommand(cmd)
+	if publish {
+		a.publishCommand(cmd)
+	}
 	// Fan-out is bounded by Config.MaxCollectors (see registerCollector).
 	for _, cs := range recipients {
 		go a.sendToStream(cs, cmd)
@@ -2240,10 +2441,12 @@ func (a *Analyzer) cleanupTrackingMaps() {
 	latencyThrottleCount := len(a.latencyAnomalyThrottle)
 	a.latencyMu.Unlock()
 
+	scrubEvidenceCount := a.scrubEvidence.purge(now)
+
 	// Clean recent blocks
 	a.recentBlocksMu.Lock()
-	for ip, t := range a.recentBlocks {
-		if now.Sub(t) > 15*time.Minute {
+	for ip, r := range a.recentBlocks {
+		if now.Sub(r.at) > 15*time.Minute {
 			delete(a.recentBlocks, ip)
 		}
 	}
@@ -2259,6 +2462,7 @@ func (a *Analyzer) cleanupTrackingMaps() {
 		"rate_limiter_asns": rateLimiterASNCount,
 		"latency_throttles": latencyThrottleCount,
 		"recent_blocks":     recentBlocksCount,
+		"scrub_evidence":    scrubEvidenceCount,
 	}).Info("Cleaned up tracking maps")
 }
 
@@ -2282,6 +2486,15 @@ func (a *Analyzer) close() {
 	}
 	if a.Reputation != nil {
 		a.Reputation.Stop()
+	}
+	if a.ScrubReputation != nil {
+		a.ScrubReputation.Stop()
+	}
+	if a.RateLimiter != nil {
+		a.RateLimiter.Stop()
+	}
+	if a.ScrubRateLimiter != nil {
+		a.ScrubRateLimiter.Stop()
 	}
 
 	// Stop model watcher

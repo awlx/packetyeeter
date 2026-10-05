@@ -285,3 +285,16 @@ func TestAllowConcurrent(t *testing.T) {
 		t.Fatalf("GetStats = (%d, %d), want (4000, 1)", ipCount, asnCount)
 	}
 }
+
+func TestLimiterStopIsIdempotentAndKeepsLimiting(t *testing.T) {
+	l := NewLimiter(Config{IPBurst: 1, IPRate: 0.001})
+	l.Stop()
+	l.Stop()
+	ip := net.ParseIP("192.0.2.1")
+	if !l.AllowIP(ip) {
+		t.Fatal("first request denied after Stop")
+	}
+	if l.AllowIP(ip) {
+		t.Fatal("burst not enforced after Stop")
+	}
+}

@@ -203,7 +203,7 @@ func TestWatchDecisionsPublishesEachCommandOnce(t *testing.T) {
 	w.expectNone(t)
 
 	single := blockCmd("192.0.2.11")
-	a.sendCommand(&collectorStream{stream: collectors[0]}, single)
+	a.sendCommand(&collectorStream{stream: collectors[0]}, single, false)
 	collectors[0].waitForCommand(t)
 	if got := w.next(t).GetCommand(); got != single {
 		t.Fatalf("sendCommand decision = %v, want %v", got, single)
@@ -219,7 +219,7 @@ func TestWatchDecisionsSkipsSuppressedCommands(t *testing.T) {
 		w := startWatch(t, a, "controller", nil, 16)
 
 		a.Broadcast(blockCmd("192.0.2.20"))
-		a.sendCommand(&collectorStream{stream: collectors[0]}, blockCmd("192.0.2.21"))
+		a.sendCommand(&collectorStream{stream: collectors[0]}, blockCmd("192.0.2.21"), false)
 		w.expectNone(t)
 	})
 
@@ -383,7 +383,7 @@ func TestFingerprintSignalsArePublishedNotScored(t *testing.T) {
 	if score := a.Reputation.GetScore(srcIP.String(), reputation.TypeIP); score != 0 {
 		t.Fatalf("fingerprint changed reputation: %v", score)
 	}
-	if a.wasRecentlyBlocked(srcIP) {
+	if liveReservation(a, srcIP) != nil {
 		t.Fatal("fingerprint led to a block")
 	}
 	a.httpRateMu.Lock()

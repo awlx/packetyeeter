@@ -241,7 +241,7 @@ func TestBroadcastWithNoCollectorsDoesNotReserveDedup(t *testing.T) {
 	a.Broadcast(&apiv1.Command{Type: apiv1.CommandType_COMMAND_BLOCK_IP, Ip: ip, Reason: "no recipients"})
 
 	// The IP must not have been marked as recently blocked.
-	if a.wasRecentlyBlocked(net.IP(ip)) {
+	if r := liveReservation(a, net.IP(ip)); r != nil {
 		t.Fatal("broadcast with no collectors reserved the dedup slot; a reconnecting collector would miss the block")
 	}
 
