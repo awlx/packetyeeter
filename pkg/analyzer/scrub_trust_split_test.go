@@ -16,6 +16,13 @@ import (
 	"PacketYeeter/pkg/ratelimit"
 )
 
+// enableBroadcastGate turns on -scrub-broadcast-requires-trusted-evidence
+// after New, as allowScrubNames does for the allowlist.
+func enableBroadcastGate(a *Analyzer) {
+	a.Config.ScrubBroadcastRequiresTrustedEvidence = true
+	a.scrubEvidence = newEvidenceSet(scrubEvidenceTTL, scrubEvidenceMaxEntries)
+}
+
 // newSplitAnalyzer has trusted names, a trusted reputation and the given
 // shared and trusted limiters.
 func newSplitAnalyzer(t *testing.T, shared, trusted ratelimit.Config) *Analyzer {
@@ -178,4 +185,30 @@ func TestUntrustedRewardDoesNotSuppressTrustedReputationBlock(t *testing.T) {
 	// A host collector is still judged on the shared score.
 	a.processSignal(tcpSignal(victim), host)
 	hostFake.expectNoCommand(t)
+}
+
+// By default Broadcast reaches trusted scrub collectors whatever reported
+// the source, as before the trusted-evidence gate existed.
+func TestBroadcastReachesTrustedScrubNodesByDefault(t *testing.T) {
+	a := newRateLimitAnalyzer(t)
+	if a.scrubEvidence != nil {
+		t.Fatal("evidence set allocated with the gate off")
+	}
+	rogue, rogueFake := registerRole(t, a, "host")
+	_, fakeA := registerTrusted(t, a, "scrub")
+	_, fakeB := registerTrusted(t, a, "scrub")
+
+	a.processSignal(tcpSignal("198.51.100.150"), rogue)
+	a.Broadcast(blockCmd("198.51.100.150"))
+	for name, f := range map[string]*fakeCollectorStream{"host": rogueFake, "A": fakeA, "B": fakeB} {
+		if got := f.waitForCommand(t); !net.IP(got.GetIp()).Equal(net.ParseIP("198.51.100.150")) {
+			t.Fatalf("%s got %v, want the broadcast block", name, got)
+		}
+	}
+}
+
+func TestBroadcastGateRequiresScrubClientNames(t *testing.T) {
+	if _, err := New(Config{ScrubBroadcastRequiresTrustedEvidence: true}); err == nil {
+		t.Fatal("New accepted -scrub-broadcast-requires-trusted-evidence without -scrub-client-names")
+	}
 }

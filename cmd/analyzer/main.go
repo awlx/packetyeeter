@@ -59,7 +59,8 @@ func main() {
 		maxConnAge     = flag.Duration("grpc-max-connection-age", analyzer.DefaultGRPCMaxConnectionAge, "Close gRPC connections after this long (±10%) so clients re-handshake against the current certificates and CA bundle; 0 = never")
 		maxConnGrace   = flag.Duration("grpc-max-connection-age-grace", analyzer.DefaultGRPCMaxConnectionAgeGrace, "How long open streams may continue after -grpc-max-connection-age before the connection is cut")
 		controlClients = flag.String("control-client-names", "", "Comma-separated client certificate DNS SANs/CommonNames allowed to call PushRules and WatchDecisions (requires -tls-client-ca; empty = any authenticated client)")
-		scrubClients   = flag.String("scrub-client-names", "", "Comma-separated client certificate DNS SANs/CommonNames of trusted scrub collectors (requires -tls-client-ca; empty = no cross-node fan-out). Listed scrub collectors get rate-limit and reputation blocks only when evidence from listed scrub collectors alone crosses the threshold, and such a block goes to all of them. Other collectors feed shared per-source state and are blocked on it themselves, but cannot get a source blocked on a listed scrub collector through it; AI/Broadcast blocks reach listed scrub collectors once one of them reported the source in the last 10 minutes")
+		scrubClients   = flag.String("scrub-client-names", "", "Comma-separated client certificate DNS SANs/CommonNames of trusted scrub collectors (requires -tls-client-ca; empty = no cross-node fan-out). Listed scrub collectors get rate-limit and reputation blocks only when evidence from listed scrub collectors alone crosses the threshold, and such a block goes to all of them; their signals are analyzed in full whatever the shared state says. Other collectors feed shared per-source state and are blocked on it themselves, but cannot get a source blocked on, or exempted from analysis on, a listed scrub collector through it. AI/Broadcast blocks reach every collector, see -scrub-broadcast-requires-trusted-evidence")
+		scrubBcastGate = flag.Bool("scrub-broadcast-requires-trusted-evidence", false, "With -scrub-client-names: send AI/sustained-download (Broadcast) blocks to listed scrub collectors only for sources one of them reported in the last 10 minutes. Off by default: scrub collectors report few L7/AI or sustained-download sources, so this keeps most such blocks off the scrub layer")
 
 		sustainedDefaults = sustained.DefaultConfig()
 
@@ -141,6 +142,8 @@ func main() {
 		},
 		ControlClientNames: grpctls.ParseNames(*controlClients),
 		ScrubClientNames:   grpctls.ParseNames(*scrubClients),
+
+		ScrubBroadcastRequiresTrustedEvidence: *scrubBcastGate,
 
 		GRPCMaxConnectionAge:      *maxConnAge,
 		GRPCMaxConnectionAgeGrace: *maxConnGrace,

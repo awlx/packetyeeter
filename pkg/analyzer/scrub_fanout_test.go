@@ -472,8 +472,11 @@ func TestFanoutIneligibleDecisionStaysLocal(t *testing.T) {
 	peerFake.expectNoCommand(t)
 }
 
+// With -scrub-broadcast-requires-trusted-evidence, Broadcast reaches trusted
+// scrub nodes only for sources a trusted scrub stream reported.
 func TestBroadcastNeedsTrustedEvidenceForScrubNodes(t *testing.T) {
 	a := newRateLimitAnalyzer(t)
+	enableBroadcastGate(a)
 	rogue, rogueFake := registerRole(t, a, "host")
 	scrubA, fakeA := registerTrusted(t, a, "scrub")
 
@@ -581,11 +584,12 @@ func TestLocalDecisionsOnSeveralNodesEachDeliver(t *testing.T) {
 	}
 }
 
-// A Broadcast judged on untrusted evidence reaches only non-scrub
-// collectors; once a trusted scrub stream reports the source, a repeat
+// With -scrub-broadcast-requires-trusted-evidence, a Broadcast judged on
+// untrusted evidence reaches only non-scrub collectors; once a trusted scrub stream reports the source, a repeat
 // Broadcast within the TTL reaches the scrub nodes and not the others again.
 func TestRepeatBroadcastReachesNewlyEligibleScrubNodes(t *testing.T) {
 	a := newRateLimitAnalyzer(t)
+	enableBroadcastGate(a)
 	host, hostFake := registerRole(t, a, "host")
 	scrubA, fakeA := registerTrusted(t, a, "scrub")
 	_, fakeB := registerTrusted(t, a, "scrub")
