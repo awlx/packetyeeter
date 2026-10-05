@@ -115,10 +115,11 @@ type Config struct {
 	// of trusted scrub collectors. A block fans out from one trusted scrub
 	// stream to the others only when evidence from trusted scrub streams
 	// alone (ScrubRateLimiter, ScrubReputation) crossed the threshold; empty
-	// disables cross-node fan-out. It does not gate signals: any connected
-	// stream still feeds the shared per-source state and can get a source
-	// blocked on the one stream that next reports it. Requires
-	// TLS.ClientCAFile.
+	// disables cross-node fan-out. Trusted scrub streams get rate-limit and
+	// reputation blocks on that trusted-only state alone and run normal
+	// analysis whatever the shared state says. It does not gate signals: any
+	// connected stream still feeds the shared per-source state and is judged
+	// on it. Requires TLS.ClientCAFile.
 	ScrubClientNames []string
 }
 
@@ -265,12 +266,13 @@ type Analyzer struct {
 	rateLimitersMu  sync.RWMutex
 	RateLimiter     *ratelimit.Limiter
 	// ScrubRateLimiter has RateLimiter's configuration but is fed only by
-	// trusted scrub streams (see isTrustedScrub); only its verdict makes a
-	// rate-limit block eligible for scrub fan-out.
+	// trusted scrub streams (see isTrustedScrub); only its verdict blocks a
+	// source on a trusted scrub stream, and such a block fans out.
 	ScrubRateLimiter *ratelimit.Limiter
 	// ScrubReputation is fed only by penalties from ScrubRateLimiter trips;
-	// only its score makes a reputation block eligible for scrub fan-out.
-	// nil: reputation blocks never fan out.
+	// only its score decides a reputation block on a trusted scrub stream,
+	// and such a block fans out. nil: trusted scrub streams get no
+	// reputation blocks.
 	ScrubReputation *reputation.Engine
 	// scrubEvidence remembers which sources trusted scrub streams reported
 	// recently; Broadcast sends to trusted scrub collectors only for those.
@@ -1136,9 +1138,6 @@ func (a *Analyzer) processSignal(sig *apiv1.Signal, cs *collectorStream) {
 
 		if !a.Config.DryRun {
 			a.penalizeRateLimited(ip, fanout)
-			if a.skipSharedOnlyBlock(cs, fanout, "rate_limit") {
-				return
-			}
 			// Increment appropriate block metric based on signal type
 			switch sig.Type {
 			case apiv1.SignalType_SIGNAL_UDP_FLOOD:
@@ -1286,16 +1285,7 @@ func (a *Analyzer) processSignal(sig *apiv1.Signal, cs *collectorStream) {
 		})
 	}
 
-	score := 0.0
-	if a.Reputation != nil {
-		score = a.Reputation.GetScore(ip.String(), reputation.TypeIP)
-	}
-
-	if score > a.Config.ReputationThreshold {
-		fanout := a.scrubReputationExceeded(cs, ip)
-		if !a.Config.DryRun && a.skipSharedOnlyBlock(cs, fanout, "reputation") {
-			return
-		}
+	if score, exceeded, fanout := a.reputationVerdict(cs, ip); exceeded {
 		shouldBlock := a.mlConfirmsReputationBlock(ip, asn, score, "signal")
 
 		if shouldBlock && !a.Config.DryRun {

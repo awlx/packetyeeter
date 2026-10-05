@@ -13,7 +13,8 @@ import (
 // Reputation, AI windows) takes signals from every connected collector, so a
 // decision judged on it can rest on evidence from any of them. Fan-out to
 // other scrub nodes needs a decision judged on trusted scrub streams alone;
-// these helpers keep that evidence apart.
+// these helpers keep that evidence apart, and trusted scrub streams are
+// judged on it alone.
 
 const (
 	// scrubEvidenceTTL matches the rate limiter's idle bucket lifetime.
@@ -27,31 +28,59 @@ const (
 // trusted scrub stream, the trusted-only limiter as well. limited says the
 // source should be blocked on cs; fanout says the trusted-only limiter
 // tripped, so the block may go to every trusted scrub collector.
+//
+// On a trusted scrub stream limited comes from the trusted-only limiter
+// alone. A trip of the shared limiter only (which any connected collector
+// can drain, per IP or per ASN) is counted in
+// scrub_shared_only_blocks_skipped_total{kind="rate_limit"} and penalises
+// the shared reputation, and the signal goes on to normal analysis: an
+// untrusted collector must not be able to exempt a source, or a whole ASN,
+// from analysis on the scrub layer by keeping its shared bucket drained.
+// Rate-limit metrics and blocked-source tracking record only trips that
+// block. Other streams, and every stream with -scrub-client-names empty,
+// are judged on the shared limiter as before.
 func (a *Analyzer) checkRateLimitFor(cs *collectorStream, ip net.IP, asn string) (limited, fanout bool) {
-	limited = a.checkRateLimit(ip, asn)
-	if cs != nil && cs.isTrustedScrub() && a.ScrubRateLimiter != nil {
-		fanout = !a.ScrubRateLimiter.Allow(ip, asn)
-		if fanout && !limited {
-			// Count it like a shared trip: the source is blocked either way.
-			a.recordRateLimitTrip(ip, asn)
-		}
+	if cs == nil || !cs.isTrustedScrub() || a.ScrubRateLimiter == nil {
+		return a.checkRateLimit(ip, asn), false
 	}
-	return limited || fanout, fanout
+	sharedLimited := a.RateLimiter != nil && !a.RateLimiter.Allow(ip, asn)
+	if !a.ScrubRateLimiter.Allow(ip, asn) {
+		a.recordRateLimitTrip(ip, asn)
+		return true, true
+	}
+	if sharedLimited && !a.Config.DryRun {
+		metrics.ScrubSharedOnlyBlocksSkipped.WithLabelValues("rate_limit").Inc()
+		a.ReputationHelper.PenalizeIP(ip, 10.0, "Rate limit exceeded")
+	}
+	return false, false
 }
 
-// skipSharedOnlyBlock reports whether a rate-limit or reputation block of a
-// source on cs must be skipped: cs is a trusted scrub stream and only the
-// shared state, which any connected collector feeds, crossed the threshold.
-// Trusted scrub nodes block on trusted scrub evidence alone, so an untrusted
-// collector cannot get a source blocked on them. Other streams block on the
-// shared verdict as before; with -scrub-client-names empty no stream is
-// trusted and nothing changes. kind labels the skip metric.
-func (a *Analyzer) skipSharedOnlyBlock(cs *collectorStream, trustedVerdict bool, kind string) bool {
-	if cs == nil || !cs.isTrustedScrub() || trustedVerdict {
-		return false
+// reputationVerdict returns the reputation score that decides a block of ip
+// on cs and whether it crossed the threshold. fanout says the score is the
+// trusted-only ScrubReputation, so the block may go to every trusted scrub
+// collector. A trusted scrub stream is judged on ScrubReputation alone: the
+// shared score, which any connected collector can raise (penalties) or lower
+// (rewards, e.g. a browser JA4), neither blocks nor spares a source there;
+// a shared-only crossing is counted in
+// scrub_shared_only_blocks_skipped_total{kind="reputation"}. Other streams
+// are judged on the shared score as before.
+func (a *Analyzer) reputationVerdict(cs *collectorStream, ip net.IP) (score float64, exceeded, fanout bool) {
+	if a.Reputation != nil {
+		score = a.Reputation.GetScore(ip.String(), reputation.TypeIP)
 	}
-	metrics.ScrubSharedOnlyBlocksSkipped.WithLabelValues(kind).Inc()
-	return true
+	if cs == nil || !cs.isTrustedScrub() {
+		return score, score > a.Config.ReputationThreshold, false
+	}
+	sharedExceeded := score > a.Config.ReputationThreshold
+	score = 0
+	if a.ScrubReputation != nil {
+		score = a.ScrubReputation.GetScore(ip.String(), reputation.TypeIP)
+	}
+	exceeded = score > a.Config.ReputationThreshold
+	if sharedExceeded && !exceeded && !a.Config.DryRun {
+		metrics.ScrubSharedOnlyBlocksSkipped.WithLabelValues("reputation").Inc()
+	}
+	return score, exceeded, exceeded
 }
 
 // penalizeRateLimited records a rate-limit trip in the shared reputation
@@ -61,16 +90,6 @@ func (a *Analyzer) penalizeRateLimited(ip net.IP, trusted bool) {
 	if trusted && a.ScrubReputation != nil && ip != nil {
 		a.ScrubReputation.Penalize(ip.String(), reputation.TypeIP, 10.0, "Rate limit exceeded (trusted scrub)")
 	}
-}
-
-// scrubReputationExceeded reports whether a reputation block decided from
-// cs's signal may fan out: cs is a trusted scrub stream and trusted scrub
-// evidence alone puts ip over the threshold.
-func (a *Analyzer) scrubReputationExceeded(cs *collectorStream, ip net.IP) bool {
-	if cs == nil || !cs.isTrustedScrub() || a.ScrubReputation == nil || ip == nil {
-		return false
-	}
-	return a.ScrubReputation.GetScore(ip.String(), reputation.TypeIP) > a.Config.ReputationThreshold
 }
 
 // evidenceSet remembers recently seen addresses, bounded in age and size.

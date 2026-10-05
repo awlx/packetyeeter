@@ -495,12 +495,18 @@ func TestBroadcastNeedsTrustedEvidenceForScrubNodes(t *testing.T) {
 	rogueFake.expectNoCommand(t)
 }
 
+// A source split across trusted scrub nodes is judged on their total
+// trusted evidence.
 func TestSplitSourceAcrossScrubNodesJudgedOnTotal(t *testing.T) {
 	a := newTestAnalyzer(t)
 	allowScrubNames(a)
 	a.AIEngine = nil
 	a.Config.ReputationThreshold = 1e9
 	setZeroRefillLimiters(a, 10)
+	// No shared limiter: only the trusted-only limiter can trip, so the
+	// block below rests on trusted evidence alone.
+	a.RateLimiter.Stop()
+	a.RateLimiter = nil
 
 	scrubA, fakeA := registerTrusted(t, a, "scrub")
 	scrubB, fakeB := registerTrusted(t, a, "scrub")

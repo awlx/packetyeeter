@@ -16,7 +16,6 @@ import (
 	aidetection "PacketYeeter/pkg/analyzer/aidetection"
 	"PacketYeeter/pkg/analyzer/botverify"
 	"PacketYeeter/pkg/analyzer/ja4db"
-	reputation "PacketYeeter/pkg/analyzer/reputation"
 	metrics "PacketYeeter/pkg/metrics"
 )
 
@@ -245,9 +244,6 @@ func (a *Analyzer) processHTTPRequest(sig *apiv1.Signal, ip net.IP, asn string, 
 	if limited, fanout := a.checkRateLimitFor(cs, ip, asn); limited {
 		if !a.Config.DryRun {
 			a.penalizeRateLimited(ip, fanout)
-			if a.skipSharedOnlyBlock(cs, fanout, "rate_limit") {
-				return
-			}
 			metrics.HAProxyBlocks.Inc()
 			metrics.HTTPFloodBlocks.Inc()
 			a.sendCommand(cs, &apiv1.Command{
@@ -750,12 +746,7 @@ func (a *Analyzer) processHTTPRequest(sig *apiv1.Signal, ip net.IP, asn string, 
 	}
 
 	// Check reputation threshold and potentially block
-	score := a.Reputation.GetScore(ip.String(), reputation.TypeIP)
-	if score > a.Config.ReputationThreshold {
-		fanout := a.scrubReputationExceeded(cs, ip)
-		if !a.Config.DryRun && a.skipSharedOnlyBlock(cs, fanout, "reputation") {
-			return
-		}
+	if score, exceeded, fanout := a.reputationVerdict(cs, ip); exceeded {
 		shouldBlock := a.mlConfirmsReputationBlock(ip, asn, score, "http")
 
 		if shouldBlock && !a.Config.DryRun {
