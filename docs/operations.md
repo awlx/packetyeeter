@@ -568,10 +568,13 @@ every other collector still gets its own block, so with fan-out off each node
 is blocked by the decisions from its own signals. A fan-out block a peer never
 got - dropped as `queue_full` or `role_changed`, or failed to send - releases
 that peer's reservation, so the next trusted decision within the 60 seconds
-delivers it. A `Broadcast` to more than 64 collectors is remembered as one
-entry per source instead of one per collector; a repeat within 60 seconds
-reaches only collectors that connected or became eligible since, or, when
-more than 64 have, every collector again. `WatchDecisions` publishes a source at most once per
+delivers it. `Broadcast` keeps at most 64 per-collector entries per source;
+one that would need more is remembered as a single entry for the source.
+Local and fan-out blocks do not count toward the 64. A repeat `Broadcast`
+within 60 seconds is sent only to collectors that connected or became
+eligible since; once more than 64 of those have been added by `Broadcast`, it
+is sent again to every collector not blocked locally or by fan-out within the
+60 seconds. `WatchDecisions` publishes a source at most once per
 scope (local, fan-out, broadcast) per 60 seconds, not once per collector,
 and again every 60 seconds or so while blocks for it keep being sent: a
 trusted fan-out after a local block is published, a second node's own local

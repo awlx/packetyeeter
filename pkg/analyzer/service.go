@@ -1596,10 +1596,10 @@ func (s blockScope) index() int {
 	panic(fmt.Sprintf("unknown block scope %d", s))
 }
 
-// maxBlockSentEntries bounds the per-collector entries a Broadcast may add
-// to one source's reservation; past it the Broadcast is kept as a
-// broadcastMark. Local and fan-out blocks add one entry per collector they
-// reach.
+// maxBlockSentEntries bounds the per-collector entries Broadcasts may hold
+// in one source's reservation; a Broadcast that would hold more is kept as a
+// broadcastMark instead. Local and fan-out blocks add one entry per
+// collector they reach and do not count toward it.
 const maxBlockSentEntries = 64
 
 // blockReservation is the dedup entry for one source address: when each
@@ -1610,8 +1610,40 @@ const maxBlockSentEntries = 64
 type blockReservation struct {
 	at        time.Time
 	published [len(blockScopes)]time.Time
-	sent      map[uint64]time.Time
-	bcast     broadcastMark
+	sent      map[uint64]sentEntry
+	// bcastEntries counts the sent entries added by a Broadcast.
+	bcastEntries int
+	bcast        broadcastMark
+}
+
+// sentEntry is when a collector got the block and whether a Broadcast sent it.
+type sentEntry struct {
+	at        time.Time
+	broadcast bool
+}
+
+// setSent records a send of the block to the collector with dedupKey k.
+func (r *blockReservation) setSent(k uint64, now time.Time, broadcast bool) {
+	if r.sent == nil {
+		r.sent = make(map[uint64]sentEntry)
+	}
+	if old, ok := r.sent[k]; ok && old.broadcast {
+		r.bcastEntries--
+	}
+	r.sent[k] = sentEntry{at: now, broadcast: broadcast}
+	if broadcast {
+		r.bcastEntries++
+	}
+}
+
+// deleteSent drops the entry for k, if any.
+func (r *blockReservation) deleteSent(k uint64) {
+	if old, ok := r.sent[k]; ok {
+		if old.broadcast {
+			r.bcastEntries--
+		}
+		delete(r.sent, k)
+	}
 }
 
 // broadcastMark records a Broadcast sent at at to every collector whose
@@ -1638,7 +1670,7 @@ func (m *broadcastMark) covers(k uint64, now time.Time) bool {
 // has reports whether the collector with dedupKey k got the block within
 // recentBlockTTL before now.
 func (r *blockReservation) has(k uint64, now time.Time) bool {
-	if at, ok := r.sent[k]; ok && now.Sub(at) < recentBlockTTL {
+	if e, ok := r.sent[k]; ok && now.Sub(e.at) < recentBlockTTL {
 		return true
 	}
 	return r.bcast.covers(k, now)
@@ -1706,10 +1738,14 @@ func (a *Analyzer) reserveBlock(ip net.IP, scope blockScope, targets []*collecto
 // source at most once per scope per TTL - and again every TTL while the
 // attack goes on, however the sends to individual collectors interleave.
 //
-// A Broadcast that would leave more than maxBlockSentEntries entries is kept
-// as one broadcastMark instead; its targets must then be every registered
-// collector but excluded. A new mark replaces a live one, and the
-// collectors only the old one covered get the block again now, so no
+// A Broadcast is recorded as per-collector entries while Broadcasts hold at
+// most maxBlockSentEntries of them for the source; local and fan-out entries
+// do not count. Past that it is kept as one broadcastMark, and its targets
+// must then be every registered collector but excluded. A live mark is kept
+// as it is: a repeat Broadcast sends only to the collectors it does not
+// cover and records those as entries. Only when those would take the
+// Broadcast entries past the bound is the mark replaced; the new one is sent
+// to every collector not covered by a local or fan-out entry, so no
 // collector's dedup outlasts recentBlockTTL from its last send.
 func (a *Analyzer) reserveBlockExcept(ip net.IP, scope blockScope, targets, excluded []*collectorStream, now time.Time) (fresh []*collectorStream, publish bool) {
 	key := ip.String()
@@ -1721,9 +1757,9 @@ func (a *Analyzer) reserveBlockExcept(ip net.IP, scope blockScope, targets, excl
 		r = &blockReservation{}
 		ok = false
 	}
-	for k, at := range r.sent {
-		if now.Sub(at) >= recentBlockTTL {
-			delete(r.sent, k)
+	for k, e := range r.sent {
+		if now.Sub(e.at) >= recentBlockTTL {
+			r.deleteSent(k)
 		}
 	}
 	if !r.bcast.at.IsZero() && now.Sub(r.bcast.at) >= recentBlockTTL {
@@ -1733,18 +1769,26 @@ func (a *Analyzer) reserveBlockExcept(ip net.IP, scope blockScope, targets, excl
 	if len(fresh) == 0 {
 		return nil, false
 	}
-	if scope == scopeBroadcast && len(r.sent)+len(fresh) > maxBlockSentEntries {
-		if !r.bcast.at.IsZero() {
+	broadcast := scope == scopeBroadcast
+	if broadcast && r.bcastEntries+len(fresh) > maxBlockSentEntries {
+		if !r.bcast.at.IsZero() || r.bcastEntries > 0 {
+			// Start over: everyone the old mark or Broadcast entries
+			// covered gets the block again under the new mark.
 			r.bcast = broadcastMark{}
+			for k, e := range r.sent {
+				if e.broadcast {
+					r.deleteSent(k)
+				}
+			}
 			fresh = r.pending(targets, now)
 		}
 		r.bcast = newBroadcastMark(r, targets, excluded, now)
 	} else {
 		if r.sent == nil {
-			r.sent = make(map[uint64]time.Time, len(fresh))
+			r.sent = make(map[uint64]sentEntry, len(fresh))
 		}
 		for _, t := range fresh {
-			r.sent[t.dedupKey()] = now
+			r.setSent(t.dedupKey(), now, broadcast)
 		}
 	}
 	r.at = now
@@ -1791,8 +1835,8 @@ func (a *Analyzer) releaseBlock(cs *collectorStream, cmd *apiv1.Command, reserve
 	a.recentBlocksMu.Lock()
 	defer a.recentBlocksMu.Unlock()
 	if r, ok := a.recentBlocks[key]; ok {
-		if at, got := r.sent[k]; got && at.Equal(reservedAt) {
-			delete(r.sent, k)
+		if e, got := r.sent[k]; got && e.at.Equal(reservedAt) {
+			r.deleteSent(k)
 		}
 	}
 }

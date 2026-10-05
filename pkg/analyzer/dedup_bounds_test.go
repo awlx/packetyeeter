@@ -221,6 +221,16 @@ func (s *recordingGate) Send(cmd *apiv1.Command) error {
 	return nil
 }
 
+// waitEntered waits until a Send has started.
+func (s *recordingGate) waitEntered(t *testing.T) {
+	t.Helper()
+	select {
+	case <-s.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for a send to start")
+	}
+}
+
 // waitForBlock waits for a block of ip on s, skipping other commands.
 func (s *recordingGate) waitForBlock(t *testing.T, ip string) {
 	t.Helper()
@@ -253,14 +263,14 @@ func TestFanoutQueueFullReleasesReservation(t *testing.T) {
 	peerCS, peer := registerGatedPeer(t, a)
 
 	a.sendCommand(origin, unblockCmd("192.0.2.200"), true)
-	<-peer.entered // the worker holds this one; the queue is empty
+	peer.waitEntered(t) // the worker holds this one; the queue is empty
 	for range scrubFanoutQueueSize {
 		a.sendCommand(origin, unblockCmd("192.0.2.200"), true)
 	}
 	before := testutil.ToFloat64(metrics.ScrubCommandFanoutDropped.WithLabelValues("queue_full"))
 	a.sendCommand(origin, blockCmd("192.0.2.201"), true)
 	for len(fakeOrigin.sent) > 0 {
-		<-fakeOrigin.sent
+		fakeOrigin.waitForCommand(t)
 	}
 	if got := testutil.ToFloat64(metrics.ScrubCommandFanoutDropped.WithLabelValues("queue_full")) - before; got != 1 {
 		t.Fatalf("queue_full delta = %v, want 1", got)
@@ -285,7 +295,7 @@ func TestFanoutRoleChangedReleasesReservation(t *testing.T) {
 	peerCS, peer := registerGatedPeer(t, a)
 
 	a.sendCommand(origin, unblockCmd("192.0.2.210"), true)
-	<-peer.entered
+	peer.waitEntered(t)
 	a.sendCommand(origin, blockCmd("192.0.2.211"), true)
 	before := testutil.ToFloat64(metrics.ScrubCommandFanoutDropped.WithLabelValues("role_changed"))
 	peerCS.setRole("host")
@@ -310,7 +320,7 @@ func TestFanoutSendErrorReleasesReservation(t *testing.T) {
 	close(peer.gate)
 
 	a.sendCommand(origin, blockCmd("192.0.2.221"), true)
-	<-peer.entered
+	peer.waitEntered(t)
 	waitFor(t, "reservation released", func() bool { return !reservedFor(a, net.ParseIP("192.0.2.221"), peerCS) })
 
 	peer.fail.Store(false)
@@ -351,4 +361,95 @@ func TestWideBroadcastMissesStreamKeyedBeforeRegistration(t *testing.T) {
 	if len(fresh) != 1 || fresh[0] != early {
 		t.Fatalf("repeat broadcast reached %d collectors, want only the one that connected since", len(fresh))
 	}
+}
+
+// Local and fan-out entries do not count toward the Broadcast bound: with
+// many collectors already blocked locally, each repeat Broadcast that finds
+// one newcomer sends only to it, and every collector gets the block once.
+func TestRepeatBroadcastIgnoresLocalEntriesForBound(t *testing.T) {
+	a := newTestAnalyzer(t)
+	ip := net.ParseIP("198.51.100.16")
+	all := registerDiscard(t, a, 500)
+	t0 := time.Now()
+	got := make(map[*collectorStream]int)
+	for i := range maxBlockSentEntries {
+		for _, f := range a.reserveBlockForTest(ip, scopeLocal, all[i:i+1], t0) {
+			got[f]++
+		}
+	}
+	for _, f := range a.reserveBlockForTest(ip, scopeFanout, all[64:66], t0) {
+		got[f]++
+	}
+	fresh := a.reserveBlockForTest(ip, scopeBroadcast, all, t0.Add(time.Second))
+	if len(fresh) != 500-66 {
+		t.Fatalf("first broadcast reached %d, want %d", len(fresh), 500-66)
+	}
+	for _, f := range fresh {
+		got[f]++
+	}
+	for i := range 2 * maxBlockSentEntries {
+		all = append(all, registerDiscard(t, a, 1)...)
+		fresh := a.reserveBlockForTest(ip, scopeBroadcast, all, t0.Add(time.Duration(2+i)*100*time.Millisecond))
+		if len(fresh) != 1 || fresh[0] != all[len(all)-1] {
+			if i < maxBlockSentEntries {
+				t.Fatalf("repeat %d reached %d collectors, want only the newcomer", i, len(fresh))
+			}
+			// Past the bound everyone is sent again; stop counting there.
+			break
+		}
+		got[fresh[0]]++
+		if i == maxBlockSentEntries-1 {
+			for _, cs := range all {
+				if got[cs] != 1 {
+					t.Fatalf("collector got the block %d times, want 1", got[cs])
+				}
+			}
+		}
+	}
+}
+
+// Crossing the bound while a mark is live: newcomers within the bound get
+// only their own send and keep the mark's time; the one past it starts a
+// new mark sent to everyone, after which repeats send nothing.
+func TestBroadcastBoundCrossedWithLiveMark(t *testing.T) {
+	a := newTestAnalyzer(t)
+	ip := net.ParseIP("198.51.100.17")
+	all := registerDiscard(t, a, 100)
+	t0 := time.Now()
+	a.reserveBlock(ip, scopeBroadcast, all, t0)
+	for i := range maxBlockSentEntries {
+		all = append(all, registerDiscard(t, a, 1)...)
+		if fresh, _ := a.reserveBlock(ip, scopeBroadcast, all, t0.Add(time.Duration(i+1)*100*time.Millisecond)); len(fresh) != 1 {
+			t.Fatalf("newcomer %d: broadcast reached %d, want 1", i, len(fresh))
+		}
+	}
+	// The mark keeps its time: its collectors are due again a TTL after t0.
+	a.recentBlocksMu.Lock()
+	markAt, entries := a.recentBlocks[ip.String()].bcast.at, a.recentBlocks[ip.String()].bcastEntries
+	a.recentBlocksMu.Unlock()
+	if !markAt.Equal(t0) || entries != maxBlockSentEntries {
+		t.Fatalf("mark at %v with %d broadcast entries, want t0 with %d", markAt.Sub(t0), entries, maxBlockSentEntries)
+	}
+	all = append(all, registerDiscard(t, a, 1)...)
+	tNew := t0.Add(30 * time.Second)
+	fresh, _ := a.reserveBlock(ip, scopeBroadcast, all, tNew)
+	if len(fresh) != len(all) {
+		t.Fatalf("broadcast past the bound reached %d, want all %d", len(fresh), len(all))
+	}
+	if fresh, _ := a.reserveBlock(ip, scopeBroadcast, all, tNew.Add(time.Second)); len(fresh) != 0 {
+		t.Fatalf("repeat after the new mark reached %d", len(fresh))
+	}
+	a.recentBlocksMu.Lock()
+	r := a.recentBlocks[ip.String()]
+	n, b := len(r.sent), r.bcastEntries
+	a.recentBlocksMu.Unlock()
+	if n != 0 || b != 0 {
+		t.Fatalf("sent = %d, broadcast entries = %d after a new mark, want 0", n, b)
+	}
+}
+
+// reserveBlockForTest returns only the fresh targets.
+func (a *Analyzer) reserveBlockForTest(ip net.IP, scope blockScope, targets []*collectorStream, now time.Time) []*collectorStream {
+	fresh, _ := a.reserveBlock(ip, scope, targets, now)
+	return fresh
 }

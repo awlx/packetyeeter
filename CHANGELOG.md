@@ -4,15 +4,17 @@
 
 Follow-up to #124.
 
-- A `Broadcast` block (AI and sustained-download holds) to more than 64
-  collectors is kept in the 60-second block dedup as one entry per source
-  instead of one per collector. Before, a wide attack kept up to
+- `Broadcast` blocks (AI and sustained-download holds) keep at most 64
+  per-collector entries per source in the 60-second block dedup; a
+  `Broadcast` that would need more is kept as one entry per source. Local and
+  fan-out blocks do not count toward the 64. Before, a wide attack kept up to
   sources x collectors entries (about 80 KB per source with 1024 collectors)
   under one analyzer-wide lock. Delivery is unchanged: a repeat `Broadcast`
-  within 60 seconds still reaches collectors that connected since, and trusted
-  scrub nodes the `-scrub-broadcast-requires-trusted-evidence` gate skipped
-  before; when more than 64 such collectors have appeared, it is sent to every
-  collector again rather than tracked per collector.
+  within 60 seconds is sent only to collectors that connected since, and to
+  trusted scrub nodes the `-scrub-broadcast-requires-trusted-evidence` gate
+  skipped before. Only when more than 64 such collectors have been added by
+  `Broadcast` within the 60 seconds is it sent to every collector again,
+  except those blocked locally or by fan-out within the 60 seconds.
 - A fan-out block a scrub peer never got no longer suppresses that block to
   the peer for 60 seconds. A drop counted as `queue_full` or `role_changed` in
   `packetyeeter_scrub_command_fanout_dropped_total`, or a failed send,
