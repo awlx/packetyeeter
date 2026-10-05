@@ -755,13 +755,13 @@ func TestScrubFanoutCountsQueuedCommandsOfGonePeer(t *testing.T) {
 // not silently lost.
 func TestFanoutEnqueueAfterDrainCountsPeerGone(t *testing.T) {
 	a := newWatchAnalyzer(t, Config{})
-	cs := &collectorStream{fanout: make(chan *apiv1.Command, 4)}
+	cs := &collectorStream{fanout: make(chan scrubFanoutItem, 4)}
 	drainScrubFanout(cs)
 	if !cs.fanoutIsClosed() {
 		t.Fatal("drained stream not marked closed")
 	}
 	before := testutil.ToFloat64(metrics.ScrubCommandFanoutDropped.WithLabelValues("peer_gone"))
-	a.enqueueScrubFanout(cs, blockCmd("192.0.2.95"))
+	a.enqueueScrubFanout(cs, blockCmd("192.0.2.95"), time.Time{})
 	if got := testutil.ToFloat64(metrics.ScrubCommandFanoutDropped.WithLabelValues("peer_gone")) - before; got != 1 {
 		t.Fatalf("peer_gone delta = %v, want 1", got)
 	}

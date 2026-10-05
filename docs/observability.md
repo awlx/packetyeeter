@@ -187,8 +187,10 @@ Analyzer-side, for `PushRules`:
 - `packetyeeter_scrub_command_fanout_dropped_total{reason}` (counter): fan-out
   commands not sent to a scrub collector. `reason="queue_full"`: its
   256-command outbound queue was full, i.e. that collector is not reading;
-  any increase means that node missed a block. `reason="role_changed"`: it
-  stopped being a trusted scrub collector after the command was queued.
+  any increase means that node missed a block (its dedup reservation is
+  released, so the next trusted decision for the source within 60 seconds is
+  queued again). `reason="role_changed"`: it stopped being a trusted scrub
+  collector after the command was queued (also released).
   `reason="peer_gone"`: its stream ended (disconnect, stall timeout or
   analyzer shutdown) with the command still queued, or the command was
   queued after the stream ended. The `reason` label is new (the
