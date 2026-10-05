@@ -1,10 +1,12 @@
 package analyzer
 
 import (
+	"context"
 	"encoding/binary"
 	"fmt"
 	"io"
 	"net"
+	"runtime"
 	"testing"
 	"time"
 
@@ -142,5 +144,40 @@ func BenchmarkRateLimitedFlood40k(b *testing.B) {
 			a.ReputationHelper.PenalizeIP(ip, 10.0, "Rate limit exceeded")
 			a.sendCommand(cs, &apiv1.Command{Type: apiv1.CommandType_COMMAND_BLOCK_IP, Ip: ip, Reason: "Rate limit exceeded"}, false)
 		}
+	}
+}
+
+// Reserves a Broadcast block of a new source across many connected
+// collectors, as the AI engine does during a wide attack. retained-B/source
+// is the dedup state each source keeps for the TTL.
+func BenchmarkReserveBroadcastManyCollectors(b *testing.B) {
+	quietLogs(b)
+	for _, n := range []int{16, 1024} {
+		b.Run(fmt.Sprintf("collectors=%d", n), func(b *testing.B) {
+			a := newOfflineAnalyzer(b, false)
+			targets := make([]*collectorStream, n)
+			for i := range targets {
+				targets[i] = &collectorStream{stream: discardStream{}}
+				if a.registerCollector(context.Background(), targets[i]) == "" {
+					b.Fatal("collector not admitted")
+				}
+			}
+			now := time.Now()
+			var before, after runtime.MemStats
+			runtime.GC()
+			runtime.ReadMemStats(&before)
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				if fresh, _ := a.reserveBlock(benchIP(i), scopeBroadcast, targets, now); len(fresh) != n {
+					b.Fatalf("fresh = %d, want %d", len(fresh), n)
+				}
+			}
+			b.StopTimer()
+			runtime.GC()
+			runtime.ReadMemStats(&after)
+			b.ReportMetric(float64(after.HeapAlloc-before.HeapAlloc)/float64(b.N), "retained-B/source")
+			runtime.KeepAlive(a)
+		})
 	}
 }

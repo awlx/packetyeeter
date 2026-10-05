@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/pprof"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -368,7 +369,7 @@ type collectorStream struct {
 	certTrusted bool
 	// fanout queues block commands decided from other scrub nodes, drained
 	// in order by one worker; nil for streams that can never receive them.
-	fanout chan *apiv1.Command
+	fanout chan scrubFanoutItem
 	// fanoutMu orders enqueues against the worker closing the queue, so a
 	// command enqueued after the final drain is counted, not lost.
 	fanoutMu     sync.RWMutex
@@ -399,7 +400,9 @@ func (cs *collectorStream) setRole(role string) string {
 // streamKeySeq numbers collector streams for the block dedup.
 var streamKeySeq atomic.Uint64
 
-// dedupKey identifies cs in block reservations, assigned on first use.
+// dedupKey identifies cs in block reservations. registerCollector assigns
+// it under collectorsMu, so every stream registered after another has a
+// larger key; streams that are never registered get one on first use.
 func (cs *collectorStream) dedupKey() uint64 {
 	if k := cs.key.Load(); k != 0 {
 		return k
@@ -948,7 +951,7 @@ func (a *Analyzer) registerCollector(ctx context.Context, cs *collectorStream) s
 
 	if len(a.Config.ScrubClientNames) > 0 && grpctls.PeerNameAllowed(ctx, a.Config.ScrubClientNames) {
 		cs.certTrusted = true
-		cs.fanout = make(chan *apiv1.Command, scrubFanoutQueueSize)
+		cs.fanout = make(chan scrubFanoutItem, scrubFanoutQueueSize)
 	}
 
 	a.collectorsMu.Lock()
@@ -956,6 +959,10 @@ func (a *Analyzer) registerCollector(ctx context.Context, cs *collectorStream) s
 		a.collectorsMu.Unlock()
 		return ""
 	}
+	// Assigned here, under the lock, so a Broadcast's snapshot of
+	// a.collectors holds every registered stream with a key up to its
+	// largest; see broadcastMark.
+	cs.key.Store(streamKeySeq.Add(1))
 	a.collectors[id] = cs
 	a.collectorsMu.Unlock()
 
@@ -1362,7 +1369,7 @@ func (a *Analyzer) sendCommand(cs *collectorStream, cmd *apiv1.Command, fanoutEl
 		scope = scopeFanout
 		targets = append(targets, a.trustedScrubPeers(cs)...)
 	}
-	targets, publish := a.reserveCommand(cmd, scope, targets)
+	targets, publish, reservedAt := a.reserveCommand(cmd, scope, targets, nil)
 	if len(targets) == 0 {
 		return
 	}
@@ -1376,7 +1383,7 @@ func (a *Analyzer) sendCommand(cs *collectorStream, cmd *apiv1.Command, fanoutEl
 			toOrigin = true
 			continue
 		}
-		a.enqueueScrubFanout(t, cmd)
+		a.enqueueScrubFanout(t, cmd, reservedAt)
 	}
 	if toOrigin {
 		a.sendToStream(cs, cmd)
@@ -1413,25 +1420,37 @@ func (a *Analyzer) trustedScrubPeers(origin *collectorStream) []*collectorStream
 	return peers
 }
 
+// scrubFanoutItem is a queued fan-out command. reservedAt is when its block
+// was reserved for the peer (zero for commands the dedup does not reserve),
+// so a command the peer never gets can release that reservation.
+type scrubFanoutItem struct {
+	cmd        *apiv1.Command
+	reservedAt time.Time
+}
+
 // enqueueScrubFanout queues cmd for a scrub peer without blocking: a stalled
 // peer cannot hold up the origin's signal stream. One FIFO per peer keeps
 // fan-out commands in decision order; other commands to the peer (its own
 // blocks, rule sets, Broadcast) are not ordered against them. Today only
-// blocks are fanned out; unblocks would take the same queue.
-func (a *Analyzer) enqueueScrubFanout(cs *collectorStream, cmd *apiv1.Command) {
+// blocks are fanned out; unblocks would take the same queue. A block
+// dropped because the queue is full releases the peer's dedup reservation.
+func (a *Analyzer) enqueueScrubFanout(cs *collectorStream, cmd *apiv1.Command, reservedAt time.Time) {
 	if cs.fanout == nil {
 		return
 	}
 	cs.fanoutMu.RLock()
 	defer cs.fanoutMu.RUnlock()
 	if cs.fanoutClosed {
+		// The stream is gone and its dedup key is never reused, so its
+		// reservation needs no release.
 		metrics.ScrubCommandFanoutDropped.WithLabelValues("peer_gone").Inc()
 		return
 	}
 	select {
-	case cs.fanout <- cmd:
+	case cs.fanout <- scrubFanoutItem{cmd: cmd, reservedAt: reservedAt}:
 	default:
 		metrics.ScrubCommandFanoutDropped.WithLabelValues("queue_full").Inc()
+		a.releaseBlock(cs, cmd, reservedAt)
 	}
 }
 
@@ -1461,6 +1480,8 @@ func drainScrubFanout(cs *collectorStream) {
 // stream or the analyzer ends. Ending the stream also unblocks a Send in
 // progress, so shutdown does not wait out the send watchdog.
 // Commands still queued when it stops are counted as reason="peer_gone".
+// A block dropped on a role change or a failed send releases the peer's
+// dedup reservation, so the next decision within the TTL delivers it again.
 func (a *Analyzer) runScrubFanout(ctx context.Context, id string, cs *collectorStream) {
 	defer drainScrubFanout(cs)
 	for {
@@ -1469,7 +1490,7 @@ func (a *Analyzer) runScrubFanout(ctx context.Context, id string, cs *collectorS
 			return
 		case <-a.lifetime().Done():
 			return
-		case cmd := <-cs.fanout:
+		case item := <-cs.fanout:
 			if ctx.Err() != nil || a.lifetime().Err() != nil {
 				metrics.ScrubCommandFanoutDropped.WithLabelValues("peer_gone").Inc()
 				return
@@ -1477,10 +1498,12 @@ func (a *Analyzer) runScrubFanout(ctx context.Context, id string, cs *collectorS
 			// The role can change after the command was queued.
 			if !cs.isTrustedScrub() {
 				metrics.ScrubCommandFanoutDropped.WithLabelValues("role_changed").Inc()
+				a.releaseBlock(cs, item.cmd, item.reservedAt)
 				continue
 			}
-			if err := a.sendLocked(cs, cmd); err != nil {
+			if err := a.sendLocked(cs, item.cmd); err != nil {
 				logrus.WithError(err).WithField("collector", id).Debug("Failed to send fan-out command to scrub collector")
+				a.releaseBlock(cs, item.cmd, item.reservedAt)
 				continue
 			}
 			metrics.ScrubCommandFanout.Inc()
@@ -1573,14 +1596,74 @@ func (s blockScope) index() int {
 	panic(fmt.Sprintf("unknown block scope %d", s))
 }
 
+// maxBlockSentEntries bounds the per-collector entries a Broadcast may add
+// to one source's reservation; past it the Broadcast is kept as a
+// broadcastMark. Local and fan-out blocks add one entry per collector they
+// reach.
+const maxBlockSentEntries = 64
+
 // blockReservation is the dedup entry for one source address: when each
 // collector last got the block and when each scope was last published. sent
 // is keyed by dedupKey, not the stream, so an entry does not keep a
-// disconnected collector's stream alive. at is the newest of those times.
+// disconnected collector's stream alive; bcast covers the collectors a wide
+// Broadcast reached without an entry each. at is the newest of those times.
 type blockReservation struct {
 	at        time.Time
 	published [len(blockScopes)]time.Time
 	sent      map[uint64]time.Time
+	bcast     broadcastMark
+}
+
+// broadcastMark records a Broadcast sent at at to every collector whose
+// dedupKey is at most upTo, except those in skip (sorted). Keys grow with
+// registration order and a Broadcast snapshots every registered stream, so
+// the collectors with keys up to upTo were either sent the block or are in
+// skip: excluded by the scrub evidence gate, or already covered by a sent
+// entry that expires on its own. A collector that connects later has a
+// larger key and is not covered.
+type broadcastMark struct {
+	at   time.Time
+	upTo uint64
+	skip []uint64
+}
+
+func (m *broadcastMark) covers(k uint64, now time.Time) bool {
+	if m.at.IsZero() || now.Sub(m.at) >= recentBlockTTL || k > m.upTo {
+		return false
+	}
+	_, skipped := slices.BinarySearch(m.skip, k)
+	return !skipped
+}
+
+// has reports whether the collector with dedupKey k got the block within
+// recentBlockTTL before now.
+func (r *blockReservation) has(k uint64, now time.Time) bool {
+	if at, ok := r.sent[k]; ok && now.Sub(at) < recentBlockTTL {
+		return true
+	}
+	return r.bcast.covers(k, now)
+}
+
+// pending returns the targets that have not had the block within
+// recentBlockTTL; targets itself when that is all of them.
+func (r *blockReservation) pending(targets []*collectorStream, now time.Time) []*collectorStream {
+	var out []*collectorStream
+	for i, t := range targets {
+		if r.has(t.dedupKey(), now) {
+			if out == nil {
+				out = make([]*collectorStream, i, len(targets))
+				copy(out, targets[:i])
+			}
+			continue
+		}
+		if out != nil {
+			out = append(out, t)
+		}
+	}
+	if out == nil {
+		return targets
+	}
+	return out
 }
 
 // publishedWithin reports whether scope was published within recentBlockTTL
@@ -1591,30 +1674,44 @@ func (r *blockReservation) publishedWithin(scope blockScope, now time.Time) bool
 }
 
 // reserveCommand dedups BLOCK_IP commands per source and collector and
-// returns the targets that still need cmd and whether the decision should be
-// published on WatchDecisions; other commands pass through. It must run once
-// per decision - never once per collector.
-func (a *Analyzer) reserveCommand(cmd *apiv1.Command, scope blockScope, targets []*collectorStream) ([]*collectorStream, bool) {
+// returns the targets that still need cmd, whether the decision should be
+// published on WatchDecisions and when the targets were reserved (zero when
+// cmd is not reserved); other commands pass through. excluded lists the
+// connected collectors a Broadcast skipped; see reserveBlockExcept. It must
+// run once per decision - never once per collector.
+func (a *Analyzer) reserveCommand(cmd *apiv1.Command, scope blockScope, targets, excluded []*collectorStream) ([]*collectorStream, bool, time.Time) {
 	if cmd.GetType() != apiv1.CommandType_COMMAND_BLOCK_IP || len(cmd.GetIp()) == 0 {
-		return targets, true
+		return targets, true, time.Time{}
 	}
 	ip := net.IP(cmd.GetIp())
-	out, publish := a.reserveBlock(ip, scope, targets, time.Now())
+	now := time.Now()
+	out, publish := a.reserveBlockExcept(ip, scope, targets, excluded, now)
 	if len(out) == 0 && logrus.IsLevelEnabled(logrus.DebugLevel) {
 		logrus.WithFields(logrus.Fields{"ip": ip.String()}).Debug("Block command skipped (recently blocked)")
 	}
-	return out, publish
+	return out, publish, now
 }
 
-// reserveBlock records a block of ip at scope and returns which of targets
-// have not had it within recentBlockTTL; only those get it. Dedup is per
-// collector: a block one collector got never stops another collector's own
-// decision, a trusted fan-out or a Broadcast from reaching collectors that
-// have not had it. publish is true when something is sent and this scope was
-// not published within recentBlockTTL, so WatchDecisions shows a source at
-// most once per scope per TTL - and again every TTL while the attack goes
-// on, however the sends to individual collectors interleave.
+// reserveBlock is reserveBlockExcept with no excluded collectors.
 func (a *Analyzer) reserveBlock(ip net.IP, scope blockScope, targets []*collectorStream, now time.Time) (fresh []*collectorStream, publish bool) {
+	return a.reserveBlockExcept(ip, scope, targets, nil, now)
+}
+
+// reserveBlockExcept records a block of ip at scope and returns which of
+// targets have not had it within recentBlockTTL; only those get it. Dedup is
+// per collector: a block one collector got never stops another collector's
+// own decision, a trusted fan-out or a Broadcast from reaching collectors
+// that have not had it. publish is true when something is sent and this
+// scope was not published within recentBlockTTL, so WatchDecisions shows a
+// source at most once per scope per TTL - and again every TTL while the
+// attack goes on, however the sends to individual collectors interleave.
+//
+// A Broadcast that would leave more than maxBlockSentEntries entries is kept
+// as one broadcastMark instead; its targets must then be every registered
+// collector but excluded. A new mark replaces a live one, and the
+// collectors only the old one covered get the block again now, so no
+// collector's dedup outlasts recentBlockTTL from its last send.
+func (a *Analyzer) reserveBlockExcept(ip net.IP, scope blockScope, targets, excluded []*collectorStream, now time.Time) (fresh []*collectorStream, publish bool) {
 	key := ip.String()
 	a.recentBlocksMu.Lock()
 	defer a.recentBlocksMu.Unlock()
@@ -1629,19 +1726,26 @@ func (a *Analyzer) reserveBlock(ip net.IP, scope blockScope, targets []*collecto
 			delete(r.sent, k)
 		}
 	}
-	for _, t := range targets {
-		k := t.dedupKey()
-		if at, got := r.sent[k]; got && now.Sub(at) < recentBlockTTL {
-			continue
-		}
-		if r.sent == nil {
-			r.sent = make(map[uint64]time.Time, len(targets))
-		}
-		r.sent[k] = now
-		fresh = append(fresh, t)
+	if !r.bcast.at.IsZero() && now.Sub(r.bcast.at) >= recentBlockTTL {
+		r.bcast = broadcastMark{}
 	}
+	fresh = r.pending(targets, now)
 	if len(fresh) == 0 {
 		return nil, false
+	}
+	if scope == scopeBroadcast && len(r.sent)+len(fresh) > maxBlockSentEntries {
+		if !r.bcast.at.IsZero() {
+			r.bcast = broadcastMark{}
+			fresh = r.pending(targets, now)
+		}
+		r.bcast = newBroadcastMark(r, targets, excluded, now)
+	} else {
+		if r.sent == nil {
+			r.sent = make(map[uint64]time.Time, len(fresh))
+		}
+		for _, t := range fresh {
+			r.sent[t.dedupKey()] = now
+		}
 	}
 	r.at = now
 	if !ok {
@@ -1653,6 +1757,44 @@ func (a *Analyzer) reserveBlock(ip net.IP, scope blockScope, targets []*collecto
 		publish = true
 	}
 	return fresh, publish
+}
+
+// newBroadcastMark covers every target r has no live entry for. Targets
+// with one, and the excluded collectors, are skipped.
+func newBroadcastMark(r *blockReservation, targets, excluded []*collectorStream, now time.Time) broadcastMark {
+	m := broadcastMark{at: now}
+	for _, t := range targets {
+		k := t.dedupKey()
+		m.upTo = max(m.upTo, k)
+		if r.has(k, now) {
+			m.skip = append(m.skip, k)
+		}
+	}
+	for _, t := range excluded {
+		if k := t.dedupKey(); k <= m.upTo {
+			m.skip = append(m.skip, k)
+		}
+	}
+	slices.Sort(m.skip)
+	return m
+}
+
+// releaseBlock undoes cs's reservation of cmd's block made at reservedAt,
+// for a fan-out the peer never got, so the next decision within the TTL
+// delivers it. It is a compare-and-delete: a reservation made since is kept.
+func (a *Analyzer) releaseBlock(cs *collectorStream, cmd *apiv1.Command, reservedAt time.Time) {
+	if reservedAt.IsZero() || cmd.GetType() != apiv1.CommandType_COMMAND_BLOCK_IP || len(cmd.GetIp()) == 0 {
+		return
+	}
+	key := net.IP(cmd.GetIp()).String()
+	k := cs.dedupKey()
+	a.recentBlocksMu.Lock()
+	defer a.recentBlocksMu.Unlock()
+	if r, ok := a.recentBlocks[key]; ok {
+		if at, got := r.sent[k]; got && at.Equal(reservedAt) {
+			delete(r.sent, k)
+		}
+	}
 }
 
 func (a *Analyzer) sweepRecentBlocksLocked(now time.Time) {
@@ -1693,8 +1835,10 @@ func (a *Analyzer) Broadcast(cmd *apiv1.Command) {
 		cmd.GetType() == apiv1.CommandType_COMMAND_BLOCK_IP && !a.scrubEvidence.has(net.IP(cmd.GetIp()))
 	a.collectorsMu.RLock()
 	recipients := make([]*collectorStream, 0, len(a.collectors))
+	var gated []*collectorStream
 	for _, cs := range a.collectors {
 		if gateScrub && cs.isTrustedScrub() {
+			gated = append(gated, cs)
 			continue
 		}
 		recipients = append(recipients, cs)
@@ -1707,7 +1851,7 @@ func (a *Analyzer) Broadcast(cmd *apiv1.Command) {
 		return
 	}
 
-	recipients, publish := a.reserveCommand(cmd, scopeBroadcast, recipients)
+	recipients, publish, _ := a.reserveCommand(cmd, scopeBroadcast, recipients, gated)
 	if len(recipients) == 0 {
 		return
 	}
