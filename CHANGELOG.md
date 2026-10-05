@@ -1,5 +1,24 @@
 # PacketYeeter Changelog
 
+## 2026-10-05 - Bounded block dedup; failed fan-out no longer suppresses
+
+Follow-up to #124.
+
+- A `Broadcast` block (AI and sustained-download holds) to more than 64
+  collectors is kept in the 60-second block dedup as one entry per source
+  instead of one per collector. Before, a wide attack kept up to
+  sources x collectors entries (about 80 KB per source with 1024 collectors)
+  under one analyzer-wide lock. Delivery is unchanged: a repeat `Broadcast`
+  within 60 seconds still reaches collectors that connected since, and trusted
+  scrub nodes the `-scrub-broadcast-requires-trusted-evidence` gate skipped
+  before; when more than 64 such collectors have appeared, it is sent to every
+  collector again rather than tracked per collector.
+- A fan-out block a scrub peer never got no longer suppresses that block to
+  the peer for 60 seconds. A drop counted as `queue_full` or `role_changed` in
+  `packetyeeter_scrub_command_fanout_dropped_total`, or a failed send,
+  releases the peer's dedup reservation, so the next trusted decision for the
+  source delivers it.
+
 ## 2026-10-05 - Trusted scrub streams keep full analysis; Broadcast gate is opt-in
 
 Follow-up to the scrub allowlist (#123).

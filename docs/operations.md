@@ -562,10 +562,16 @@ set is not kept and both stay at zero.
 Each node expires a block from the time it received it and its own
 `-block-duration`, so nodes can drop a fanned-out block at slightly different
 times. Dry-run and the kill switch are checked before the dedup, once per
-decision. The dedup suppresses a repeat `BLOCK_IP` to a collector that got
-one for the same source in the last 60 seconds; every other collector still
-gets its own block, so with fan-out off each node is blocked by the decisions
-from its own signals. `WatchDecisions` publishes a source at most once per
+decision. The dedup suppresses a repeat `BLOCK_IP` to a collector that had
+one for the same source sent or queued (reserved) in the last 60 seconds;
+every other collector still gets its own block, so with fan-out off each node
+is blocked by the decisions from its own signals. A fan-out block a peer never
+got - dropped as `queue_full` or `role_changed`, or failed to send - releases
+that peer's reservation, so the next trusted decision within the 60 seconds
+delivers it. A `Broadcast` to more than 64 collectors is remembered as one
+entry per source instead of one per collector; a repeat within 60 seconds
+reaches only collectors that connected or became eligible since, or, when
+more than 64 have, every collector again. `WatchDecisions` publishes a source at most once per
 scope (local, fan-out, broadcast) per 60 seconds, not once per collector,
 and again every 60 seconds or so while blocks for it keep being sent: a
 trusted fan-out after a local block is published, a second node's own local
@@ -581,7 +587,8 @@ queue). A command that cannot be sent to a peer is dropped and counted in
 the peer's queue is full (the send watchdog closes a peer that stops reading
 for 30 seconds), `reason="role_changed"` when the peer stopped being a
 trusted scrub stream after the command was queued, `reason="peer_gone"` when
-its stream ended with the command still queued.
+its stream ended with the command still queued. A `queue_full` or
+`role_changed` drop releases the peer's dedup reservation.
 `packetyeeter_scrub_command_fanout_total` counts fan-out sends the transport
 accepted. A scrub node that connects after the block does not get it. Blocks
 decided from host-mode collectors still go only to that collector.
