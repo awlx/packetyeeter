@@ -44,6 +44,11 @@ GEOIP_ASN_PATH=/var/lib/GeoIP/GeoLite2-ASN.mmdb
 # certificate names so a block decided from one scrub node reaches the others.
 # See docs/operations.md#scrub-mode.
 # EXTRA_ARGS=... -scrub-client-names scrub-1.example.net,scrub-2.example.net
+# AI and sustained-download (Broadcast) blocks reach every collector, scrub
+# nodes included. -scrub-broadcast-requires-trusted-evidence (off by default)
+# sends them to listed scrub collectors only for sources one of them reported
+# in the last 10 minutes; scrub nodes report few such sources, so most of
+# those blocks then stay off the scrub layer.
 #
 # gRPC connections are closed after -grpc-max-connection-age (default 1h; 0 =
 # never) plus -grpc-max-connection-age-grace for open streams, so clients

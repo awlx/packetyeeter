@@ -1,5 +1,33 @@
 # PacketYeeter Changelog
 
+## 2026-10-05 - Trusted scrub streams keep full analysis; Broadcast gate is opt-in
+
+Follow-up to the scrub allowlist (#123).
+
+- A trusted scrub stream's signal that trips only the shared rate limiter
+  (per IP or per ASN, which any connected collector can drain) no longer ends
+  its processing. It gets no rate-limit block, counted in
+  `packetyeeter_scrub_shared_only_blocks_skipped_total{kind="rate_limit"}`,
+  and goes on to the AI engine, baseline, pattern, entropy, sustained-download
+  and reputation checks. Before, a collector outside the allowlist could keep
+  a source's (or a whole ASN's) shared bucket drained and so exempt it from
+  analysis on the scrub layer. `packetyeeter_rate_limit_exceeded_total` and
+  the currently-blocked gauges now count only trips that block; skipped
+  trips are counted only in the skip counter.
+- Reputation blocks on a trusted scrub stream are decided on the trusted
+  reputation alone. Before, the check was entered only when the shared score
+  crossed the threshold, so untrusted rewards to it (a browser JA4, say)
+  could spare a source the trusted evidence condemned.
+- `Broadcast` (AI and sustained-download blocks) again reaches trusted scrub
+  collectors by default, as before #123. Scrub collectors load no TC programs
+  or SPOE, so they almost never report those sources, and the trusted-evidence
+  gate kept most such blocks off the scrub layer. The gate is now opt-in with
+  the new analyzer flag `-scrub-broadcast-requires-trusted-evidence` (default
+  off; requires `-scrub-client-names`). `packetyeeter_scrub_evidence_entries`
+  and `packetyeeter_scrub_evidence_evictions_total` stay at zero without it.
+- Host-mode and unlisted streams, and every stream with
+  `-scrub-client-names` empty, behave as before.
+
 ## 2026-10-04 - Scrub block fan-out requires a certificate allowlist
 
 - Scrub block fan-out no longer trusts the role a collector announces, nor

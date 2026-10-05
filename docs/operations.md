@@ -493,14 +493,22 @@ blocks and runtime rules.
 
 What decides a block on a trusted scrub node: the analyzer keeps a second
 rate limiter (same limits) and a second reputation score that only trusted
-scrub streams feed. A rate-limit or reputation block is sent to a trusted
-scrub stream only when that trusted-only state crosses the threshold, and
-then it also fans out to every other trusted scrub stream. Signals from
-several trusted nodes still add up, so a source split across them is judged
-on their total. When only the shared state (fed by every stream) crossed the
-threshold, a trusted scrub stream gets no block; the signal is still counted
-as rate limited and the shared reputation is still penalized, and
-`packetyeeter_scrub_shared_only_blocks_skipped_total{kind}` counts the skip.
+scrub streams feed. A trusted scrub stream is judged on that trusted-only
+state alone: it gets a rate-limit or reputation block only when the
+trusted-only state crosses the threshold, and then the block also fans out to
+every other trusted scrub stream. Signals from several trusted nodes still
+add up, so a source split across them is judged on their trusted total. The
+shared state (fed by every stream) neither blocks a source on a trusted
+scrub stream nor spares it: when only the shared rate limiter (per IP or per
+ASN) tripped, the trusted stream gets no block, the shared reputation is
+still penalized, `packetyeeter_scrub_shared_only_blocks_skipped_total{kind="rate_limit"}`
+counts the skip, and the signal goes on to the AI engine, baseline, pattern,
+entropy, sustained-download and reputation checks like any other. Only trips
+that block are counted in `packetyeeter_rate_limit_exceeded_total` and the
+currently-blocked gauges. The reputation check uses the trusted reputation
+alone, so untrusted rewards (for example a browser JA4) to the shared score
+cannot spare a source; a shared-only crossing counts in
+`packetyeeter_scrub_shared_only_blocks_skipped_total{kind="reputation"}`.
 Host-mode collectors and untrusted streams are judged on the shared state as
 before and get their own blocks. With `-scrub-client-names` empty no stream
 is trusted and all of this is off: every stream is judged on the shared
@@ -513,10 +521,12 @@ What is and is not protected (with `-scrub-client-names` set):
   blocked on any trusted scrub node through the rate limit or reputation:
   draining the shared bucket or pushing the shared reputation over the
   threshold blocks the source only on streams outside the allowlist that
-  report it, never on a trusted scrub node. It also cannot stop another
-  collector's block: the 60-second dedup is per collector, so a block it got
-  does not suppress another node's own block, a trusted fan-out or a
-  `Broadcast` of the same source.
+  report it, never on a trusted scrub node. Nor can it exempt a source (or a
+  whole ASN) from analysis on the scrub layer by keeping the shared bucket
+  drained, or spare it a trusted reputation block by raising its shared
+  reputation. It also cannot stop another collector's block: the 60-second
+  dedup is per collector, so a block it got does not suppress another node's
+  own block, a trusted fan-out or a `Broadcast` of the same source.
 - It still feeds the shared per-source state (rate limit, reputation, AI
   windows) and is blocked on that state itself.
 - Only rate-limit trips from trusted streams feed the trusted reputation; AI
@@ -524,29 +534,30 @@ What is and is not protected (with `-scrub-client-names` set):
   nodes get reputation blocks only from repeated trusted rate-limit trips;
   other reputation-driven blocks reach them only through `Broadcast`.
 - AI detections and sustained-download holds use `Broadcast`, which is judged
-  on the *shared* evidence (AI windows fed by every stream) and sends to every
-  collector (host-mode included). With the list set it skips trusted scrub
-  collectors unless a trusted scrub stream sent *any* signal for that source
-  in the last 10 minutes; any signal type counts, including
-  `SIGNAL_EGRESS_VOLUME` reports. That evidence is global, not per node: one
-  trusted scrub report for a source admits the `Broadcast` to *all* trusted
-  scrub nodes. So this path differs from the rate-limit and reputation gate
-  above: once a trusted scrub node has reported a source, untrusted streams
-  can drive the AI detection that gets it blocked on every trusted scrub
-  node. A `Broadcast` sent before the trusted report is sent again to the
-  scrub nodes when the AI engine repeats it within 60 seconds.
-- Sustained-download holds re-broadcast while the download goes on. Once the
-  source is blocked at the scrub layer, scrub nodes drop its traffic and stop
-  reporting it, so after the 10-minute evidence window those re-broadcasts no
-  longer reach the scrub nodes (their own blocks expire after
-  `-block-duration`). Host collectors still get them.
-- With the list empty `Broadcast` reaches every collector, as before.
+  on the *shared* evidence (AI windows fed by every stream) and by default
+  sends to every collector, trusted scrub nodes and host-mode collectors
+  included, exactly as with the list empty. So untrusted streams can drive an
+  AI or sustained-download block that reaches every trusted scrub node; this
+  is how scrub nodes, which load no TC programs or SPOE and so see few L7 or
+  sustained-download sources themselves, get those blocks at all.
+- `-scrub-broadcast-requires-trusted-evidence` (off by default) makes
+  `Broadcast` skip trusted scrub collectors unless a trusted scrub stream sent
+  *any* signal for that source in the last 10 minutes. That evidence is
+  global, not per node: one trusted scrub report admits the `Broadcast` to
+  *all* trusted scrub nodes, after which untrusted streams can still drive it.
+  A `Broadcast` sent before the trusted report is sent again to the scrub
+  nodes when the AI engine repeats it within 60 seconds. Turning it on keeps
+  most AI and sustained-download blocks off the scrub layer, because scrub
+  nodes rarely report those sources. It requires `-scrub-client-names`; the
+  analyzer refuses to start without it and logs at start-up when it is on.
 - Restrict who can connect at all with mTLS and a firewall; the allowlist
   does not.
 
-The trusted-report set holds at most 200000 sources; at that size an insert
-evicts a sampled old entry (`packetyeeter_scrub_evidence_evictions_total`),
-and `packetyeeter_scrub_evidence_entries` shows its size.
+With `-scrub-broadcast-requires-trusted-evidence`, the trusted-report set
+holds at most 200000 sources; at that size an insert evicts a sampled old
+entry (`packetyeeter_scrub_evidence_evictions_total`), and
+`packetyeeter_scrub_evidence_entries` shows its size. Without the flag the
+set is not kept and both stay at zero.
 
 Each node expires a block from the time it received it and its own
 `-block-duration`, so nodes can drop a fanned-out block at slightly different
