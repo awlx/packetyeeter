@@ -198,15 +198,20 @@ Analyzer-side, for `PushRules`:
 - `packetyeeter_scrub_shared_only_blocks_skipped_total{kind}` (counter):
   rate-limit (`kind="rate_limit"`) or reputation (`kind="reputation"`) blocks
   not sent to a trusted scrub collector because only the shared state, not
-  the trusted-only state, crossed the threshold. A steady rise means
-  collectors outside `-scrub-client-names` are driving a source the scrub
-  nodes see little of. Zero without `-scrub-client-names`.
-- `packetyeeter_scrub_evidence_entries` (gauge): sources a trusted scrub
+  the trusted-only state, crossed the threshold. The signal is still
+  analyzed; a skipped rate-limit trip is not counted in
+  `packetyeeter_rate_limit_exceeded_total` or the currently-blocked gauges. A
+  steady rise means collectors outside `-scrub-client-names` are driving a
+  source the scrub nodes see little of. Zero without `-scrub-client-names`.
+- `packetyeeter_scrub_evidence_entries` (gauge): only with
+  `-scrub-broadcast-requires-trusted-evidence`; sources a trusted scrub
   collector reported in the last 10 minutes, which admit `Broadcast` blocks
-  to trusted scrub collectors. Capped at 200000.
-- `packetyeeter_scrub_evidence_evictions_total` (counter): entries evicted
-  from that set at the cap before their 10 minutes ran out. A source evicted
-  this way is not `Broadcast` to scrub nodes until they report it again.
+  to trusted scrub collectors. Capped at 200000. Zero without the flag.
+- `packetyeeter_scrub_evidence_evictions_total` (counter): only with
+  `-scrub-broadcast-requires-trusted-evidence`; entries evicted from that set
+  at the cap before their 10 minutes ran out. A source evicted this way is
+  not `Broadcast` to scrub nodes until they report it again. Zero without the
+  flag.
 - `packetyeeter_collector_send_stalls_total` (counter): collector streams the
   analyzer closed because a command send (rules or blocks) blocked for 30
   seconds: the collector stopped reading. It reconnects and is resynced.

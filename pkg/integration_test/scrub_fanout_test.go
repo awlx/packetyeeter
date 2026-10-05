@@ -40,6 +40,13 @@ const fanoutBurst = 200
 // for clients by certificate name.
 func startFanoutAnalyzer(t *testing.T) (*analyzer.Analyzer, func(name string) apiv1.AnalyzerServiceClient) {
 	t.Helper()
+	return startFanoutAnalyzerWithSharedBurst(t, fanoutBurst)
+}
+
+// startFanoutAnalyzerWithSharedBurst is startFanoutAnalyzer with the shared
+// limiter's burst set apart from the trusted-only limiter's fanoutBurst.
+func startFanoutAnalyzerWithSharedBurst(t *testing.T, sharedBurst float64) (*analyzer.Analyzer, func(name string) apiv1.AnalyzerServiceClient) {
+	t.Helper()
 	dir := t.TempDir()
 	ca := grpctlstest.NewCA(t, "packetyeeter-ca")
 	caFile := ca.WriteCA(t, dir, "ca")
@@ -70,7 +77,7 @@ func startFanoutAnalyzer(t *testing.T) (*analyzer.Analyzer, func(name string) ap
 	limits := ratelimit.Config{IPRateExact: &noRefill, IPBurst: fanoutBurst}
 	// Replace the limiters New() built; stop theirs so no cleanup goroutine leaks.
 	a.RateLimiter.Stop()
-	a.RateLimiter = ratelimit.NewLimiter(limits)
+	a.RateLimiter = ratelimit.NewLimiter(ratelimit.Config{IPRateExact: &noRefill, IPBurst: sharedBurst})
 	if a.ScrubRateLimiter != nil {
 		a.ScrubRateLimiter.Stop()
 	}
@@ -103,10 +110,11 @@ func sendSignals(t *testing.T, src net.IP, n int, streams ...apiv1.AnalyzerServi
 }
 
 // Two scrub collectors behind ECMP each see half of one source; the block is
-// decided on the total, reaches both, not the host collector, and is
-// published on WatchDecisions once.
+// decided on the trusted total, reaches both, not the host collector, and is
+// published on WatchDecisions once. The shared limiter never trips here, so
+// the block rests on the trusted-only limiter alone.
 func TestScrubBlockFanoutOverGRPC(t *testing.T) {
-	_, dial := startFanoutAnalyzer(t)
+	_, dial := startFanoutAnalyzerWithSharedBurst(t, 4*fanoutBurst)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()

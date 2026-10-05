@@ -115,11 +115,19 @@ type Config struct {
 	// of trusted scrub collectors. A block fans out from one trusted scrub
 	// stream to the others only when evidence from trusted scrub streams
 	// alone (ScrubRateLimiter, ScrubReputation) crossed the threshold; empty
-	// disables cross-node fan-out. It does not gate signals: any connected
-	// stream still feeds the shared per-source state and can get a source
-	// blocked on the one stream that next reports it. Requires
-	// TLS.ClientCAFile.
+	// disables cross-node fan-out. Trusted scrub streams get rate-limit and
+	// reputation blocks on that trusted-only state alone and run normal
+	// analysis whatever the shared state says. It does not gate signals: any
+	// connected stream still feeds the shared per-source state and is judged
+	// on it. Requires TLS.ClientCAFile.
 	ScrubClientNames []string
+	// ScrubBroadcastRequiresTrustedEvidence makes Broadcast skip trusted
+	// scrub collectors for a BLOCK_IP unless a trusted scrub stream reported
+	// the source in the last 10 minutes. Off by default: scrub collectors
+	// report few L7/AI or sustained-download sources, so the gate would keep
+	// most AI and sustained-download blocks off the scrub layer. Requires
+	// ScrubClientNames.
+	ScrubBroadcastRequiresTrustedEvidence bool
 }
 
 const (
@@ -265,15 +273,17 @@ type Analyzer struct {
 	rateLimitersMu  sync.RWMutex
 	RateLimiter     *ratelimit.Limiter
 	// ScrubRateLimiter has RateLimiter's configuration but is fed only by
-	// trusted scrub streams (see isTrustedScrub); only its verdict makes a
-	// rate-limit block eligible for scrub fan-out.
+	// trusted scrub streams (see isTrustedScrub); only its verdict blocks a
+	// source on a trusted scrub stream, and such a block fans out.
 	ScrubRateLimiter *ratelimit.Limiter
 	// ScrubReputation is fed only by penalties from ScrubRateLimiter trips;
-	// only its score makes a reputation block eligible for scrub fan-out.
-	// nil: reputation blocks never fan out.
+	// only its score decides a reputation block on a trusted scrub stream,
+	// and such a block fans out. nil: trusted scrub streams get no
+	// reputation blocks.
 	ScrubReputation *reputation.Engine
 	// scrubEvidence remembers which sources trusted scrub streams reported
-	// recently; Broadcast sends to trusted scrub collectors only for those.
+	// recently; with ScrubBroadcastRequiresTrustedEvidence, Broadcast sends
+	// to trusted scrub collectors only for those. nil when the flag is off.
 	scrubEvidence *evidenceSet
 
 	// HTTP rate tracking (EWMA)
@@ -444,6 +454,9 @@ func New(cfg Config) (*Analyzer, error) {
 	if len(cfg.ScrubClientNames) > 0 && !cfg.TLS.MutualTLS() {
 		return nil, errors.New("-scrub-client-names requires -tls-client-ca (names come from verified client certificates)")
 	}
+	if cfg.ScrubBroadcastRequiresTrustedEvidence && len(cfg.ScrubClientNames) == 0 {
+		return nil, errors.New("-scrub-broadcast-requires-trusted-evidence requires -scrub-client-names (it gates Broadcast to trusted scrub collectors)")
+	}
 	grpcCreds, err := grpctls.NewServerCredentials(cfg.TLS, logrus.StandardLogger())
 	if err != nil {
 		return nil, fmt.Errorf("gRPC TLS: %w", err)
@@ -480,7 +493,6 @@ func New(cfg Config) (*Analyzer, error) {
 		ipRateLimiters:         make(map[string]*ratelimit.TokenBucket),
 		asnRateLimiters:        make(map[string]*ratelimit.TokenBucket),
 		RateLimiter:            ratelimit.NewLimiter(ratelimit.DefaultConfig()),
-		scrubEvidence:          newEvidenceSet(scrubEvidenceTTL, scrubEvidenceMaxEntries),
 		httpRateByIP:           make(map[string]*ewma.State),
 		httpRateByASN:          make(map[string]*ewma.State),
 		proxyLagByASN:          make(map[string]*ewma.State),
@@ -500,6 +512,9 @@ func New(cfg Config) (*Analyzer, error) {
 	a.ReputationHelper = NewReputationHelper(nil) // Will be set during Start()
 	if len(cfg.ScrubClientNames) > 0 {
 		a.ScrubRateLimiter = ratelimit.NewLimiter(ratelimit.DefaultConfig())
+	}
+	if cfg.ScrubBroadcastRequiresTrustedEvidence {
+		a.scrubEvidence = newEvidenceSet(scrubEvidenceTTL, scrubEvidenceMaxEntries)
 	}
 	if len(cfg.ControlClientNames) > 0 {
 		a.controlAuthz = grpctls.NewMethodAuthorizer(ControlMethods, cfg.ControlClientNames, logrus.StandardLogger())
@@ -756,6 +771,9 @@ func (a *Analyzer) Start() error {
 	}
 	if len(a.Config.ScrubClientNames) == 0 {
 		logrus.Info("Scrub block fan-out disabled: -scrub-client-names is empty, so a block decided from a scrub collector goes only to that collector")
+	}
+	if a.Config.ScrubBroadcastRequiresTrustedEvidence {
+		logrus.Info("Broadcast blocks (AI, sustained-download) reach trusted scrub collectors only for sources a trusted scrub collector reported in the last 10 minutes (-scrub-broadcast-requires-trusted-evidence)")
 	}
 	if a.grpcCreds != nil {
 		opts = append(opts, grpc.Creds(a.grpcCreds))
@@ -1061,7 +1079,7 @@ func (a *Analyzer) processSignal(sig *apiv1.Signal, cs *collectorStream) {
 	}
 
 	ip := net.IP(sig.Ip)
-	if cs.isTrustedScrub() {
+	if a.scrubEvidence != nil && cs.isTrustedScrub() {
 		a.scrubEvidence.add(ip)
 	}
 	asn := "Unknown"
@@ -1136,9 +1154,6 @@ func (a *Analyzer) processSignal(sig *apiv1.Signal, cs *collectorStream) {
 
 		if !a.Config.DryRun {
 			a.penalizeRateLimited(ip, fanout)
-			if a.skipSharedOnlyBlock(cs, fanout, "rate_limit") {
-				return
-			}
 			// Increment appropriate block metric based on signal type
 			switch sig.Type {
 			case apiv1.SignalType_SIGNAL_UDP_FLOOD:
@@ -1286,16 +1301,7 @@ func (a *Analyzer) processSignal(sig *apiv1.Signal, cs *collectorStream) {
 		})
 	}
 
-	score := 0.0
-	if a.Reputation != nil {
-		score = a.Reputation.GetScore(ip.String(), reputation.TypeIP)
-	}
-
-	if score > a.Config.ReputationThreshold {
-		fanout := a.scrubReputationExceeded(cs, ip)
-		if !a.Config.DryRun && a.skipSharedOnlyBlock(cs, fanout, "reputation") {
-			return
-		}
+	if score, exceeded, fanout := a.reputationVerdict(cs, ip); exceeded {
 		shouldBlock := a.mlConfirmsReputationBlock(ip, asn, score, "signal")
 
 		if shouldBlock && !a.Config.DryRun {
@@ -1663,12 +1669,12 @@ func (a *Analyzer) sweepRecentBlocksLocked(now time.Time) {
 
 // Broadcast sends a command to all connected collectors. It serves AI
 // detections and sustained-download holds, which are judged on evidence
-// from every collector, so for a BLOCK_IP it skips trusted scrub collectors
-// unless a trusted scrub stream reported the source recently: evidence from
-// untrusted streams alone does not reach them. That evidence is global: one
-// trusted scrub report admits every trusted scrub collector. A later
-// Broadcast of the same source reaches collectors that became eligible
-// since, not the ones that already have it.
+// from every collector. With ScrubBroadcastRequiresTrustedEvidence set, a
+// BLOCK_IP skips trusted scrub collectors unless a trusted scrub stream
+// reported the source recently. That evidence is global: one trusted scrub
+// report admits every trusted scrub collector. A later Broadcast of the
+// same source reaches collectors that became eligible since, not the ones
+// that already have it.
 func (a *Analyzer) Broadcast(cmd *apiv1.Command) {
 	if a.Config.DryRun {
 		logrus.WithFields(logrus.Fields{"cmd": cmd.String()}).Debug("Dry run: not broadcasting command")
@@ -1683,7 +1689,8 @@ func (a *Analyzer) Broadcast(cmd *apiv1.Command) {
 	// slot: reserving would mark the IP "recently blocked" for the TTL even
 	// though nothing enforced it, so a collector that (re)connects within the
 	// window would have the re-issued block suppressed and never receive it.
-	gateScrub := cmd.GetType() == apiv1.CommandType_COMMAND_BLOCK_IP && !a.scrubEvidence.has(net.IP(cmd.GetIp()))
+	gateScrub := a.Config.ScrubBroadcastRequiresTrustedEvidence &&
+		cmd.GetType() == apiv1.CommandType_COMMAND_BLOCK_IP && !a.scrubEvidence.has(net.IP(cmd.GetIp()))
 	a.collectorsMu.RLock()
 	recipients := make([]*collectorStream, 0, len(a.collectors))
 	for _, cs := range a.collectors {
