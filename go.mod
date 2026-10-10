@@ -6,15 +6,15 @@ require (
 	github.com/cilium/ebpf v0.22.0
 	github.com/dropmorepackets/haproxy-go v0.1.1
 	github.com/gdamore/tcell/v2 v2.13.10
-	github.com/negasus/haproxy-spoe-go v1.0.7
+	github.com/negasus/haproxy-spoe-go v1.0.8
 	github.com/oschwald/geoip2-golang v1.13.0
 	github.com/prometheus/client_golang v1.24.1
 	github.com/rivo/tview v0.42.0
 	github.com/sirupsen/logrus v1.10.2
 	github.com/vishvananda/netlink v1.3.1
 	github.com/yalue/onnxruntime_go v1.25.0
-	golang.org/x/sync v0.23.0
-	golang.org/x/sys v0.48.0
+	golang.org/x/sync v0.24.0
+	golang.org/x/sys v0.49.0
 	google.golang.org/grpc v1.83.2
 	google.golang.org/protobuf v1.36.12
 )
