@@ -227,10 +227,11 @@ func (k CampaignBaselineKey) String() string {
 	return fmt.Sprintf("protocol=%s|dst_port_bucket=%s|vector=%s|scope=%s", protocol, portBucket, vector, scope)
 }
 
-func campaignBaselineKey(vector SignalType, events []campaignSignal, scope string) CampaignBaselineKey {
+func campaignBaselineKey(vector SignalType, events *campaignEvents, scope string) CampaignBaselineKey {
 	protocolCounts := make(map[string]int)
 	portCounts := make(map[uint32]int)
-	for _, ev := range events {
+	for i := range events.Len() {
+		ev := events.At(i)
 		protocolCounts[ev.protocol]++
 		if ev.dstPort > 0 {
 			portCounts[ev.dstPort]++

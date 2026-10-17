@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"math"
 	"net"
-	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -555,8 +554,6 @@ func (a *Analyzer) processHTTPRequest(sig *apiv1.Signal, ip net.IP, asn string, 
 			fp, fpType = sig.Ja4T, "ja4t"
 		}
 
-		logExact := os.Getenv("PACKETYEETER_JA4DB_LOG_EXACT") != ""
-
 		if fp != "" {
 			res, found := a.JA4DB.LookupWithTypeResult(fp, fpType)
 			if found {
@@ -570,22 +567,24 @@ func (a *Analyzer) processHTTPRequest(sig *apiv1.Signal, ip net.IP, asn string, 
 
 				if exactBrowser {
 					a.ReputationHelper.RewardBrowser(ip, fp, asn)
-					logrus.WithFields(logrus.Fields{
-						"component": "analyzer_service",
-						"event":     "browser_exact_ja4_match",
-						"ip":        ip,
-						"ja4":       fp,
-						"ja4h":      sig.Ja4H,
-						"ja4t":      sig.Ja4T,
-						"fp":        fp,
-						"fp_type":   fpType,
-						"asn":       asn,
-						"ua":        userAgent,
-					}).Info("Browser exact JA4 match: rewarded reputation, skipping bot detection")
+					if a.browserMatchLog.AllowIP(ip) {
+						logrus.WithFields(logrus.Fields{
+							"component": "analyzer_service",
+							"event":     "browser_exact_ja4_match",
+							"ip":        ip,
+							"ja4":       fp,
+							"ja4h":      sig.Ja4H,
+							"ja4t":      sig.Ja4T,
+							"fp":        fp,
+							"fp_type":   fpType,
+							"asn":       asn,
+							"ua":        userAgent,
+						}).Info("Browser exact JA4 match: rewarded reputation, skipping bot detection")
+					}
 					return
 				}
 
-				if logExact && res.MatchType == "exact" {
+				if a.Config.JA4DBLogExact && res.MatchType == "exact" {
 					entryJSON, _ := json.Marshal(entry)
 					logrus.WithFields(logrus.Fields{
 						"ip":          ip,
@@ -624,15 +623,17 @@ func (a *Analyzer) processHTTPRequest(sig *apiv1.Signal, ip net.IP, asn string, 
 
 				if isKnownBot {
 					metrics.JA4DBKnownBots.Inc()
-					logrus.WithFields(logrus.Fields{
-						"ip":          ip.String(),
-						"ja4":         sig.Ja4H,
-						"ja4h":        sig.Ja4H,
-						"ja4t":        sig.Ja4T,
-						"fp_type":     res.FingerprintType,
-						"match_type":  res.MatchType,
-						"application": info,
-					}).Info("Known bot fingerprint detected")
+					if a.knownBotLog.AllowIP(ip) {
+						logrus.WithFields(logrus.Fields{
+							"ip":          ip.String(),
+							"ja4":         sig.Ja4H,
+							"ja4h":        sig.Ja4H,
+							"ja4t":        sig.Ja4T,
+							"fp_type":     res.FingerprintType,
+							"match_type":  res.MatchType,
+							"application": info,
+						}).Info("Known bot fingerprint detected")
+					}
 				}
 
 				// record UA hits (gated)

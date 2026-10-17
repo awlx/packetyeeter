@@ -163,8 +163,8 @@ func TestDetectionHistoryAndCampaignEventsRemainBounded(t *testing.T) {
 		t.Fatalf("campaign map retained %d entries, max %d", got, aggregator.cfg.MaxCampaigns)
 	}
 	for _, campaign := range aggregator.campaigns {
-		if len(campaign.events) > aggregator.cfg.MaxEvents {
-			t.Fatalf("campaign retained %d events, max %d", len(campaign.events), aggregator.cfg.MaxEvents)
+		if campaign.events.Len() > aggregator.cfg.MaxEvents {
+			t.Fatalf("campaign retained %d events, max %d", campaign.events.Len(), aggregator.cfg.MaxEvents)
 		}
 	}
 }

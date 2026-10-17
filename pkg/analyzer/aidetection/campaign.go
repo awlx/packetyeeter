@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"net"
+	"net/netip"
 	"strconv"
 	"strings"
 	"sync"
@@ -139,7 +140,7 @@ type attackCampaign struct {
 	vector    SignalType
 	firstSeen time.Time
 	lastSeen  time.Time
-	events    []campaignSignal
+	events    campaignEvents
 	// episode uniquely identifies this campaign instance. It is assigned once
 	// when the campaign is first created and never changes while the campaign
 	// lives, so the derived campaign_id is stable within an episode. When a
@@ -184,8 +185,8 @@ func (a *CampaignAggregator) Record(signal Signal) {
 	if collector == "" {
 		collector = "unknown"
 	}
-	campaignSignal := signal
-	campaignSignal.Type = classifyUDPAttackVector(signal)
+	classified := signal
+	classified.Type = classifyUDPAttackVector(signal)
 
 	// Every signal contributes to exactly three campaign buckets:
 	//  1. the specific-subnet campaign (vector+source+collector+destSubnet), which
@@ -203,23 +204,38 @@ func (a *CampaignAggregator) Record(signal Signal) {
 	// represent breadth that the narrower scope beneath them does not already
 	// capture (see the distinctRollup check), preventing double-counted
 	// detections/baseline samples for the same underlying signal.
-	key := campaignKey(campaignSignal.Type, campaignSignal.Source, collector, destSubnet)
-	subnetAggKey := campaignKey(campaignSignal.Type, campaignSignal.Source, collector, "any")
-	globalAggKey := campaignKey(campaignSignal.Type, campaignSignal.Source, "any", "any")
+	key := campaignKey(classified.Type, classified.Source, collector, destSubnet)
+	subnetAggKey := campaignKey(classified.Type, classified.Source, collector, "any")
+	globalAggKey := campaignKey(classified.Type, classified.Source, "any", "any")
+
+	event := campaignSignal{
+		signalType: classified.Type,
+		source:     classified.Source,
+		ip:         append(net.IP(nil), classified.IP...),
+		asn:        classified.ASN,
+		org:        classified.Org,
+		weight:     classified.Weight,
+		timestamp:  classified.Timestamp,
+		protocol:   serviceProtocol(classified),
+		destIP:     destIP,
+		destSubnet: destSubnet,
+		dstPort:    dstPort,
+		collector:  collector,
+	}
 
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	a.recordLocked(key, campaignSignal, destIP, destSubnet, dstPort, collector)
+	a.recordLocked(key, event)
 	if subnetAggKey != key {
-		a.recordLocked(subnetAggKey, campaignSignal, destIP, destSubnet, dstPort, collector)
+		a.recordLocked(subnetAggKey, event)
 	}
 	if globalAggKey != subnetAggKey {
-		a.recordLocked(globalAggKey, campaignSignal, destIP, destSubnet, dstPort, collector)
+		a.recordLocked(globalAggKey, event)
 	}
 }
 
-func (a *CampaignAggregator) recordLocked(key string, signal Signal, destIP, destSubnet string, dstPort uint32, collector string) {
+func (a *CampaignAggregator) recordLocked(key string, event campaignSignal) {
 	c := a.campaigns[key]
 	if c == nil {
 		if len(a.campaigns) >= a.cfg.MaxCampaigns {
@@ -228,37 +244,22 @@ func (a *CampaignAggregator) recordLocked(key string, signal Signal, destIP, des
 		a.episodeSeq++
 		c = &attackCampaign{
 			key:       key,
-			vector:    signal.Type,
-			firstSeen: signal.Timestamp,
+			vector:    event.signalType,
+			firstSeen: event.timestamp,
+			events:    newCampaignEvents(a.cfg.MaxEvents),
 			episode:   a.episodeSeq,
 		}
 		a.campaigns[key] = c
 	}
-	if c.firstSeen.IsZero() || signal.Timestamp.Before(c.firstSeen) {
-		c.firstSeen = signal.Timestamp
+	if c.firstSeen.IsZero() || event.timestamp.Before(c.firstSeen) {
+		c.firstSeen = event.timestamp
 	}
-	if signal.Timestamp.After(c.lastSeen) {
-		c.lastSeen = signal.Timestamp
+	if event.timestamp.After(c.lastSeen) {
+		c.lastSeen = event.timestamp
 	}
-	c.events = append(c.events, campaignSignal{
-		signalType: signal.Type,
-		source:     signal.Source,
-		ip:         append(net.IP(nil), signal.IP...),
-		asn:        signal.ASN,
-		org:        signal.Org,
-		weight:     signal.Weight,
-		timestamp:  signal.Timestamp,
-		protocol:   serviceProtocol(signal),
-		destIP:     destIP,
-		destSubnet: destSubnet,
-		dstPort:    dstPort,
-		collector:  collector,
-	})
-	a.pruneCampaignLocked(c, signal.Timestamp)
-	if excess := len(c.events) - a.cfg.MaxEvents; excess > 0 {
-		copy(c.events, c.events[excess:])
-		c.events = c.events[:a.cfg.MaxEvents]
-	}
+	c.events.Push(event)
+	a.pruneCampaignLocked(c, event.timestamp)
+	c.events.TrimTo(a.cfg.MaxEvents)
 }
 
 func (a *CampaignAggregator) Evaluate(now time.Time) []CampaignDetection {
@@ -275,7 +276,7 @@ func (a *CampaignAggregator) Evaluate(now time.Time) []CampaignDetection {
 	detections := make([]CampaignDetection, 0)
 	for key, c := range a.campaigns {
 		a.pruneCampaignLocked(c, now)
-		if len(c.events) == 0 || now.Sub(c.lastSeen) > a.cfg.Retention {
+		if c.events.Len() == 0 || now.Sub(c.lastSeen) > a.cfg.Retention {
 			delete(a.campaigns, key)
 			continue
 		}
@@ -314,15 +315,15 @@ func (a *CampaignAggregator) Evaluate(now time.Time) []CampaignDetection {
 }
 
 func (a *CampaignAggregator) observeBaselineLocked(c *attackCampaign, now time.Time) CampaignBaselineObservation {
-	if c == nil || len(c.events) == 0 || a.baseline == nil {
+	if c == nil || c.events.Len() == 0 || a.baseline == nil {
 		return CampaignBaselineObservation{}
 	}
 	windowSeconds := a.cfg.Window.Seconds()
 	if windowSeconds <= 0 {
 		windowSeconds = 1
 	}
-	key := campaignBaselineKey(c.vector, c.events, campaignScope(c.key))
-	return a.baseline.Observe(key, float64(len(c.events))/windowSeconds, now)
+	key := campaignBaselineKey(c.vector, &c.events, campaignScope(c.key))
+	return a.baseline.Observe(key, float64(c.events.Len())/windowSeconds, now)
 }
 
 // campaignScope classifies a campaign key as the fine-grained "specific"
@@ -356,7 +357,7 @@ func (a *CampaignAggregator) ActiveCampaigns(now time.Time) int {
 	active := 0
 	for key, c := range a.campaigns {
 		a.pruneCampaignLocked(c, now)
-		if len(c.events) == 0 || now.Sub(c.lastSeen) > a.cfg.Retention {
+		if c.events.Len() == 0 || now.Sub(c.lastSeen) > a.cfg.Retention {
 			delete(a.campaigns, key)
 			continue
 		}
@@ -369,33 +370,19 @@ func (a *CampaignAggregator) ActiveCampaigns(now time.Time) int {
 
 func (a *CampaignAggregator) pruneCampaignLocked(c *attackCampaign, now time.Time) {
 	cutoff := now.Add(-a.cfg.Window)
-	if len(c.events) == 0 || !c.firstSeen.Before(cutoff) {
+	if c.events.Len() == 0 || !c.firstSeen.Before(cutoff) {
 		return
 	}
-	kept := c.events[:0]
-	for _, ev := range c.events {
-		if !ev.timestamp.Before(cutoff) {
-			kept = append(kept, ev)
-		}
-	}
-	c.events = kept
-	if len(c.events) == 0 {
+	firstSeen, lastSeen, ok := c.events.PruneBefore(cutoff)
+	if !ok {
 		return
 	}
-	c.firstSeen = c.events[0].timestamp
-	c.lastSeen = c.events[0].timestamp
-	for _, ev := range c.events[1:] {
-		if ev.timestamp.Before(c.firstSeen) {
-			c.firstSeen = ev.timestamp
-		}
-		if ev.timestamp.After(c.lastSeen) {
-			c.lastSeen = ev.timestamp
-		}
-	}
+	c.firstSeen = firstSeen
+	c.lastSeen = lastSeen
 }
 
 func (a *CampaignAggregator) evaluateCampaignLocked(c *attackCampaign) (CampaignDetection, bool) {
-	if len(c.events) < a.cfg.MinSignals {
+	if c.events.Len() < a.cfg.MinSignals {
 		return CampaignDetection{}, false
 	}
 
@@ -414,7 +401,8 @@ func (a *CampaignAggregator) evaluateCampaignLocked(c *attackCampaign) (Campaign
 	var sampleDstPort uint32
 	var sampleASN, sampleOrg string
 
-	for _, ev := range c.events {
+	for i := range c.events.Len() {
+		ev := c.events.At(i)
 		w := ev.weight
 		if w == 0 {
 			w = 1
@@ -496,7 +484,7 @@ func (a *CampaignAggregator) evaluateCampaignLocked(c *attackCampaign) (Campaign
 	// own threshold.
 	weakSourceBreadth := len(sourceIPs) >= a.cfg.MinWeakSourceIPs &&
 		weakSourceWeights(sourceWeights, a.cfg.WeakSourceMaxWeight) &&
-		averageWeight(totalWeight, len(c.events)) <= a.cfg.WeakSignalMaxWeight
+		averageWeight(totalWeight, c.events.Len()) <= a.cfg.WeakSignalMaxWeight
 
 	reason := ""
 	switch {
@@ -520,7 +508,7 @@ func (a *CampaignAggregator) evaluateCampaignLocked(c *attackCampaign) (Campaign
 		Reason:           reason,
 		FirstSeen:        c.firstSeen,
 		LastSeen:         c.lastSeen,
-		SignalCount:      len(c.events),
+		SignalCount:      c.events.Len(),
 		TotalWeight:      totalWeight,
 		DestinationIPs:   len(destIPs),
 		DestSubnets:      len(destSubnets),
@@ -591,7 +579,7 @@ func campaignKey(vector SignalType, source SignalSource, collector, destSubnet s
 	if destSubnet == "" {
 		destSubnet = "unknown"
 	}
-	return fmt.Sprintf("vector=%s|source=%s|collector=%s|dest_subnet=%s", vector, source, collector, destSubnet)
+	return "vector=" + string(vector) + "|source=" + string(source) + "|collector=" + collector + "|dest_subnet=" + destSubnet
 }
 
 // DstPrefix returns the destination subnet a specific-scope campaign is keyed
@@ -658,27 +646,20 @@ func destinationIdentity(metadata map[string]interface{}) (string, string) {
 	if raw == "" {
 		return "", "unknown"
 	}
-	ip := net.ParseIP(raw)
-	if ip == nil {
+	addr, err := netip.ParseAddr(raw)
+	if err != nil || addr.Zone() != "" {
 		return "", "unknown"
 	}
-	return ip.String(), subnetForIP(ip)
+	addr = addr.Unmap()
+	return addr.String(), subnetForAddr(addr)
 }
 
-func subnetForIP(ip net.IP) string {
-	if ip4 := ip.To4(); ip4 != nil {
-		return (&net.IPNet{IP: net.IPv4(ip4[0], ip4[1], ip4[2], 0), Mask: net.CIDRMask(24, 32)}).String()
+func subnetForAddr(addr netip.Addr) string {
+	bits := 64
+	if addr.Is4() {
+		bits = 24
 	}
-	ip16 := ip.To16()
-	if ip16 == nil {
-		return "unknown"
-	}
-	subnetIP := make(net.IP, len(ip16))
-	copy(subnetIP, ip16)
-	for i := 8; i < len(subnetIP); i++ {
-		subnetIP[i] = 0
-	}
-	return (&net.IPNet{IP: subnetIP, Mask: net.CIDRMask(64, 128)}).String()
+	return netip.PrefixFrom(addr, bits).Masked().String()
 }
 
 func destinationPort(metadata map[string]interface{}) uint32 {

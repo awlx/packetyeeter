@@ -14,10 +14,9 @@ var historyMetadataKeys = map[string]struct{}{
 // EventHistory maintains a sliding window of recent events for feature extraction
 type EventHistory struct {
 	mu          sync.RWMutex
-	maxEvents   int
 	maxAge      time.Duration
-	events      []SignalEvent // Recent events in chronological order
-	created     time.Time     // When this history was created
+	events      eventRing[SignalEvent] // Recent events in chronological order
+	created     time.Time              // When this history was created
 	lastSeen    time.Time
 	lastCleanup time.Time // Last cleanup time
 }
@@ -26,9 +25,8 @@ type EventHistory struct {
 func NewEventHistory(maxEvents int, maxAge time.Duration) *EventHistory {
 	now := time.Now()
 	return &EventHistory{
-		maxEvents:   maxEvents,
 		maxAge:      maxAge,
-		events:      make([]SignalEvent, 0, min(maxEvents, 8)),
+		events:      newEventRing[SignalEvent](maxEvents),
 		created:     now,
 		lastSeen:    now,
 		lastCleanup: now,
@@ -52,12 +50,7 @@ func (h *EventHistory) AddEvent(event SignalEvent) {
 	}
 
 	event.Metadata = cloneMetadata(event.Metadata, historyMetadataKeys)
-	if len(h.events) == h.maxEvents {
-		copy(h.events, h.events[1:])
-		h.events[len(h.events)-1] = event
-	} else {
-		h.events = append(h.events, event)
-	}
+	h.events.PushBack(event)
 	h.lastSeen = now
 }
 
@@ -66,13 +59,10 @@ func (h *EventHistory) cleanupOldEventsLocked(now time.Time) {
 	cutoff := now.Add(-h.maxAge)
 
 	first := 0
-	for first < len(h.events) && h.events[first].Timestamp.Before(cutoff) {
+	for first < h.events.Len() && h.events.At(first).Timestamp.Before(cutoff) {
 		first++
 	}
-	if first > 0 {
-		copy(h.events, h.events[first:])
-		h.events = h.events[:len(h.events)-first]
-	}
+	h.events.DropFront(first)
 }
 
 // GetSnapshot returns a read-only snapshot of current events for feature extraction
@@ -81,11 +71,10 @@ func (h *EventHistory) GetSnapshot() EventHistorySnapshot {
 	defer h.mu.RUnlock()
 
 	snapshot := EventHistorySnapshot{
-		Events:     make([]SignalEvent, len(h.events)),
-		Timestamps: make([]time.Time, 0, len(h.events)),
+		Events:     h.events.Slice(),
+		Timestamps: make([]time.Time, 0, h.events.Len()),
 	}
-	copy(snapshot.Events, h.events)
-	for _, event := range h.events {
+	for _, event := range snapshot.Events {
 		snapshot.Timestamps = append(snapshot.Timestamps, event.Timestamp)
 		if path, ok := event.Metadata["path"].(string); ok && path != "" {
 			snapshot.Paths = append(snapshot.Paths, path)
@@ -111,7 +100,7 @@ func (h *EventHistory) GetSnapshot() EventHistorySnapshot {
 func (h *EventHistory) Size() int {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
-	return len(h.events)
+	return h.events.Len()
 }
 
 // EventHistorySnapshot is an immutable snapshot of event history for feature extraction

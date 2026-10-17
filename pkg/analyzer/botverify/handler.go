@@ -6,6 +6,7 @@ import (
 	"github.com/sirupsen/logrus"
 
 	aidetection "PacketYeeter/pkg/analyzer/aidetection"
+	"PacketYeeter/pkg/analyzer/logthrottle"
 	reputation "PacketYeeter/pkg/analyzer/reputation"
 	metrics "PacketYeeter/pkg/metrics"
 )
@@ -17,6 +18,11 @@ type Handler struct {
 	aiCrawlerReg  *AICrawlerRegistry
 	signalBuilder *aidetection.SignalBuilder
 	reputationMgr *reputation.Engine
+
+	aiVerifiedLog       *logthrottle.Throttle
+	aiImpersonationLog  *logthrottle.Throttle
+	botVerifiedLog      *logthrottle.Throttle
+	botImpersonationLog *logthrottle.Throttle
 }
 
 // NewHandler creates a new bot verification handler
@@ -26,6 +32,11 @@ func NewHandler(verifier *Verifier, aiCrawlerReg *AICrawlerRegistry, signalBuild
 		aiCrawlerReg:  aiCrawlerReg,
 		signalBuilder: signalBuilder,
 		reputationMgr: reputationMgr,
+
+		aiVerifiedLog:       logthrottle.NewDefault(),
+		aiImpersonationLog:  logthrottle.NewDefault(),
+		botVerifiedLog:      logthrottle.NewDefault(),
+		botImpersonationLog: logthrottle.NewDefault(),
 	}
 }
 
@@ -63,13 +74,15 @@ func (h *Handler) VerifyBot(ip net.IP, userAgent, asn, org string) *VerifyResult
 			metrics.AIVerificationResults.WithLabelValues("verified").Inc()
 			metrics.AIDetectionsByBotCategory.WithLabelValues(string(aidetection.BotCategoryAICrawlerVerified)).Inc()
 
-			logrus.WithFields(logrus.Fields{
-				"ip":           ip.String(),
-				"crawler_type": crawlerType,
-				"user_agent":   userAgent,
-				"asn":          asn,
-				"org":          org,
-			}).Info("Verified AI crawler allowed")
+			if h.aiVerifiedLog.AllowIP(ip) {
+				logrus.WithFields(logrus.Fields{
+					"ip":           ip.String(),
+					"crawler_type": crawlerType,
+					"user_agent":   userAgent,
+					"asn":          asn,
+					"org":          org,
+				}).Info("Verified AI crawler allowed")
+			}
 
 			// Emit positive signal for verified AI crawler
 			if h.signalBuilder != nil {
@@ -122,13 +135,15 @@ func (h *Handler) VerifyBot(ip net.IP, userAgent, asn, org string) *VerifyResult
 
 			metrics.AIVerificationResults.WithLabelValues("failed").Inc()
 
-			logrus.WithFields(logrus.Fields{
-				"ip":           ip.String(),
-				"crawler_type": crawlerType,
-				"user_agent":   userAgent,
-				"asn":          asn,
-				"org":          org,
-			}).Warn("AI crawler impersonation detected")
+			if h.aiImpersonationLog.AllowIP(ip) {
+				logrus.WithFields(logrus.Fields{
+					"ip":           ip.String(),
+					"crawler_type": crawlerType,
+					"user_agent":   userAgent,
+					"asn":          asn,
+					"org":          org,
+				}).Warn("AI crawler impersonation detected")
+			}
 
 			// Penalize impersonation
 			if h.reputationMgr != nil {
@@ -205,16 +220,18 @@ func (h *Handler) VerifyBot(ip net.IP, userAgent, asn, org string) *VerifyResult
 				}
 				metrics.AIDetectionsByBotCategory.WithLabelValues(string(botCategory)).Inc()
 
-				logrus.WithFields(logrus.Fields{
-					"ip":           ip.String(),
-					"bot_type":     dnsResult.BotType,
-					"bot_category": botCategory,
-					"user_agent":   userAgent,
-					"reverse_dns":  dnsResult.ReverseDNS,
-					"forward_dns":  dnsResult.ForwardDNS,
-					"asn":          asn,
-					"org":          org,
-				}).Info("Verified bot allowed")
+				if h.botVerifiedLog.AllowIP(ip) {
+					logrus.WithFields(logrus.Fields{
+						"ip":           ip.String(),
+						"bot_type":     dnsResult.BotType,
+						"bot_category": botCategory,
+						"user_agent":   userAgent,
+						"reverse_dns":  dnsResult.ReverseDNS,
+						"forward_dns":  dnsResult.ForwardDNS,
+						"asn":          asn,
+						"org":          org,
+					}).Info("Verified bot allowed")
+				}
 
 				// Emit positive signal for verified bot
 				if h.signalBuilder != nil {
@@ -272,15 +289,17 @@ func (h *Handler) VerifyBot(ip net.IP, userAgent, asn, org string) *VerifyResult
 
 				metrics.BotVerificationFailures.WithLabelValues(string(dnsResult.BotType), dnsResult.ErrorMessage).Inc()
 
-				logrus.WithFields(logrus.Fields{
-					"ip":                 ip.String(),
-					"user_agent":         userAgent,
-					"bot_type":           dnsResult.BotType,
-					"error":              dnsResult.ErrorMessage,
-					"transient_failures": dnsResult.ConsecutiveTransientFailures,
-					"asn":                asn,
-					"org":                org,
-				}).Warn("Bot impersonation detected")
+				if h.botImpersonationLog.AllowIP(ip) {
+					logrus.WithFields(logrus.Fields{
+						"ip":                 ip.String(),
+						"user_agent":         userAgent,
+						"bot_type":           dnsResult.BotType,
+						"error":              dnsResult.ErrorMessage,
+						"transient_failures": dnsResult.ConsecutiveTransientFailures,
+						"asn":                asn,
+						"org":                org,
+					}).Warn("Bot impersonation detected")
+				}
 
 				// Penalize bot impersonation attempts heavily
 				if h.reputationMgr != nil {

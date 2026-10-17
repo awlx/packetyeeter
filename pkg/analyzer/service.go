@@ -33,6 +33,7 @@ import (
 	"PacketYeeter/pkg/analyzer/clockskew"
 	"PacketYeeter/pkg/analyzer/entropy"
 	"PacketYeeter/pkg/analyzer/ja4db"
+	"PacketYeeter/pkg/analyzer/logthrottle"
 	"PacketYeeter/pkg/analyzer/reputation"
 	"PacketYeeter/pkg/analyzer/sustained"
 	"PacketYeeter/pkg/analyzer/threatintel"
@@ -89,6 +90,7 @@ type Config struct {
 	DDoSRequireHighFreq          bool
 	DisableDDoSCategory          bool
 	JA4DBCachePath               string
+	JA4DBLogExact                bool
 	StateDir                     string
 	MaxCollectors                int      // Max concurrent collector streams (default 1024)
 	InspectorTrustedHosts        []string // Extra Host/Origin hostnames the inspector trusts for mutating requests (in addition to loopback), e.g. a reverse-proxy hostname
@@ -302,6 +304,9 @@ type Analyzer struct {
 	latencyAnomalyThrottle map[string]time.Time
 	latencyMu              sync.Mutex
 
+	browserMatchLog *logthrottle.Throttle
+	knownBotLog     *logthrottle.Throttle
+
 	// Runtime enforcement kill switch, checked wherever commands are issued.
 	enforcement enforcementState
 
@@ -500,6 +505,8 @@ func New(cfg Config) (*Analyzer, error) {
 		httpRateByASN:          make(map[string]*ewma.State),
 		proxyLagByASN:          make(map[string]*ewma.State),
 		latencyAnomalyThrottle: make(map[string]time.Time),
+		browserMatchLog:        logthrottle.NewDefault(),
+		knownBotLog:            logthrottle.NewDefault(),
 		pathWindows:            make(map[string]*pathWindow),
 		httpErrorWindows:       make(map[string]*httpErrorWindow),
 		recentBlocks:           make(map[string]*blockReservation),

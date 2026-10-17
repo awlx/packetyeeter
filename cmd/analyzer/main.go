@@ -130,6 +130,7 @@ func main() {
 		MLModelPath:                  *mlModelPath,
 		MaxCollectors:                *maxCollectors,
 		DryRun:                       *dryRun,
+		JA4DBLogExact:                os.Getenv("PACKETYEETER_JA4DB_LOG_EXACT") != "",
 		EnableWatchAPI:               *enableWatch,
 		WatchMaxSubscribers:          *watchMaxSubs,
 		WatchBufferSize:              *watchBuffer,

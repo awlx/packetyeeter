@@ -26,6 +26,28 @@ Campaign observation logs include low-cardinality aggregate fields such as
 `baseline_multiplier`, `baseline_samples`, `baseline_enough_samples`, and
 `baseline_anomalous`.
 
+### Per-request log throttling
+
+The analyzer writes these per-request lines at most once per source IP every
+30 seconds, for each message separately:
+
+- `Browser exact JA4 match: rewarded reputation, skipping bot detection`
+  (`event=browser_exact_ja4_match`)
+- `Known bot fingerprint detected`
+- `Verified AI crawler allowed` and `Verified bot allowed`
+- `AI crawler impersonation detected` and `Bot impersonation detected`
+
+Each message tracks at most 20000 IPs. When that table is full of IPs logged in
+the last 30 seconds, the analyzer writes the line for new IPs at most one time
+per second for each message. Thus these lines never stop, and their total rate
+stays bounded. The throttle applies
+only to the log line. Reputation changes, signals, and metrics such as
+`packetyeeter_ja4db_known_bots_total` and the bot verification counters still
+count every request.
+
+Set `PACKETYEETER_JA4DB_LOG_EXACT` to any non-empty value to log every exact
+JA4DB match (`JA4DB exact match`). The analyzer reads it one time at startup.
+
 ## Metric catalog
 
 ### DDoS campaign metrics
