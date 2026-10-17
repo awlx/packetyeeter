@@ -90,6 +90,8 @@ struct rate_limit {
 #define BAD_FLAGS_XMAS     2
 #define BAD_FLAGS_NULL     3
 
+#define BAD_FLAGS_REFRESH_NS 500000000ULL
+
 struct bad_flags_info {
     __u64 last_seen;
     __u32 scan_type;  // one of BAD_FLAGS_*
@@ -1022,13 +1024,15 @@ static __always_inline int check_l4_v4(struct xdp_md *ctx, struct iphdr *ip, voi
         int scan_type = check_tcp_flags(tcp);
         if (scan_type != BAD_FLAGS_NONE) {
             // An update of an existing LRU key still takes a fresh node and
-            // the LRU lock, so a repeat scan only refreshes last_seen. A
-            // changed scan replaces the whole record: in-place multi-field
-            // writes could leave userspace (or racing CPUs) a torn record.
+            // the LRU lock, so a repeat scan only refreshes last_seen, at most
+            // once per BAD_FLAGS_REFRESH_NS. A changed scan replaces the
+            // whole record: in-place multi-field writes could leave
+            // userspace (or racing CPUs) a torn record.
             __u32 flags_raw = tcp_flags_raw(tcp);
             struct bad_flags_info *cur = bpf_map_lookup_elem(&bad_flags, &saddr);
             if (cur && cur->scan_type == scan_type && cur->flags_raw == flags_raw) {
-                cur->last_seen = now;
+                if (now > cur->last_seen + BAD_FLAGS_REFRESH_NS)
+                    cur->last_seen = now;
             } else {
                 struct bad_flags_info info = {};
                 info.last_seen = now;
@@ -1100,7 +1104,8 @@ static __always_inline int check_l4_v6(struct xdp_md *ctx, __u8 l4_proto, void *
             __u32 flags_raw = tcp_flags_raw(tcp);
             struct bad_flags_info *cur = bpf_map_lookup_elem(&bad_flags_v6, saddr);
             if (cur && cur->scan_type == scan_type && cur->flags_raw == flags_raw) {
-                cur->last_seen = now;
+                if (now > cur->last_seen + BAD_FLAGS_REFRESH_NS)
+                    cur->last_seen = now;
             } else {
                 struct bad_flags_info info = {};
                 info.last_seen = now;
@@ -1619,6 +1624,7 @@ struct rule_list {
 struct rule_bucket {
     __u64 window;
     __u64 count;
+    __u64 pad[6];
 };
 
 struct {
@@ -1848,6 +1854,8 @@ static __always_inline int rule_over_rate(__u32 slot, struct scrub_rule *r, __u6
         b->window = window;
         b->count = 0;
     }
+    if (b->count >= r->rate_budget)
+        return 1;
     return __sync_fetch_and_add(&b->count, 1) >= r->rate_budget;
 }
 

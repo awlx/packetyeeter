@@ -81,6 +81,7 @@ type ruleList struct {
 type ruleBucket struct {
 	Window uint64
 	Count  uint64
+	Pad    [6]uint64
 }
 
 func (m *Maps) PutRuleBody(slot uint16, rule *ScrubRule) error {

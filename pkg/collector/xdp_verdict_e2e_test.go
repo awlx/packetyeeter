@@ -13,15 +13,19 @@ package collector
 
 import (
 	"encoding/binary"
+	"math"
 	"net"
 	"os"
 	"runtime"
 	"testing"
+	"time"
 
+	apiv1 "PacketYeeter/api/proto/v1"
 	pyebpf "PacketYeeter/pkg/collector/ebpf"
 
 	"github.com/cilium/ebpf"
 	"golang.org/x/sys/unix"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 const (
@@ -371,8 +375,8 @@ func checkRepeatedScan(t *testing.T, coll *ebpf.Collection, p *ebpf.Program) {
 		if err := fam.m.Lookup(fam.key, &second); err != nil {
 			t.Fatalf("%s: bad_flags entry gone after a repeat scan: %v", fam.name, err)
 		}
-		if second.LastSeen <= first.LastSeen || second.ScanType != 2 {
-			t.Errorf("%s: repeat scan %+v, first %+v: last_seen must advance", fam.name, second, first)
+		if second.LastSeen != first.LastSeen || second.ScanType != 2 {
+			t.Errorf("%s: repeat scan %+v, first %+v: last_seen must hold within the refresh interval", fam.name, second, first)
 		}
 		runProg(t, p, fam.pkt(tcpSYN|tcpFIN), 1)
 		if err := fam.m.Lookup(fam.key, &third); err != nil {
@@ -545,4 +549,152 @@ func TestXDPIPv6UDPLaterFragmentFloodIsRateLimited(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestBadFlagsRepeatRefresh(t *testing.T) {
+	for _, prog := range []string{"xdp_filter", "xdp_scrub"} {
+		t.Run(prog, func(t *testing.T) {
+			coll := loadPrograms(t, prog)
+			seedMaps(t, coll, false)
+			p := coll.Programs[prog]
+			src4 := net.ParseIP("198.51.100.88").To4()
+			src6 := net.ParseIP("2001:db8:1::88")
+			for _, fam := range []struct {
+				name string
+				m    *ebpf.Map
+				key  any
+				pkt  []byte
+			}{
+				{"v4", coll.Maps["bad_flags"], v4Key(src4), vIPv4(6, src4, vDst4, vTCP(3000, tcpSYN|tcpFIN))},
+				{"v6", coll.Maps["bad_flags_v6"], v6Key(src6), vIPv6(6, src6, vDst6, vTCP(3000, tcpSYN|tcpFIN))},
+			} {
+				checkBadFlagsRefresh(t, fam.name, p, fam.m, fam.key, fam.pkt)
+			}
+		})
+	}
+}
+
+func checkBadFlagsRefresh(t *testing.T, family string, p *ebpf.Program, m *ebpf.Map, key any, pkt []byte) {
+	t.Helper()
+	if got := runProg(t, p, pkt, 1); got != xdpDrop {
+		t.Fatalf("%s: first SYN+FIN verdict %d, want XDP_DROP", family, got)
+	}
+	var first, repeated, refreshed badFlags
+	if err := m.Lookup(key, &first); err != nil {
+		t.Fatalf("%s: no bad_flags entry after SYN+FIN: %v", family, err)
+	}
+	if got := runProg(t, p, pkt, 1000); got != xdpDrop {
+		t.Fatalf("%s: repeat SYN+FIN verdict %d, want XDP_DROP", family, got)
+	}
+	if err := m.Lookup(key, &repeated); err != nil {
+		t.Fatalf("%s: bad_flags entry gone after repeat SYN+FIN: %v", family, err)
+	}
+	if repeated.ScanType != 1 || repeated.FlagsRaw != tcpSYN|tcpFIN {
+		t.Errorf("%s: repeat entry %+v", family, repeated)
+	}
+
+	const ageNS = uint64(time.Second)
+	if first.LastSeen <= ageNS {
+		t.Fatalf("%s: last_seen %d too small to age", family, first.LastSeen)
+	}
+	aged := repeated
+	aged.LastSeen = first.LastSeen - ageNS
+	if err := m.Put(key, aged); err != nil {
+		t.Fatalf("%s: age bad_flags entry: %v", family, err)
+	}
+	if got := runProg(t, p, pkt, 1); got != xdpDrop {
+		t.Fatalf("%s: SYN+FIN after aging verdict %d, want XDP_DROP", family, got)
+	}
+	if err := m.Lookup(key, &refreshed); err != nil {
+		t.Fatalf("%s: bad_flags entry gone after aging: %v", family, err)
+	}
+	if refreshed.LastSeen < first.LastSeen || refreshed.ScanType != 1 || refreshed.FlagsRaw != tcpSYN|tcpFIN {
+		t.Errorf("%s: entry %+v after a packet on an entry aged to %d, want last_seen at least %d", family, refreshed, aged.LastSeen, first.LastSeen)
+	}
+}
+
+type ruleBucketValue struct {
+	Window uint64
+	Count  uint64
+	Pad    [6]uint64
+}
+
+var vRuleDst4 = net.ParseIP("198.51.100.10").To4()
+
+func loadScrubWithRateRule(tb testing.TB, pps uint64) (*pyebpf.Loader, uint16) {
+	tb.Helper()
+	if os.Geteuid() != 0 {
+		tb.Skip("requires root to load eBPF programs")
+	}
+	l := pyebpf.NewLoader(pyebpf.LoaderConfig{Mode: pyebpf.ModeScrub, Interface: "lo"})
+	if err := l.Load(); err != nil {
+		tb.Fatalf("load eBPF: %v", err)
+	}
+	tb.Cleanup(l.Close)
+	m := l.GetMaps()
+	for _, key := range []uint32{0, 2} {
+		if err := m.ConfigMap.Put(key, uint32(math.MaxUint32)); err != nil {
+			tb.Fatalf("lift per-source limit %d: %v", key, err)
+		}
+	}
+	e := newRuleEngine(m)
+	const id = "rate"
+	rule := &apiv1.Rule{
+		Id:        id,
+		DstPrefix: "198.51.100.10/32",
+		Protocols: []uint32{6},
+		Action:    apiv1.RuleAction_RULE_ACTION_RATE_LIMIT,
+		RatePps:   pps,
+		ExpiresAt: timestamppb.New(time.Now().Add(time.Hour)),
+	}
+	if _, err := e.Apply(&apiv1.RuleSetDelta{Upsert: []*apiv1.Rule{rule}}, time.Now()); err != nil {
+		tb.Fatalf("apply rate rule: %v", err)
+	}
+	return l, e.installed[id].slot
+}
+
+func TestScrubRateRuleBudget(t *testing.T) {
+	const pps = 20
+	l, slot := loadScrubWithRateRule(t, pps)
+	p := l.Program("xdp_scrub")
+	buckets := l.GetMaps().RuleBuckets
+	src := net.ParseIP("198.51.100.30").To4()
+
+	readBucket := func() ruleBucketValue {
+		var v ruleBucketValue
+		if err := buckets.Lookup(uint32(slot), &v); err != nil {
+			t.Fatalf("rule_buckets lookup: %v", err)
+		}
+		return v
+	}
+
+	for attempt := range 3 {
+		if err := buckets.Put(uint32(slot), ruleBucketValue{}); err != nil {
+			t.Fatalf("reset bucket: %v", err)
+		}
+		verdicts := make([]uint32, 0, pps)
+		for i := range pps {
+			verdicts = append(verdicts, runProg(t, p, vIPv4(6, src, vRuleDst4, vTCP(uint16(4000+i), tcpACK)), 1))
+		}
+		start := readBucket()
+		over := runProg(t, p, vIPv4(6, src, vRuleDst4, vTCP(5000, tcpACK)), 1000)
+		end := readBucket()
+		if end.Window != start.Window {
+			t.Logf("attempt %d crossed a rate window, retrying", attempt)
+			continue
+		}
+		for i, v := range verdicts {
+			if v == xdpDrop {
+				t.Errorf("packet %d under budget %d: XDP_DROP", i, pps)
+			}
+		}
+		if over != xdpDrop {
+			t.Errorf("packet over budget: verdict %d, want XDP_DROP", over)
+		}
+		if end.Count != pps {
+			t.Errorf("bucket count %d after packets over budget, want %d", end.Count, pps)
+		}
+		return
+	}
+	t.Fatal("every attempt crossed a rate window")
 }
