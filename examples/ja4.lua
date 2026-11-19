@@ -79,7 +79,10 @@ local function tls_version(txn)
 end
 
 local function sni_is_set(txn)
-    if (txn.f:ssl_fc_has_sni()) then
+    -- Boolean fetches arrive as integer 0/1 unless tune.lua.bool-sample-conversion
+    -- is "normal"; 0 is truthy in Lua, so compare explicitly.
+    local sni = txn.f:ssl_fc_has_sni()
+    if (sni == true or sni == 1) then
         return 'd'
     else
         return 'i'
